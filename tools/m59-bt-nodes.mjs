@@ -332,6 +332,13 @@ function _nearThreats(bb) {
     Math.hypot(o.col - me.col, o.row - me.row) <= 2);
 }
 
+function _allHostiles(bb) {
+  const c = bb?.client;
+  if (!c) return [];
+  return [...(c.room?.objects?.values?.() ?? [])].filter(o =>
+    o.id !== c.selfId && (o.flags & OF.ATTACKABLE) && !(o.flags & OF.PLAYER));
+}
+
 function _healthPct(bb) {
   const v = bb?.client?.vitals?.();
   if (!v?.health?.max) return null;
@@ -387,10 +394,8 @@ export function shouldFleeCondition() {
 
 // -- Action factories --------------------------------------------------------
 
-// handle_doom: delegates to keeper.playDead (if sheltered) or
-// keeper.townTripIfCornered. The keeper methods already contain the full
-// decision tree about which is appropriate. Returns SUCCESS when the keeper
-// handled the doom (returned true), FAILURE if it could not.
+// handle_doom: calls keeper.passDangerSection to handle the doomed branch.
+// passDangerSection owns playDead vs townTripIfCornered based on sheltered state.
 export function handleDoomAction(keeper) {
   const key = 'bt_handle_doom';
   return new Action((bb, slot) => {
@@ -399,25 +404,15 @@ export function handleDoomAction(keeper) {
       bb._bt[key] = slot;
       const k = keeper ?? bb?.session;
       const c = bb?.client;
+      const s = k?.s;
       const v = c?.vitals?.() ?? {};
       const near = _nearThreats(bb);
-      const sheltered = k?.holdWorks?.() ?? false;
+      const hostiles = _allHostiles(bb);
+      const hp = _healthPct(bb);
       Promise.resolve()
         .then(() => {
-          if (!k) return false;
-          if (sheltered) {
-            const label = 'at ' + (v.health?.value ?? '?') + ' health with ' +
-                          near.length + ' adjacent, behind a wall that holds';
-            return typeof k.playDead === 'function' ? k.playDead(label) : false;
-          }
-          if (typeof k.townTripIfCornered === 'function') {
-            k.note?.('hurt in the open — running for a town rather than playing dead', {
-              health: v.health?.value, adjacent: near.length,
-              why: 'a freeze recovers no health and leaves us exactly where we were' });
-            k.doing = 'travelling';
-            return k.townTripIfCornered().catch(() => false);
-          }
-          return false;
+          if (!k || typeof k.passDangerSection !== 'function') return false;
+          return k.passDangerSection(s, c, v, hp, near, hostiles);
         })
         .then(r => { slot.ok = !!r; slot.done = true; })
         .catch(() => { slot.ok = false; slot.done = true; });
@@ -431,9 +426,8 @@ export function handleDoomAction(keeper) {
 }
 handleDoomAction._key = 'bt_handle_doom';
 
-// do_flee: delegates to keeper.retreatToSafety (open floor) or records a
-// mulligan and breaks off without moving (sheltered). Mirrors the two branches
-// in passFleeAndRest exactly.
+// do_flee: calls keeper.passDangerSection to handle the flee branch.
+// passDangerSection owns retreat vs mulligan based on sheltered state.
 export function doFleeAction(keeper) {
   const key = 'bt_do_flee';
   return new Action((bb, slot) => {
@@ -442,34 +436,15 @@ export function doFleeAction(keeper) {
       bb._bt[key] = slot;
       const k = keeper ?? bb?.session;
       const c = bb?.client;
+      const s = k?.s;
       const v = c?.vitals?.() ?? {};
       const near = _nearThreats(bb);
+      const hostiles = _allHostiles(bb);
       const hp = _healthPct(bb);
-      const sheltered = k?.holdWorks?.() ?? false;
       Promise.resolve()
         .then(() => {
-          if (!k) return false;
-          if (sheltered) {
-            k.tally.mulligans = (k.tally.mulligans || 0) + 1;
-            k.note?.('breaking off without moving', {
-              health: hp === null ? null : Math.round(hp * 100) + '%',
-              crowd: near.length,
-              where: k.hold ? { col: k.hold.col, row: k.hold.row } : null,
-              why: 'we are in a spot that has held under attack, so nothing can hit us unless we ' +
-                   'swing first. Stopping is the whole withdrawal.' });
-            return true;
-          }
-          k.tally.withdrawals = (k.tally.withdrawals || 0) + 1;
-          k.note?.('running for safety', {
-            health: hp === null ? null : Math.round(hp * 100) + '%',
-            from: near.map(o => c.rsc?.get?.(o.nameRsc)),
-            why: 'below the flee threshold in the open' });
-          return typeof k.retreatToSafety === 'function'
-            ? k.retreatToSafety({
-                because: 'below the flee threshold in the open',
-                from: near.map(o => c.rsc?.get?.(o.nameRsc)),
-              })
-            : false;
+          if (!k || typeof k.passDangerSection !== 'function') return false;
+          return k.passDangerSection(s, c, v, hp, near, hostiles);
         })
         .then(r => { slot.ok = !!r; slot.done = true; })
         .catch(() => { slot.ok = false; slot.done = true; });
@@ -483,11 +458,9 @@ export function doFleeAction(keeper) {
 }
 doFleeAction._key = 'bt_do_flee';
 
-// rest_and_recover: delegates passFleeAndRest's rest + settle + safe-spot-seek
-// to the keeper. This is the always-runs arm — it handles settle-on-entry,
-// safe-spot seeking when hurt, and actual resting. Always returns SUCCESS to
-// signal "threat tick consumed" so the pass does not fall through to farm.
-// When the keeper has nothing to do it returns quickly.
+// rest_and_recover: calls keeper.passRestSection — the settle + safe-spot-seek
+// + rest gate logic extracted from passThreatAndRest. Always returns SUCCESS
+// so the pass does not fall through to farm.
 export function restAndRecoverAction(keeper) {
   const key = 'bt_rest_and_recover';
   return new Action((bb, slot) => {
@@ -500,14 +473,12 @@ export function restAndRecoverAction(keeper) {
       const room = s?.world?.room ?? null;
       const v = c?.vitals?.() ?? {};
       const hp = _healthPct(bb);
+      const near = _nearThreats(bb);
+      const hostiles = _allHostiles(bb);
       Promise.resolve()
         .then(() => {
-          if (!k || typeof k.passFleeAndRest !== 'function') return;
-          // Delegate only the rest/settle half — flee/doom are handled above.
-          // We pass the same args passFleeAndRest receives; it will return early
-          // on the flee/doom branches because those conditions are no longer met
-          // (the arms above handled them).
-          return k.passFleeAndRest(s, c, room, v, hp);
+          if (!k || typeof k.passRestSection !== 'function') return;
+          return k.passRestSection(s, c, room, v, hp, near, hostiles);
         })
         .then(() => { slot.done = true; })
         .catch(() => { slot.done = true; });
@@ -515,7 +486,7 @@ export function restAndRecoverAction(keeper) {
     }
     if (!slot.done) return RUNNING;
     delete bb._bt[key];
-    return SUCCESS;   // always: "we handled the threat pass for this tick"
+    return SUCCESS;
   }, { key, name: 'rest_and_recover' });
 }
 restAndRecoverAction._key = 'bt_rest_and_recover';
@@ -623,48 +594,6 @@ export function farmNavigationTree(opts = {}) {
   }
   return navigateToPreyAction(keeper);
 }
-
-// threatAndRestAction: the simple, direct BT wrapper for passThreatAndRest.
-// Mirrors the non-BT path exactly:
-//   passFleeAndRest returns true  → threat consumed → SUCCESS (stop the pass)
-//   passFleeAndRest returns false → no threat, safe → FAILURE (fall through to farm)
-//
-// This replaces the old handleThreatTree + re-evaluation hack in pass(). The
-// composable handleThreatTree subtree stays for reference and future use; this
-// action is what pass() actually ticks for the opt-in BT path.
-export function threatAndRestAction(keeper) {
-  const key = 'bt_threat_and_rest';
-  return new Action((bb, slot) => {
-    if (!slot || slot.done === undefined) {
-      slot = { done: false, consumed: false };
-      bb._bt[key] = slot;
-      const k = keeper ?? bb?.session;
-      Promise.resolve()
-        .then(async () => {
-          if (!k) return false;
-          const fn = typeof k.passThreatAndRest === 'function'
-            ? k.passThreatAndRest.bind(k)
-            : (typeof k.passFleeAndRest === 'function' ? k.passFleeAndRest.bind(k) : null);
-          if (!fn) return false;
-          const s = k.s;
-          const c = s?.client;
-          if (!s || !c) return false;
-          const v = c.vitals?.() ?? {};
-          const hp = (v.health?.max ? v.health.value / v.health.max : null);
-          const room = s.world?.room ?? null;
-          return fn(s, c, room, v, hp);
-        })
-        .then(r => { slot.consumed = !!r; slot.done = true; })
-        .catch(() => { slot.consumed = false; slot.done = true; });
-      return RUNNING;
-    }
-    if (!slot.done) return RUNNING;
-    const consumed = slot.consumed;
-    delete bb._bt[key];
-    return consumed ? SUCCESS : FAILURE;
-  }, { key, name: 'threat_and_rest' });
-}
-threatAndRestAction._key = 'bt_threat_and_rest';
 
 // ---------------------------------------------------------------------------
 // FIGHT SUBTREE

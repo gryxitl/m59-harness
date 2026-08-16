@@ -61,7 +61,7 @@ import { loadoutFor, keepTest, sellTest, dropRank, wantsOf, norm,
 // Behavior-tree subtree factories and the blackboard helper. Only getArmedTree is
 // wired today, behind a per-character policy.useBT opt-in. The rest (handle_threat,
 // farm, etc.) come later, gated on the m59-combat-test suite per docs/BT-PLAN.md.
-import { getArmedTree, handleThreatTree, threatAndRestAction, farmNavigationTree, fightRoundsAction, outsideAction, errandAction, updateBlackboard } from './m59-bt-nodes.mjs';
+import { getArmedTree, handleThreatTree, farmNavigationTree, fightRoundsAction, outsideAction, errandAction, updateBlackboard } from './m59-bt-nodes.mjs';
 import { mkdirSync, writeFileSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -6378,8 +6378,8 @@ export class Autopilot {
         this._btBlackboard || (this._btBlackboard = {}),
         { client: c, session: this, policy: this.policy },
       );
-      // threat/rest
-      const threatResult = await threatAndRestAction(this).tick(bb);
+      // threat/rest — composable subtree: doom → flee → rest
+      const threatResult = await handleThreatTree({ keeper: this }).tick(bb);
       if (threatResult === 'RUNNING' || threatResult === 'SUCCESS') return;
       // busy / parked
       const outsideResult = await outsideAction(this).tick(bb);
@@ -7230,114 +7230,67 @@ export class Autopilot {
   }
 
 
-  // ── passThreatAndRest: extracted from passFleeAndRest() ─────────────────
-  // Full threat/survival/rest loop. Called by passFleeAndRest (both paths)
-  // and by threatAndRestAction (BT slot pattern).
+  // ── passThreatAndRest: shell calling passDangerSection + passRestSection ──
+  // Called by passFleeAndRest (non-BT). The BT path ticks handleThreatTree,
+  // which calls passDangerSection and passRestSection directly.
   async passThreatAndRest(s, c, room, v, hp) {
-    // 2. In danger. "Something attackable is adjacent and we are hurt" is the only
-    //    threat signal available — the protocol does not say who is targeting us.
+    // Compute the threat picture once — both sub-sections read it.
     //
-    //    OTHER PLAYERS ARE NOT THREATS, and leaving them in this list is not a
-    //    conservative choice, it is a catastrophic one. Every character is ATTACKABLE,
-    //    so a friendly bot standing next to you is indistinguishable from a monster
-    //    here — and they do not merely stand next to each other, they stack on the
-    //    identical square, because they all walk to the same inn by the same route.
-    //    Isolde sat at 4 of 25 health in the Limping Toad with Aurelia, Malig and
-    //    Yorick all on square (8,15) beside her, concluded she was about to be killed
-    //    by three of her own fleet, and panic-logged-off in a loop that could never
-    //    end: freezing is what stops health coming back, so she woke at 4 health,
-    //    counted the same three, and froze again. Thirty passes, no healing, no
-    //    stall reported, nothing wrong with any single decision.
-    //
-    //    The trade is real and worth stating: a genuinely hostile player will now not
-    //    register here. That costs us a fight we were losing anyway; the other way
-    //    round costs a character that never recovers.
+    // OTHER PLAYERS ARE NOT THREATS. Every character is ATTACKABLE, so a friendly
+    // bot standing next to you is indistinguishable from a monster here — and they
+    // stack on the identical square. Isolde panic-logged-off in a loop for thirty
+    // passes because three fleet-mates were on her square at 4 health. The trade:
+    // a genuinely hostile player will not register here; a character that never
+    // recovers costs more than a fight we were losing anyway.
     const me = c.self;
+    // `near`: adjacent attackable non-player objects (≤2 sq) — the "in a fight" signal.
+    // `hostiles`: whole room — the "safe to sit down" signal. An empty spawn room is a
+    // room between spawns; `near` alone misses the four that are about to wander over.
     const near = me ? [...c.room.objects.values()].filter(o =>
       o.id !== c.selfId && (o.flags & OF.ATTACKABLE) && !(o.flags & OF.PLAYER) &&
       Math.hypot(o.col - me.col, o.row - me.row) <= 2) : [];
-    // EVERYTHING IN THE ROOM THAT CAN SWING, not just what is adjacent right now.
-    // `near` looks two squares out, which is the right question for "am I in a fight"
-    // and the WRONG one for "is this a place to sit down": a room with four monsters
-    // in it and none of them currently beside us read as safe to rest in, and the
-    // first one to wander over got a free run at a character sitting still and not
-    // looking. Most of this fleet's deaths were logged as happening while resting.
     const hostiles = [...c.room.objects.values()].filter(o =>
       o.id !== c.selfId && (o.flags & OF.ATTACKABLE) && !(o.flags & OF.PLAYER));
 
-    // ABOUT TO DIE. Below two hits of margin with something adjacent, withdrawing is
-    // a gamble — the walk takes seconds during which it keeps swinging, and losing
-    // that gamble costs a point of maximum health for ever. Logging off costs a
-    // minute and cannot fail.
-    //
-    // UNLESS WE ARE IN A SPOT THAT WORKS, in which case none of that applies: we are
-    // not about to die at all, we are merely hurt somewhere nothing can reach us. The
-    // correct move is to stop swinging and sit down, which the rest branch below
-    // does. Note the test is holdWorks() and not "we are standing in a corner" —
-    // spending this on an unproven square is exactly the mistake it exists to
-    // prevent, and an unproven square gets us the logoff, which is also how we
-    // survive long enough to prove it.
-    const worstHit = Math.min(30, Math.floor(((v.health?.max ?? 0) + 2) / 3));
+    if (await this.passDangerSection(s, c, v, hp, near, hostiles)) return true;
+    return this.passRestSection(s, c, room, v, hp, near, hostiles);
+  }
+
+  // ── passDangerSection: doomed + flee logic extracted from passThreatAndRest ─
+  // Called by passThreatAndRest (non-BT) and by handleDoomAction/doFleeAction (BT).
+  // Returns true if the pass was consumed (played dead, fled, or ran for town).
+  async passDangerSection(s, c, v, hp, near, hostiles) {
     const sheltered = this.holdWorks();
-    // THE TRIGGER IS DIFFERENT BEHIND A WALL, and it has to be, because the cost of a
-    // false alarm is not zero. Two of the biggest hit the game can land works out at
-    // about 70% of health for these characters — sensible in the open, absurd in a
-    // spot, where the things that could hit us are on squares they cannot reach us
-    // from and we choose which one we swing at. Cedric logged off three times in five
-    // minutes at 71%, and each of those minutes was a minute of not healing and not
-    // killing anything. Below a third of health it is still worth it.
+    const worstHit = Math.min(30, Math.floor(((v.health?.max ?? 0) + 2) / 3));
+    // ABOUT TO DIE. Different threshold behind a wall — a false alarm at 71% in a
+    // working spot cost Cedric three logoffs and three minutes of not healing.
     const doomedAt = this.hold
       ? Math.round((v.health?.max ?? 0) * (this.policy.doomedInSpotBelow ?? 0.35))
       : worstHit * 2;
     const doomed = hp !== null && near.length && v.health?.value != null &&
                    v.health.value <= doomedAt;
     // PLAY DEAD ONLY WHERE STANDING STILL IS ALREADY SAFE. FLEE EVERYWHERE ELSE.
-    //
-    // This was gated on `!sheltered` — it froze precisely when the character was NOT
-    // behind a wall, which is the case where freezing helps least and costs most. A
-    // freeze keeps the monsters off by not acting, and the same flag keeps HealthTimer
-    // off with it, so the character comes back with the same health it went down with,
-    // still standing in the open, still surrounded. That is why playDead needs its own
-    // "refusing to freeze again — it is not helping" guard: the tactic was being used in
-    // the one place it cannot work.
-    //
-    // In a safe spot it is a different move entirely. Nothing can reach the square, so
-    // the character can turn in place — which sets PFLAG_MOVED_SINCE_ENTRY without giving
-    // up the square — and heal back to full while the room mills about outside its reach.
-    //
-    // Out in the open with something adjacent, there is no version of standing still that
-    // ends well. The only thing that changes the situation is distance: run for the
-    // nearest town, become combat-ready, come back. townTripIfCornered already knows how
-    // to find it.
+    // A freeze in the open recovers no health and leaves us surrounded; only distance
+    // helps there. In a safe spot a turn in place is the whole move.
     if (doomed && this.policy.panicLogoff !== false) {
       if (sheltered) {
         if (await this.playDead('at ' + v.health.value + ' health with ' + near.length +
-                                ' adjacent, behind a wall that holds')) return;
+                                ' adjacent, behind a wall that holds')) return true;
       } else {
         this.note('hurt in the open — running for a town rather than playing dead', {
           health: v.health.value, adjacent: near.length, worst_single_hit: worstHit,
           why: 'a freeze recovers no health and leaves us exactly where we were, in reach ' +
                'of everything that put us here. Only distance changes this fight' });
         this.doing = 'travelling';
-        if (await this.townTripIfCornered().catch(() => false)) return;
-        // Could not reach one. Fall through to the withdraw/rest branches below rather
-        // than freezing, which is the thing we just decided does not work here.
+        if (await this.townTripIfCornered().catch(() => false)) return true;
+        // Could not reach one. Fall through to the withdraw/rest branches below.
       }
     }
 
-    // WITHDRAWING IS FOR THE OPEN FLOOR. Walking away is the only thing a plain
-    // character can do about a fight it is losing — out in the open. In a working
-    // safe spot it is the single worst available move: it costs the wall, hands every
-    // camped monster its attacks back, and spends several seconds being hit to reach
-    // a square that is no safer than the one it left. Staying put and not swinging
-    // stops the damage immediately and for free.
+    // WITHDRAWING IS FOR THE OPEN FLOOR. In a working safe spot it is the worst
+    // available move — it costs the wall for a square no safer than this one.
     if (hp !== null && hp < this.policy.fleeBelow && near.length && !sheltered) {
       this.tally.withdrawals++;
-      // ALL THE WAY, NOT FOUR SQUARES. This called withdraw(), a move to a wall a few
-      // squares off, and the town trip above only engages after THREE flees in a row
-      // (townTripIfCornered) — so the first two flees from a losing fight in the open
-      // were a shuffle that nothing was fooled by. Monster vision is 4 + difficulty/2
-      // (monster.kod:1676): four squares is inside every creature in the game.
       this.note('running for safety', {
         health: Math.round(hp * 100) + '%', from: near.map(o => c.rsc.get(o.nameRsc)),
         why: 'below the flee threshold in the open — distance is the only thing that ' +
@@ -7357,22 +7310,20 @@ export class Autopilot {
              'swing first. Stopping is the whole withdrawal.',
         next: 'rest to full here, then take the fight again from the top or leave on our own terms' });
     }
+    return false;
+  }
 
-    // SIT DOWN PROPERLY THE MOMENT WE ARRIVE SOMEWHERE SAFE.
-    //
-    // Not when the resting eventually starts — on entry. The walk to a clear patch of
-    // floor is what sets PFLAG_MOVED_SINCE_ENTRY, and until it is set the character
-    // recovers no health at all no matter how long it sits there. A bot that walks
-    // into an inn and stops is not resting, it is waiting, and nothing in its own
-    // journal will ever say so.
-    //
-    // It also un-stacks the pile. They all arrive on the same square by the same
-    // route, and since every character is attackable, a heap of friendly bots is
-    // indistinguishable from a mob to every bot in it.
+  // ── passRestSection: settle + safe-spot-seek + rest gate ─────────────────────
+  // Called by passThreatAndRest (non-BT) and by restAndRecoverAction (BT).
+  // Returns true if the pass was consumed (resting, leaving, or trapped).
+  async passRestSection(s, c, room, v, hp, near, hostiles) {
+    const sheltered = this.holdWorks();
+
+    // SIT DOWN PROPERLY ON ARRIVAL. The walk sets PFLAG_MOVED_SINCE_ENTRY — without
+    // it health regeneration does not start at all. Also un-stacks the pile of bots.
     if (this.sanctuary(room) && this.settledIn !== room?.num &&
         ((hp !== null && hp < 0.95) || (vigorPct(v) ?? 1) < REST_VIGOR_CAP))
       await this.settle('arrived somewhere safe and not at full strength').catch(() => {});
-    // Leaving a room means the next safe one gets its own seat, and its own attempts.
     if (this.settledIn != null && room?.num !== this.settledIn && !this.sanctuary(room)) {
       this.settledIn = null;
       this.settleTries = 0;
