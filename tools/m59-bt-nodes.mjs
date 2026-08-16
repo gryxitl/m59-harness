@@ -624,6 +624,48 @@ export function farmNavigationTree(opts = {}) {
   return navigateToPreyAction(keeper);
 }
 
+// threatAndRestAction: the simple, direct BT wrapper for passThreatAndRest.
+// Mirrors the non-BT path exactly:
+//   passFleeAndRest returns true  → threat consumed → SUCCESS (stop the pass)
+//   passFleeAndRest returns false → no threat, safe → FAILURE (fall through to farm)
+//
+// This replaces the old handleThreatTree + re-evaluation hack in pass(). The
+// composable handleThreatTree subtree stays for reference and future use; this
+// action is what pass() actually ticks for the opt-in BT path.
+export function threatAndRestAction(keeper) {
+  const key = 'bt_threat_and_rest';
+  return new Action((bb, slot) => {
+    if (!slot || slot.done === undefined) {
+      slot = { done: false, consumed: false };
+      bb._bt[key] = slot;
+      const k = keeper ?? bb?.session;
+      Promise.resolve()
+        .then(async () => {
+          if (!k) return false;
+          const fn = typeof k.passThreatAndRest === 'function'
+            ? k.passThreatAndRest.bind(k)
+            : (typeof k.passFleeAndRest === 'function' ? k.passFleeAndRest.bind(k) : null);
+          if (!fn) return false;
+          const s = k.s;
+          const c = s?.client;
+          if (!s || !c) return false;
+          const v = c.vitals?.() ?? {};
+          const hp = (v.health?.max ? v.health.value / v.health.max : null);
+          const room = s.world?.room ?? null;
+          return fn(s, c, room, v, hp);
+        })
+        .then(r => { slot.consumed = !!r; slot.done = true; })
+        .catch(() => { slot.consumed = false; slot.done = true; });
+      return RUNNING;
+    }
+    if (!slot.done) return RUNNING;
+    const consumed = slot.consumed;
+    delete bb._bt[key];
+    return consumed ? SUCCESS : FAILURE;
+  }, { key, name: 'threat_and_rest' });
+}
+threatAndRestAction._key = 'bt_threat_and_rest';
+
 // ---------------------------------------------------------------------------
 // FIGHT SUBTREE
 //
@@ -684,6 +726,61 @@ fightRoundsAction._key = 'bt_fight_rounds';
 // `bb.client` for state, but GOAP writes strategic fields (assigned_room,
 // purpose, etc.) here so a single helper can rebuild the snapshot in one
 // place.
+// ── outsideAction ─────────────────────────────────────────────────────────
+// Wraps Autopilot.passOutside() in the slot pattern.
+// SUCCESS = pass consumed (busy or parked), FAILURE = neither active.
+export function outsideAction(keeper) {
+  const key = 'bt_outside';
+  return new Action((bb, slot) => {
+    if (!slot || slot.done === undefined) {
+      slot = { done: false, consumed: false };
+      bb._bt[key] = slot;
+      const k = keeper ?? bb?.session;
+      Promise.resolve()
+        .then(async () => {
+          if (!k || typeof k.passOutside !== 'function') return false;
+          return k.passOutside();
+        })
+        .then(r => { slot.consumed = !!r; slot.done = true; })
+        .catch(() => { slot.consumed = false; slot.done = true; });
+      return RUNNING;
+    }
+    if (!slot.done) return RUNNING;
+    const consumed = slot.consumed;
+    delete bb._bt[key];
+    return consumed ? SUCCESS : FAILURE;
+  }, { key, name: 'outside' });
+}
+outsideAction._key = 'bt_outside';
+
+// ── errandAction ──────────────────────────────────────────────────────────
+// Wraps Autopilot.passErrand() in the slot pattern.
+// SUCCESS = pass consumed (errand, bank, delivery, medic, or idle hibernate),
+// FAILURE = nothing consumed (fall through to farm).
+export function errandAction(keeper) {
+  const key = 'bt_errand';
+  return new Action((bb, slot) => {
+    if (!slot || slot.done === undefined) {
+      slot = { done: false, consumed: false };
+      bb._bt[key] = slot;
+      const k = keeper ?? bb?.session;
+      Promise.resolve()
+        .then(async () => {
+          if (!k || typeof k.passErrand !== 'function') return false;
+          return k.passErrand();
+        })
+        .then(r => { slot.consumed = !!r; slot.done = true; })
+        .catch(() => { slot.consumed = false; slot.done = true; });
+      return RUNNING;
+    }
+    if (!slot.done) return RUNNING;
+    const consumed = slot.consumed;
+    delete bb._bt[key];
+    return consumed ? SUCCESS : FAILURE;
+  }, { key, name: 'errand' });
+}
+errandAction._key = 'bt_errand';
+
 export function updateBlackboard(bb, { client, session, policy } = {}) {
   if (!bb) return bb;
   if (client !== undefined) bb.client = client;

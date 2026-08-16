@@ -61,7 +61,7 @@ import { loadoutFor, keepTest, sellTest, dropRank, wantsOf, norm,
 // Behavior-tree subtree factories and the blackboard helper. Only getArmedTree is
 // wired today, behind a per-character policy.useBT opt-in. The rest (handle_threat,
 // farm, etc.) come later, gated on the m59-combat-test suite per docs/BT-PLAN.md.
-import { getArmedTree, handleThreatTree, farmNavigationTree, fightRoundsAction, updateBlackboard } from './m59-bt-nodes.mjs';
+import { getArmedTree, handleThreatTree, threatAndRestAction, farmNavigationTree, fightRoundsAction, outsideAction, errandAction, updateBlackboard } from './m59-bt-nodes.mjs';
 import { mkdirSync, writeFileSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -6527,42 +6527,38 @@ export class Autopilot {
     if (await this.passArm(s, c)) return;
     if (await this.passPlaybook()) return;
 
-    // BEHAVIOR-TREE THREAT/SURVIVAL SUBTREE (opt-in via policy.useBT)
+    // BEHAVIOR-TREE THREAT/SURVIVAL PATH (opt-in via policy.useBT)
     //
-    // When useBT is true, delegate the flee/rest/safe-spot decision to the BT
-    // rather than running passFleeAndRest directly. The BT tree delegates every
-    // real decision back to the same keeper methods (retreatToSafety, playDead,
-    // townTripIfCornered, passFleeAndRest) so no combat logic lives in the nodes.
-    //
-    // Returns RUNNING while an async keeper method is in flight. Returns SUCCESS
-    // when the character is safe (not_in_danger arm) or when the threat pass has
-    // been consumed. Returns FAILURE never (rest_and_recover always succeeds).
+    // threatAndRestAction wraps passThreatAndRest (≡ passFleeAndRest) in the
+    // slot pattern. SUCCESS = threat handled, stop the pass. FAILURE = safe,
+    // fall through to farm. Mirrors the non-BT path exactly.
     if (this.policy?.useBT === true) {
       const bb = updateBlackboard(
         this._btBlackboard || (this._btBlackboard = {}),
         { client: c, session: this, policy: this.policy },
       );
-      const threatTree = handleThreatTree({ keeper: this });
-      const threatResult = await threatTree.tick(bb);
-      if (threatResult === 'RUNNING' || Object.keys(bb._bt || {}).length > 0) return;
-      // SUCCESS from not_in_danger: carry on to farm below.
-      // SUCCESS from rest_and_recover or flee arms: threat tick consumed, stop here.
-      // We check whether the not_in_danger arm fired by re-evaluating the condition.
-      const hp2 = (() => { const v2 = c.vitals?.(); return v2?.health?.max ? v2.health.value / v2.health.max : null; })();
-      const fleeBelow = this.policy.fleeBelow ?? 0.5;
-      const nearAny = c.self ? [...(c.room?.objects?.values?.() ?? [])].some(o =>
-        o.id !== c.selfId && (o.flags & OF.ATTACKABLE) && !(o.flags & OF.PLAYER) &&
-        Math.hypot(o.col - c.self.col, o.row - c.self.row) <= 2) : false;
-      if (hp2 !== null && hp2 >= fleeBelow && !nearAny) {
-        // not_in_danger fired — pass through to farm/errand below (do NOT return).
-      } else {
-        return;   // flee or rest arm handled this tick
-      }
+      const result = await threatAndRestAction(this).tick(bb);
+      if (result === 'RUNNING') return;
+      if (result === 'SUCCESS') return;   // threat consumed
+      // FAILURE: safe — fall through to farm
     } else {
       if (await this.passFleeAndRest(s, c, room, v, hp)) return;
     }
-    if (await this.passOutside()) return;
-    if (await this.passErrand()) return;
+    if (this.policy?.useBT === true) {
+      const bb = updateBlackboard(
+        this._btBlackboard || (this._btBlackboard = {}),
+        { client: c, session: this, policy: this.policy },
+      );
+      const outsideResult = await outsideAction(this).tick(bb);
+      if (outsideResult === 'RUNNING' || outsideResult === 'SUCCESS') return;
+      // FAILURE: not busy or parked — fall through to errand
+      const errandResult = await errandAction(this).tick(bb);
+      if (errandResult === 'RUNNING' || errandResult === 'SUCCESS') return;
+      // FAILURE: no errand — fall through to farm
+    } else {
+      if (await this.passOutside()) return;
+      if (await this.passErrand()) return;
+    }
     await this.passFarm(s, c, room, v, hp);
   }
 
@@ -7298,6 +7294,14 @@ export class Autopilot {
 
   // ── passFleeAndRest: extracted from pass() ────────────────────────────────
   async passFleeAndRest(s, c, room, v, hp) {
+    return this.passThreatAndRest(s, c, room, v, hp);
+  }
+
+
+  // ── passThreatAndRest: extracted from passFleeAndRest() ─────────────────
+  // Full threat/survival/rest loop. Called by passFleeAndRest (both paths)
+  // and by threatAndRestAction (BT slot pattern).
+  async passThreatAndRest(s, c, room, v, hp) {
     // 2. In danger. "Something attackable is adjacent and we are hurt" is the only
     //    threat signal available — the protocol does not say who is targeting us.
     //
