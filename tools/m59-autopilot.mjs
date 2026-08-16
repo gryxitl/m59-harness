@@ -8236,9 +8236,8 @@ export class Autopilot {
   }
 
   // ── passFightRounds: extracted fight section of passFarm() ───────────────
-  // Called by the non-BT path directly and by fightRoundsAction (BT path).
-  // Receives the same args as passFarm and owns everything from the hunt-guard
-  // through to the fight result logging.
+  // Called by passFarm (non-BT path) and by passFarm via fightRoundsAction (BT path).
+  // Owns everything from the hunt-guard through to the fight result logging.
   async passFightRounds(s, c, room, v, hp) {
       if (!this.policy.hunt) {
         // No quarry named is the same situation as idle mode: rest up rather than

@@ -698,15 +698,15 @@ export function fightRoundsAction(keeper) {
       const k = keeper ?? bb?.session;
       Promise.resolve()
         .then(async () => {
-          if (!k || typeof k.passFightRounds !== 'function') return false;
+          // Delegate to passFarm so provision() and navigateToPreyRoom() also run.
+          if (!k || typeof k.passFarm !== 'function') return false;
           const s = k.s;
           const c = s?.client;
           if (!s || !c) return false;
           const v = c.vitals?.() ?? {};
           const hp = (v.health?.max ? v.health.value / v.health.max : null);
           const room = s.world?.room ?? null;
-          await k.passFightRounds(s, c, room, v, hp);
-          // passFightRounds returns undefined; success is "we ran it"
+          await k.passFarm(s, c, room, v, hp);
           return !!(k.policy?.hunt);
         })
         .then(r => { slot.ok = !!r; slot.done = true; })
