@@ -7638,6 +7638,7 @@ const TOOLS = [
         description: 'drop junk and weapons the server has refused as broken, default true. A ' +
                      'broken weapon is NOT renamed, so it otherwise outranks the working one for ever' },
       roam: { type: 'boolean', description: 'when the room is cleared, move to a neighbouring one instead of waiting for respawns. Off by default because it changes where the character is.' },
+      use_bt: { type: 'boolean', description: 'opt this character into the behavior-tree keeper path instead of the priority ladder. The BT subtrees are gated on the 471 passing combat tests. Default false.' },
       fight_rounds: { type: 'number',
         description: 'how many rounds to fight a target before breaking off. Default 30. ' +
           'Increase for characters without weapon skills who deal low damage per swing.' },
@@ -7968,6 +7969,7 @@ const TOOLS = [
       if (a.purpose !== undefined) p.policy.purpose = a.purpose == null ? null : String(a.purpose);
       if (a.goals !== undefined) p.policy.goals = Array.isArray(a.goals) ? a.goals : [];
       if (a.roam_limit !== undefined) p.policy.roamLimit = Number(a.roam_limit);
+      if (a.use_bt !== undefined) p.policy.useBT = !!a.use_bt;
       if (a.decide_ms !== undefined) p.policy.decideMs = Math.max(250, Number(a.decide_ms));
       if (a.resync_ms !== undefined) p.policy.resyncMs = Math.max(1000, Number(a.resync_ms));
       // PAIRING IS TWO THINGS AND BOTH HAVE TO HAPPEN: the instruction on the policy,

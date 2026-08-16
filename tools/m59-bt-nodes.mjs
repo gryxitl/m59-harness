@@ -283,13 +283,352 @@ export function getArmedTree(opts = {}) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// THREAT / SURVIVAL SUBTREE
+//
+// Covers the same ground as passFleeAndRest() in m59-autopilot.mjs. The BT
+// version adds no new logic — it delegates every decision to the existing
+// keeper methods so the proven combat code stays in one place and is tested
+// by the same 383 m59-combat-test.mjs cases.
+//
+// Shape:
+//
+//   handleThreat
+//     Selector
+//       Condition: not_in_danger          (nothing adjacent and hp fine)
+//       Sequence: doomed_response
+//           Condition: is_doomed          (at doomedAt threshold with threats adjacent)
+//           Action:    handle_doom        (playDead or townTripIfCornered, per keeper)
+//       Sequence: flee_response
+//           Condition: should_flee        (hp < fleeBelow with threats near)
+//           Action:    do_flee            (retreatToSafety or break-off-in-spot)
+//       Action: rest_and_recover          (passFleeAndRest rest branch, always runs)
+//
+// The last arm always returns SUCCESS so the tree does not fall through into
+// the farm path while the character is recovering. SUCCESS here means "threat
+// situation handled for this tick" — which for the rest branch means "resting
+// or nothing needs doing right now."
+//
+// The whole tree is synchronous from the caller's perspective. Each action
+// fires keeper async methods as fire-and-forget (via the slot pattern) and
+// returns RUNNING while they complete, identical to how getArmedTree works.
+// ---------------------------------------------------------------------------
+
+import { OF } from './m59-parse.mjs';
+
+// -- Condition helpers -------------------------------------------------------
+
+// Read the live threat picture off the blackboard the same way passFleeAndRest
+// does: adjacent attackable non-player objects. The bb.client is the live
+// MeridianClient; bb.session is the keeper (an Autopilot instance).
+function _nearThreats(bb) {
+  const c = bb?.client;
+  const me = c?.self;
+  if (!c || !me) return [];
+  return [...(c.room?.objects?.values?.() ?? [])].filter(o =>
+    o.id !== c.selfId &&
+    (o.flags & OF.ATTACKABLE) &&
+    !(o.flags & OF.PLAYER) &&
+    Math.hypot(o.col - me.col, o.row - me.row) <= 2);
+}
+
+function _healthPct(bb) {
+  const v = bb?.client?.vitals?.();
+  if (!v?.health?.max) return null;
+  return v.health.value / v.health.max;
+}
+
+function _isDoomedAt(bb) {
+  const keeper = bb?.session;
+  const c = bb?.client;
+  const v = c?.vitals?.();
+  const near = _nearThreats(bb);
+  if (!near.length || !v?.health?.value) return false;
+  const max = v.health.max ?? 0;
+  const sheltered = keeper?.holdWorks?.() ?? false;
+  const doomedAt = keeper?.hold
+    ? Math.round(max * ((keeper.policy?.doomedInSpotBelow ?? 0.35)))
+    : Math.min(30, Math.floor((max + 2) / 3)) * 2;
+  return v.health.value <= doomedAt;
+}
+
+// -- Condition factories -----------------------------------------------------
+
+// not_in_danger: SUCCESS when hp is fine AND nothing attackable is adjacent.
+// When this succeeds the whole handleThreat selector returns SUCCESS immediately
+// and the pass carries on to farm/errand.
+export function notInDangerCondition() {
+  return new Condition(bb => {
+    const hp = _healthPct(bb);
+    const keeper = bb?.session;
+    if (hp === null) return true;              // can't read vitals: assume safe
+    const fleeBelow = keeper?.policy?.fleeBelow ?? 0.5;
+    const near = _nearThreats(bb);
+    return hp >= fleeBelow && !near.length;
+  });
+}
+
+// is_doomed: SUCCESS when below the doom threshold with threats adjacent.
+export function isDoomedCondition() {
+  return new Condition(bb => _isDoomedAt(bb));
+}
+
+// should_flee: SUCCESS when hp < fleeBelow AND threats are adjacent.
+// Gated AFTER is_doomed so the flee branch only runs when not already doomed.
+export function shouldFleeCondition() {
+  return new Condition(bb => {
+    const hp = _healthPct(bb);
+    if (hp === null) return false;
+    const keeper = bb?.session;
+    const fleeBelow = keeper?.policy?.fleeBelow ?? 0.5;
+    return hp < fleeBelow && _nearThreats(bb).length > 0;
+  });
+}
+
+// -- Action factories --------------------------------------------------------
+
+// handle_doom: delegates to keeper.playDead (if sheltered) or
+// keeper.townTripIfCornered. The keeper methods already contain the full
+// decision tree about which is appropriate. Returns SUCCESS when the keeper
+// handled the doom (returned true), FAILURE if it could not.
+export function handleDoomAction(keeper) {
+  const key = 'bt_handle_doom';
+  return new Action((bb, slot) => {
+    if (!slot || slot.done === undefined) {
+      slot = { done: false, ok: false };
+      bb._bt[key] = slot;
+      const k = keeper ?? bb?.session;
+      const c = bb?.client;
+      const v = c?.vitals?.() ?? {};
+      const near = _nearThreats(bb);
+      const sheltered = k?.holdWorks?.() ?? false;
+      Promise.resolve()
+        .then(() => {
+          if (!k) return false;
+          if (sheltered) {
+            const label = 'at ' + (v.health?.value ?? '?') + ' health with ' +
+                          near.length + ' adjacent, behind a wall that holds';
+            return typeof k.playDead === 'function' ? k.playDead(label) : false;
+          }
+          if (typeof k.townTripIfCornered === 'function') {
+            k.note?.('hurt in the open — running for a town rather than playing dead', {
+              health: v.health?.value, adjacent: near.length,
+              why: 'a freeze recovers no health and leaves us exactly where we were' });
+            k.doing = 'travelling';
+            return k.townTripIfCornered().catch(() => false);
+          }
+          return false;
+        })
+        .then(r => { slot.ok = !!r; slot.done = true; })
+        .catch(() => { slot.ok = false; slot.done = true; });
+      return RUNNING;
+    }
+    if (!slot.done) return RUNNING;
+    const ok = slot.ok;
+    delete bb._bt[key];
+    return ok ? SUCCESS : FAILURE;
+  }, { key, name: 'handle_doom' });
+}
+handleDoomAction._key = 'bt_handle_doom';
+
+// do_flee: delegates to keeper.retreatToSafety (open floor) or records a
+// mulligan and breaks off without moving (sheltered). Mirrors the two branches
+// in passFleeAndRest exactly.
+export function doFleeAction(keeper) {
+  const key = 'bt_do_flee';
+  return new Action((bb, slot) => {
+    if (!slot || slot.done === undefined) {
+      slot = { done: false, ok: false };
+      bb._bt[key] = slot;
+      const k = keeper ?? bb?.session;
+      const c = bb?.client;
+      const v = c?.vitals?.() ?? {};
+      const near = _nearThreats(bb);
+      const hp = _healthPct(bb);
+      const sheltered = k?.holdWorks?.() ?? false;
+      Promise.resolve()
+        .then(() => {
+          if (!k) return false;
+          if (sheltered) {
+            k.tally.mulligans = (k.tally.mulligans || 0) + 1;
+            k.note?.('breaking off without moving', {
+              health: hp === null ? null : Math.round(hp * 100) + '%',
+              crowd: near.length,
+              where: k.hold ? { col: k.hold.col, row: k.hold.row } : null,
+              why: 'we are in a spot that has held under attack, so nothing can hit us unless we ' +
+                   'swing first. Stopping is the whole withdrawal.' });
+            return true;
+          }
+          k.tally.withdrawals = (k.tally.withdrawals || 0) + 1;
+          k.note?.('running for safety', {
+            health: hp === null ? null : Math.round(hp * 100) + '%',
+            from: near.map(o => c.rsc?.get?.(o.nameRsc)),
+            why: 'below the flee threshold in the open' });
+          return typeof k.retreatToSafety === 'function'
+            ? k.retreatToSafety({
+                because: 'below the flee threshold in the open',
+                from: near.map(o => c.rsc?.get?.(o.nameRsc)),
+              })
+            : false;
+        })
+        .then(r => { slot.ok = !!r; slot.done = true; })
+        .catch(() => { slot.ok = false; slot.done = true; });
+      return RUNNING;
+    }
+    if (!slot.done) return RUNNING;
+    const ok = slot.ok;
+    delete bb._bt[key];
+    return ok ? SUCCESS : FAILURE;
+  }, { key, name: 'do_flee' });
+}
+doFleeAction._key = 'bt_do_flee';
+
+// rest_and_recover: delegates passFleeAndRest's rest + settle + safe-spot-seek
+// to the keeper. This is the always-runs arm — it handles settle-on-entry,
+// safe-spot seeking when hurt, and actual resting. Always returns SUCCESS to
+// signal "threat tick consumed" so the pass does not fall through to farm.
+// When the keeper has nothing to do it returns quickly.
+export function restAndRecoverAction(keeper) {
+  const key = 'bt_rest_and_recover';
+  return new Action((bb, slot) => {
+    if (!slot || slot.done === undefined) {
+      slot = { done: false };
+      bb._bt[key] = slot;
+      const k = keeper ?? bb?.session;
+      const c = bb?.client;
+      const s = k?.s;
+      const room = s?.world?.room ?? null;
+      const v = c?.vitals?.() ?? {};
+      const hp = _healthPct(bb);
+      Promise.resolve()
+        .then(() => {
+          if (!k || typeof k.passFleeAndRest !== 'function') return;
+          // Delegate only the rest/settle half — flee/doom are handled above.
+          // We pass the same args passFleeAndRest receives; it will return early
+          // on the flee/doom branches because those conditions are no longer met
+          // (the arms above handled them).
+          return k.passFleeAndRest(s, c, room, v, hp);
+        })
+        .then(() => { slot.done = true; })
+        .catch(() => { slot.done = true; });
+      return RUNNING;
+    }
+    if (!slot.done) return RUNNING;
+    delete bb._bt[key];
+    return SUCCESS;   // always: "we handled the threat pass for this tick"
+  }, { key, name: 'rest_and_recover' });
+}
+restAndRecoverAction._key = 'bt_rest_and_recover';
+
+// -- Subtree factory ---------------------------------------------------------
+
+// handleThreatTree: the threat/survival subtree.
+//
+// Pass `{ keeper }` (the Autopilot instance). Tick against a blackboard shaped
+// like { client, session } where session IS the keeper.
+//
+// Returns:
+//   SUCCESS  — no threat, or threat handled (character is resting / fleeing)
+//   RUNNING  — an async keeper method is in flight (flee, doom, rest)
+//   FAILURE  — should never happen; the rest_and_recover arm always succeeds
+export function handleThreatTree(opts = {}) {
+  const keeper = opts.keeper ?? opts.session?.keeper;
+  if (!keeper) {
+    throw new Error('handleThreatTree requires opts.keeper (or opts.session.keeper)');
+  }
+  return selector(
+    notInDangerCondition(),
+    sequence(
+      isDoomedCondition(),
+      handleDoomAction(keeper),
+    ),
+    sequence(
+      shouldFleeCondition(),
+      doFleeAction(keeper),
+    ),
+    restAndRecoverAction(keeper),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// FARM NAVIGATION SUBTREE
+//
+// Covers the "navigate to the right prey room" decision extracted from
+// passFarm() into keeper.navigateToPreyRoom(). The BT version is a single
+// Action that delegates entirely to that method — no routing logic lives here.
+//
+// Shape:
+//
+//   farmNavigation
+//     Selector
+//       Condition: in_prey_room      (prey spawns here AND on assignment)
+//       Action:    navigate_to_prey  (calls keeper.navigateToPreyRoom)
+//
+// The selector's first arm short-circuits when we are already in a good room
+// so the action is not called on every pass. The action returns:
+//   SUCCESS  — travel completed (arrived at the target room)
+//   RUNNING  — travel is in flight
+//   FAILURE  — no known room generates the prey (no known path)
+// ---------------------------------------------------------------------------
+
+// navigate_to_prey: delegates to keeper.navigateToPreyRoom(room).
+// Returns SUCCESS when travel arrived, FAILURE when no room is reachable,
+// RUNNING while travelling.
+export function navigateToPreyAction(keeper) {
+  const key = 'bt_navigate_to_prey';
+  return new Action((bb, slot) => {
+    if (!slot || slot.done === undefined) {
+      slot = { done: false, travelled: false, arrived: false };
+      bb._bt[key] = slot;
+      const k = keeper ?? bb?.session;
+      const room = k?.s?.world?.room ?? null;
+      Promise.resolve()
+        .then(() => {
+          if (!k || typeof k.navigateToPreyRoom !== 'function') return { consumed: false };
+          return k.navigateToPreyRoom(room).then(consumed => ({ consumed }));
+        })
+        .then(({ consumed }) => {
+          slot.consumed = consumed;
+          slot.done = true;
+        })
+        .catch(() => { slot.consumed = false; slot.done = true; });
+      return RUNNING;
+    }
+    if (!slot.done) return RUNNING;
+    const consumed = slot.consumed;
+    delete bb._bt[key];
+    // consumed=true: the method handled this pass (travelling or blocked). Map to SUCCESS
+    // so the farm loop does not also try to fight this tick.
+    // consumed=false: already in the right room. Map to FAILURE so the selector falls
+    // through and the fight branch runs.
+    return consumed ? SUCCESS : FAILURE;
+  }, { key, name: 'navigate_to_prey' });
+}
+navigateToPreyAction._key = 'bt_navigate_to_prey';
+
+// farmNavigationTree: the room-navigation subtree.
+//
+// Returns SUCCESS when a travel pass was consumed (moving to the right room).
+// Returns FAILURE when we are already in a suitable room (caller should fight).
+// Returns RUNNING while travel is in flight.
+//
+// The navigateToPreyAction encodes both outcomes: it delegates to
+// keeper.navigateToPreyRoom() which returns false when the room is already
+// right (→ FAILURE here, meaning "no navigation needed, proceed") and true
+// when it consumed the pass (→ SUCCESS, meaning "this tick was spent travelling").
+export function farmNavigationTree(opts = {}) {
+  const keeper = opts.keeper ?? opts.session?.keeper;
+  if (!keeper) {
+    throw new Error('farmNavigationTree requires opts.keeper (or opts.session.keeper)');
+  }
+  return navigateToPreyAction(keeper);
+}
+
 // updateBlackboard: a thin convenience that snapshots the live client into a
 // plain blackboard object before each tick. Trees should never reach behind
 // `bb.client` for state, but GOAP writes strategic fields (assigned_room,
 // purpose, etc.) here so a single helper can rebuild the snapshot in one
-// place. Currently unused by getArmedTree -- the conditions read the live
-// client directly -- but exported for the wiring step (refactor that lives
-// behind the next task).
+// place.
 export function updateBlackboard(bb, { client, session, policy } = {}) {
   if (!bb) return bb;
   if (client !== undefined) bb.client = client;

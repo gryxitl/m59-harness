@@ -61,7 +61,7 @@ import { loadoutFor, keepTest, sellTest, dropRank, wantsOf, norm,
 // Behavior-tree subtree factories and the blackboard helper. Only getArmedTree is
 // wired today, behind a per-character policy.useBT opt-in. The rest (handle_threat,
 // farm, etc.) come later, gated on the m59-combat-test suite per docs/BT-PLAN.md.
-import { getArmedTree, updateBlackboard } from './m59-bt-nodes.mjs';
+import { getArmedTree, handleThreatTree, farmNavigationTree, updateBlackboard } from './m59-bt-nodes.mjs';
 import { mkdirSync, writeFileSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -6526,7 +6526,41 @@ export class Autopilot {
     if (await this.passUnderworld(s, c, room)) return;
     if (await this.passArm(s, c)) return;
     if (await this.passPlaybook()) return;
-    if (await this.passFleeAndRest(s, c, room, v, hp)) return;
+
+    // BEHAVIOR-TREE THREAT/SURVIVAL SUBTREE (opt-in via policy.useBT)
+    //
+    // When useBT is true, delegate the flee/rest/safe-spot decision to the BT
+    // rather than running passFleeAndRest directly. The BT tree delegates every
+    // real decision back to the same keeper methods (retreatToSafety, playDead,
+    // townTripIfCornered, passFleeAndRest) so no combat logic lives in the nodes.
+    //
+    // Returns RUNNING while an async keeper method is in flight. Returns SUCCESS
+    // when the character is safe (not_in_danger arm) or when the threat pass has
+    // been consumed. Returns FAILURE never (rest_and_recover always succeeds).
+    if (this.policy?.useBT === true) {
+      const bb = updateBlackboard(
+        this._btBlackboard || (this._btBlackboard = {}),
+        { client: c, session: this, policy: this.policy },
+      );
+      const threatTree = handleThreatTree({ keeper: this });
+      const threatResult = await threatTree.tick(bb);
+      if (threatResult === 'RUNNING' || Object.keys(bb._bt || {}).length > 0) return;
+      // SUCCESS from not_in_danger: carry on to farm below.
+      // SUCCESS from rest_and_recover or flee arms: threat tick consumed, stop here.
+      // We check whether the not_in_danger arm fired by re-evaluating the condition.
+      const hp2 = (() => { const v2 = c.vitals?.(); return v2?.health?.max ? v2.health.value / v2.health.max : null; })();
+      const fleeBelow = this.policy.fleeBelow ?? 0.5;
+      const nearAny = c.self ? [...(c.room?.objects?.values?.() ?? [])].some(o =>
+        o.id !== c.selfId && (o.flags & OF.ATTACKABLE) && !(o.flags & OF.PLAYER) &&
+        Math.hypot(o.col - c.self.col, o.row - c.self.row) <= 2) : false;
+      if (hp2 !== null && hp2 >= fleeBelow && !nearAny) {
+        // not_in_danger fired — pass through to farm/errand below (do NOT return).
+      } else {
+        return;   // flee or rest arm handled this tick
+      }
+    } else {
+      if (await this.passFleeAndRest(s, c, room, v, hp)) return;
+    }
     if (await this.passOutside()) return;
     if (await this.passErrand()) return;
     await this.passFarm(s, c, room, v, hp);
@@ -8034,6 +8068,77 @@ export class Autopilot {
     return false;
   }
 
+  // ── navigateToPreyRoom: extracted from passFarm() ───────────────────────
+  // Returns true if it consumed the pass (travelling or blocked), false if
+  // we are already in a suitable room and the caller should carry on to fight.
+  async navigateToPreyRoom(room) {
+    if (!room) return false;
+    const spawns0 = loadSpawns(SPAWN_FILE);
+    const here = (spawns0?.rooms?.[room.num] || []).filter(x => x.huntable);
+    const isPrey0 = huntMatcher(spawns0, this.policy.hunt);
+    const preyHere = here.some(x => isPrey0(x.creature));
+    const deniedFarmRooms = farmRoomDenials(this.noWallRooms, this.cappedRooms);
+    const assignmentDenied = this.policy.assignedRoom != null
+      ? deniedFarmRooms.get(this.policy.assignedRoom) : null;
+    const offAssignment = shouldRelocateToAssignedRoom(this.policy, room, deniedFarmRooms);
+    if (preyHere && assignmentDenied && this.warnedAssignmentDeferred !== this.policy.assignedRoom) {
+      this.warnedAssignmentDeferred = this.policy.assignedRoom;
+      this.note('working an alternate room while the assignment is deferred', {
+        room: room.name, room_num: room.num,
+        assigned_room: this.policy.assignedRoom,
+        why_assignment_deferred: assignmentDenied,
+        why: 'the assigned room was denied by this keeper\'s bounded room evidence; ' +
+             'sending it straight back would oscillate between assignment and refusal',
+        scope: 'session-only — the configured assignment is unchanged and a fresh keeper ' +
+               'can reconsider it',
+      });
+    }
+    if (!preyHere || offAssignment) {
+      const known = this.preyRooms(room);
+      if (known.length) {
+        const target = known[0];
+        // NOT WHILE HURT OR EMPTY-HANDED. Eleven of the last fifty deaths set off on
+        // this exact line.
+        if (!await this.readyToLeaveSanctuary(target.room_name)) return true;
+        this.note(offAssignment ? 'leaving for the explicitly assigned farming room'
+                                : 'this room cannot produce our prey — leaving now', {
+          room: room.name, hunting: this.policy.hunt,
+          generates: here.map(x => x.creature),
+          going_to: target.room_name,
+          why: offAssignment ? `room ${this.policy.assignedRoom} is the explicit fleet assignment`
+                             : here.length ? 'none of what spawns here is what we hunt'
+                             : 'nothing is generated here at all — it is not a hunting ground' });
+        this.doing = 'travelling';
+        if ((await this.leaveHold('travelling to a room that generates our prey')).refused) return true;
+        const mine = this.policy.assignedRoom;
+        const p = this.placement;
+        p.relocations++;
+        if (mine != null) p.aimed_at_assignment += (target.room === mine ? 1 : 0);
+        const r0 = await this.travel(target.room, { maxHops: 14 })
+                         .catch(e => ({ arrived: false, reason: e.message }));
+        if (r0.arrived) {
+          this.homeRoom = target.room;
+          this.emptyPasses = 0;
+          this.relocFails.delete(target.room);
+          if (mine != null) {
+            if (target.room === mine) p.returned_to_assignment++;
+            else { p.drifted++; p.drifted_to[target.room] = (p.drifted_to[target.room] || 0) + 1; }
+          }
+          this.progress('moved to a room that generates the prey');
+        } else {
+          p.failed++;
+          if (p.why_not.length < 8) p.why_not.push({ room: target.room, why: r0.reason || 'travel did not arrive' });
+          const n = (this.relocFails.get(target.room) ?? 0) + 1;
+          this.relocFails.set(target.room, n);
+          if (n >= 3) this.unreachable.add(target.room);
+          this.noProgress('cannot reach anywhere that generates ' + this.policy.hunt);
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+
   // ── passFarm: extracted from pass() ────────────────────────────────
   async passFarm(s, c, room, v, hp) {
     // 4. Work. Only in farm mode, and only on what we were told to hunt.
@@ -8112,92 +8217,18 @@ export class Autopilot {
       if (await this.provision(plan, v) === 'ate') return;
 
       // NEVER STAND IN A ROOM THAT CANNOT PRODUCE THE PREY.
-      //
-      // This does not need to be discovered by waiting. The spawn table says up
-      // front whether a giant rat can ever appear here, so tolerating three empty
-      // passes first is three passes of pretending. Riven spent them standing in
-      // Quintor's Smithy "hunting giant rats" — a shop, where nothing is generated,
-      // nothing can be fought, and no amount of patience would have changed either.
-      //
-      // The check is on GENERATORS, not on the room's object list: a smithy contains
-      // the blacksmith, who is placed once at construction, so "does anything spawn
-      // here" is true of every shop in the game unless you distinguish the two.
-      if (room) {
-        const spawns0 = loadSpawns(SPAWN_FILE);
-        const here = (spawns0?.rooms?.[room.num] || []).filter(x => x.huntable);
-        const isPrey0 = huntMatcher(spawns0, this.policy.hunt);
-        const preyHere = here.some(x => isPrey0(x.creature));
-        const deniedFarmRooms = farmRoomDenials(this.noWallRooms, this.cappedRooms);
-        const assignmentDenied = this.policy.assignedRoom != null
-          ? deniedFarmRooms.get(this.policy.assignedRoom) : null;
-        const offAssignment = shouldRelocateToAssignedRoom(this.policy, room, deniedFarmRooms);
-        if (preyHere && assignmentDenied && this.warnedAssignmentDeferred !== this.policy.assignedRoom) {
-          this.warnedAssignmentDeferred = this.policy.assignedRoom;
-          this.note('working an alternate room while the assignment is deferred', {
-            room: room.name, room_num: room.num,
-            assigned_room: this.policy.assignedRoom,
-            why_assignment_deferred: assignmentDenied,
-            why: 'the assigned room was denied by this keeper\'s bounded room evidence; ' +
-                 'sending it straight back would oscillate between assignment and refusal',
-            scope: 'session-only — the configured assignment is unchanged and a fresh keeper ' +
-                   'can reconsider it',
-          });
-        }
-        if (!preyHere || offAssignment) {
-          const known = this.preyRooms(room);
-          if (known.length) {
-            const target = known[0];
-            // NOT WHILE HURT OR EMPTY-HANDED. Eleven of the last fifty deaths set off on
-            // this exact line. The room is still the wrong room; that is not a reason to
-            // arrive at the right one in no state to be there.
-            if (!await this.readyToLeaveSanctuary(target.room_name)) return;
-            this.note(offAssignment ? 'leaving for the explicitly assigned farming room'
-                                    : 'this room cannot produce our prey — leaving now', {
-              room: room.name, hunting: this.policy.hunt,
-              generates: here.map(x => x.creature),
-              going_to: target.room_name,
-              why: offAssignment ? `room ${this.policy.assignedRoom} is the explicit fleet assignment`
-                               : here.length ? 'none of what spawns here is what we hunt'
-                               : 'nothing is generated here at all — it is not a hunting ground' });
-            this.doing = 'travelling';
-            if ((await this.leaveHold('travelling to a room that generates our prey')).refused) return;
-            // THE THREE THINGS WE WANT TO KNOW ABOUT AN ASSIGNMENT, recorded where a
-            // human and an agent can both read them later: does it do what we hoped
-            // (did we end up where we were assigned), does it do it every time
-            // (drifts vs holds), and how does it fail (why_not, kept verbatim).
-            const mine = this.policy.assignedRoom;
-            const p = this.placement;
-            p.relocations++;
-            if (mine != null) p.aimed_at_assignment += (target.room === mine ? 1 : 0);
-            const r0 = await this.travel(target.room, { maxHops: 14 })
-                             .catch(e => ({ arrived: false, reason: e.message }));
-            if (r0.arrived) {
-              this.homeRoom = target.room;
-              this.emptyPasses = 0;
-              this.relocFails.delete(target.room);   // it works; forget the near misses
-              if (mine != null) {
-                if (target.room === mine) p.returned_to_assignment++;
-                else { p.drifted++; p.drifted_to[target.room] = (p.drifted_to[target.room] || 0) + 1; }
-              }
-              this.progress('moved to a room that generates the prey');
-            } else {
-              p.failed++;
-              if (p.why_not.length < 8) p.why_not.push({ room: target.room, why: r0.reason || 'travel did not arrive' });
-              // ONE MISS IS NOT A PROOF OF UNREACHABILITY, and treating it as one is
-              // how a spread fleet quietly re-collapses: the first transient failure
-              // blacklists the ASSIGNED room, so the keeper never tries it again and
-              // goes back to the top-ranked room for ever. Both failures seen in
-              // practice were transient — a crowded `go` square ("stood on the exit
-              // square and nothing happened"), and a route the planner picked through
-              // an edge with no floor, which succeeds from a different starting room.
-              const n = (this.relocFails.get(target.room) ?? 0) + 1;
-              this.relocFails.set(target.room, n);
-              if (n >= 3) this.unreachable.add(target.room);
-              this.noProgress('cannot reach anywhere that generates ' + this.policy.hunt);
-            }
-            return;
-          }
-        }
+      // BT path: farmNavigationTree returns SUCCESS (consumed) or FAILURE (in right room).
+      if (this.policy?.useBT === true) {
+        const bb = updateBlackboard(
+          this._btBlackboard || (this._btBlackboard = {}),
+          { client: c, session: this, policy: this.policy },
+        );
+        const navTree = farmNavigationTree({ keeper: this });
+        const navResult = await navTree.tick(bb);
+        if (navResult === 'RUNNING' || navResult === 'SUCCESS') return;
+        // FAILURE: already in the right room — fall through to fight.
+      } else {
+        if (await this.navigateToPreyRoom(room)) return;
       }
 
       if (!this.policy.hunt) {
