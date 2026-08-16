@@ -6360,168 +6360,9 @@ export class Autopilot {
       // FAILURE: BT gave up (e.g. no buy method wired yet). Fall through to the sequential path.
     }
 
-    // APPLY THE LOADOUT POLICY OVERLAY FIRST. Every decision in this pass reads
-    // `this.policy`, and the loadout file is the source of truth for per-character
-    // settings (karma, buy_reagents, hunt, assigned_room, pulls_before_barren). Without
-    // this, a broker restart silently demotes every planned character to defaults and
-    // the next farm run does the wrong thing until somebody re-applies overrides.
-    // Already applied above (before the BT gate) so loadout fields are live on tick 1.
-    // Post where we are, every pass. Cheap, and it is the only way one keeper can find
-    // another that has wandered — see runProvision, where a quartermaster arrives to
-    // find the supplicant has roamed off and would otherwise abandon the errand.
-    if (s.world?.room?.num != null) noteWhere(s.name, s.world.room.num, s.world.room.name);
-    // And post what we need and what we can spare, for the same reason: the sell and
-    // drop paths read the aggregate, and a stale board sells somebody else's herbs.
-    this.declareInterest();
-    // POST OUR SITUATION FOR OUR PARTNER, every pass and before any decision that reads
-    // theirs. A partner acts on health, room and whether we are behind a wall; all
-    // three are read from the register rather than asked for over the wire, so a
-    // reading nobody refreshed is a decision made about where we were a minute ago.
-    // m59-party treats anything older than 90s as absent for exactly that reason.
-    if (this.policy.partner) {
-      const pv = c?.vitals?.() ?? {};
-      party.report(this.s.name, {
-        health: pv.health?.max ? pv.health.value / pv.health.max : null,
-        room: s.world?.room?.num ?? null,
-        holding: this.hold ? { col: this.hold.col, row: this.hold.row } : null,
-        doing: this.doing ?? null,
-        needs: this.wantsNow ?? [],
-      });
-    }
-    // Remember the purse while we still can. After a death the inventory is already on
-    // the corpse, so the only way to know what was lost is to have looked before.
-    if (c?.inventory?.length)
-      this.lastSeenPurse = c.inventory
-        .filter(o => /shilling/i.test(c.rsc.get(o.nameRsc) || ''))
-        .reduce((t, o) => t + (o.amount || 1), 0);
-
-    // FROZEN after a panic logoff. Do nothing that the server counts as an action:
-    // no room-contents request, no movement, no turning, no fighting. Rest, read the
-    // stats, and wait. Anything else calls NotifyMonstersOfPresence and hands back
-    // the one thing this state is for.
-    if (this.frozenUntil && Date.now() < this.frozenUntil) {
-      this.doing = 'recovering';
-      await s.pacer.submit('read', () => c.stats(1));
-      await c.waitFor({ kinds: ['stat'], timeoutMs: 1500 });
-      await s.pacer.submit('rest', () => c.rest());
-      const vv = c.vitals();
-      this.note('frozen', { left_s: Math.round((this.frozenUntil - Date.now()) / 1000),
-                            health: vv?.health?.value, vigor: vv?.vigor?.value,
-                            note: 'recovering vigor; health needs us to move again first' });
-      this.progress('playing dead to avoid a death');
-      return;
-    }
-    if (this.frozenUntil) {
-      this.frozenUntil = null;
-      this.note('unfreezing', { note: 'moving again — monsters can see us from here on' });
-    }
-
-    // RESYNC ON A CLOCK, NOT EVERY PASS. See decideMs/resyncMs above: room.objects is
-    // maintained by pushes, so between resyncs we are deciding on a live map rather
-    // than a stale one, and asking again costs two requests, up to four seconds of
-    // waiting, and a NotifyMonstersOfPresence that wakes the room.
-    //
-    // Resync anyway when we have reason to distrust the cache: right after arriving
-    // somewhere, and whenever the last one is older than resyncMs.
-    const resyncEvery = this.policy.resyncMs ?? this.policy.idleMs ?? 8000;
-    const roomChanged = this.lastResyncRoom !== (s.world?.room?.num ?? null);
-    if (roomChanged || !this.lastResyncAt || Date.now() - this.lastResyncAt >= resyncEvery) {
-      this.lastResyncAt = Date.now();
-      this.lastResyncRoom = s.world?.room?.num ?? null;
-      this.resyncs = (this.resyncs || 0) + 1;
-      await s.pacer.submit('read', () => c.roomContents());
-      await c.waitFor({ kinds: ['room-contents'], timeoutMs: 2500 });
-      await s.pacer.submit('read', () => c.stats(1));
-      await c.waitFor({ kinds: ['stat'], timeoutMs: 1500 });
-    }
-
-    const room = s.world?.room;
-    const v = c.vitals();
-    const hp = pct(v.health);
-
-    // BEFORE ANY DECISION: do we still know where we are standing, and is it working?
-    // Every branch below reads differently depending on the answer — fleeing, resting
-    // and logging off all invert inside a working safe spot — so it has to be settled
-    // first and from evidence, not from what the geometry hoped.
-    this.observe();
-
-    // A SHORT MEMORY, kept only so that a death can be explained.
-    //
-    // The ledger samples every five minutes, which is far too coarse to catch a
-    // death: it reports where the character was up to five minutes BEFORE it died,
-    // which is why the last dozen death records all name inns and towns. Nobody died
-    // in an inn. They died somewhere else, minutes later, and the sample was stale.
-    //
-    // The keeper is the only thing running at the resolution a death happens at.
-    //
-    // Each frame also records WHAT WE WERE DOING, because "health 22, 14, 6" is a
-    // description of dying and not an explanation of it. Standing on a wall at 6 health
-    // and running for a door at 6 health are the same three numbers and opposite
-    // mistakes, and only the second column tells them apart.
-    this.recordFrame();
-
-    // DID WE GET TOUGHER? Read before any branch that can return, because most passes
-    // end early — in a safe spot, resting, mid-errand — and a gain announced during one
-    // of those is still a gain. It is a scan of an in-memory ring against a watermark
-    // and sends nothing.
-    this.noteToughness();
-
-    // Answer people and take hand-outs before anything else. Cheap, and a player
-    // trying to help should not have to wait for a fight to finish.
-    await this.social().catch(e => this.note('social failed', { why: e.message }));
-
-    // GIVE BACK ANY SIGNET RING WHOSE OWNER IS STANDING HERE.
-    //
-    // Each one pays up to ten times its value to a character under 30 max health, and the
-    // fleet had been carrying them as loot; Statler had six. The owner is named in the
-    // ring's own description, so this costs nothing to ask wherever we happen to be.
-    //
-    // THIS IS THE FALLBACK NOW, NOT THE WHOLE STRATEGY. I said the owners wander and that
-    // an NPC-location table would not help. Four of the nineteen wander; the other fifteen
-    // stand in a fixed room in a town — see SIGNET_OWNERS in m59-skills.mjs — so the ring
-    // usually names a destination, and `signets` dispatches an errand that goes there. This
-    // branch is what catches the four that roam, and what catches a routed ring early if
-    // its owner happens to walk past first.
-    //
-    // Cheap enough to ask every pass ONLY because the answer is cached: a ring's owner
-    // never changes, so it is one look per ring ever, and afterwards this is a name
-    // comparison against the objects already in the room snapshot. Gated on carrying one
-    // at all, which is almost never.
-    if ((c.inventory || []).some(o => /signet ring/i.test(c.rsc.get(o.nameRsc) || ''))) {
-      const gave = await skills.returnSignetRings(s).catch(() => null);
-      if (gave?.returned?.length) {
-        this.tally.signets_returned = (this.tally.signets_returned || 0) + gave.returned.length;
-        this.progress('returned a signet ring');
-        this.note('returned a signet ring', {
-          to: gave.returned.map(r => r.to),
-          still_carrying: gave.carrying,
-          paid: skills.signetPayout({ level: c.vitals()?.health?.max ?? null }),
-          why: 'the owner was standing here, and a returned ring pays ten times its value ' +
-               'to a character under 30 max health',
-        });
-      }
-    }
-
-    // 0. Do we still know who we are? A `save game` renumbers every object, and a
-    //    session that was live across one keeps a selfId the server no longer uses.
-    //    Nothing errors. Position reads null, our own object is missing from room
-    //    contents, and every check written as "am I still in the room?" concludes we
-    //    died — forever, at full health. Re-logging in is the whole fix, because the
-    //    id is handed out fresh at login.
-    if (!c.self) {
-      this.selfMissingPasses++;
-      if (this.selfMissingPasses >= 3) {
-        this.note('lost our own object id — reconnecting',
-                  { passes: this.selfMissingPasses,
-                    why: 'not in room contents; usually a save-game renumber' });
-        const again = await this.reconnect('recovering a renumbered object id');
-        this.selfMissingPasses = 0;
-        this.note(again.ok ? 'reconnected' : 'reconnect failed',
-                  again.ok ? { object_id: s.client?.selfId } : { why: again.why });
-        this.noProgress('reconnecting after losing our object id');
-        return;
-      }
-    } else this.selfMissingPasses = 0;
+    const ctx = await this.passOverhead(s, c);
+    if (!ctx) return;
+    const { room, v, hp } = ctx;
 
     if (await this.passUnderworld(s, c, room)) return;
     if (await this.passArm(s, c)) return;
@@ -7284,6 +7125,103 @@ export class Autopilot {
     //     to that room to assist. engagePlayerTarget fires on arrival.
     if (await this.respondToConflict()) return;
     return false;
+  }
+
+  // ── passOverhead: extracted from pass() ──────────────────────────────────
+  // Per-pass bookkeeping that runs regardless of what the pass decides to do:
+  // noteWhere, declareInterest, partner report, purse snapshot, frozen gate,
+  // resync, observe, recordFrame, noteToughness, social, signet rings,
+  // and self-id reconnect.
+  // Returns { room, v, hp } on success, or null if the pass is consumed.
+  async passOverhead(s, c) {
+    // Post where we are every pass — the only way one keeper can find another.
+    if (s.world?.room?.num != null) noteWhere(s.name, s.world.room.num, s.world.room.name);
+    this.declareInterest();
+    if (this.policy.partner) {
+      const pv = c?.vitals?.() ?? {};
+      party.report(this.s.name, {
+        health: pv.health?.max ? pv.health.value / pv.health.max : null,
+        room: s.world?.room?.num ?? null,
+        holding: this.hold ? { col: this.hold.col, row: this.hold.row } : null,
+        doing: this.doing ?? null,
+        needs: this.wantsNow ?? [],
+      });
+    }
+    if (c?.inventory?.length)
+      this.lastSeenPurse = c.inventory
+        .filter(o => /shilling/i.test(c.rsc.get(o.nameRsc) || ''))
+        .reduce((t, o) => t + (o.amount || 1), 0);
+
+    if (this.frozenUntil && Date.now() < this.frozenUntil) {
+      this.doing = 'recovering';
+      await s.pacer.submit('read', () => c.stats(1));
+      await c.waitFor({ kinds: ['stat'], timeoutMs: 1500 });
+      await s.pacer.submit('rest', () => c.rest());
+      const vv = c.vitals();
+      this.note('frozen', { left_s: Math.round((this.frozenUntil - Date.now()) / 1000),
+                            health: vv?.health?.value, vigor: vv?.vigor?.value,
+                            note: 'recovering vigor; health needs us to move again first' });
+      this.progress('playing dead to avoid a death');
+      return null;
+    }
+    if (this.frozenUntil) {
+      this.frozenUntil = null;
+      this.note('unfreezing', { note: 'moving again — monsters can see us from here on' });
+    }
+
+    const resyncEvery = this.policy.resyncMs ?? this.policy.idleMs ?? 8000;
+    const roomChanged = this.lastResyncRoom !== (s.world?.room?.num ?? null);
+    if (roomChanged || !this.lastResyncAt || Date.now() - this.lastResyncAt >= resyncEvery) {
+      this.lastResyncAt = Date.now();
+      this.lastResyncRoom = s.world?.room?.num ?? null;
+      this.resyncs = (this.resyncs || 0) + 1;
+      await s.pacer.submit('read', () => c.roomContents());
+      await c.waitFor({ kinds: ['room-contents'], timeoutMs: 2500 });
+      await s.pacer.submit('read', () => c.stats(1));
+      await c.waitFor({ kinds: ['stat'], timeoutMs: 1500 });
+    }
+
+    const room = s.world?.room;
+    const v = c.vitals();
+    const hp = pct(v.health);
+
+    this.observe();
+    this.recordFrame();
+    this.noteToughness();
+
+    await this.social().catch(e => this.note('social failed', { why: e.message }));
+
+    if ((c.inventory || []).some(o => /signet ring/i.test(c.rsc.get(o.nameRsc) || ''))) {
+      const gave = await skills.returnSignetRings(s).catch(() => null);
+      if (gave?.returned?.length) {
+        this.tally.signets_returned = (this.tally.signets_returned || 0) + gave.returned.length;
+        this.progress('returned a signet ring');
+        this.note('returned a signet ring', {
+          to: gave.returned.map(r => r.to),
+          still_carrying: gave.carrying,
+          paid: skills.signetPayout({ level: c.vitals()?.health?.max ?? null }),
+          why: 'the owner was standing here, and a returned ring pays ten times its value ' +
+               'to a character under 30 max health',
+        });
+      }
+    }
+
+    if (!c.self) {
+      this.selfMissingPasses++;
+      if (this.selfMissingPasses >= 3) {
+        this.note('lost our own object id — reconnecting',
+                  { passes: this.selfMissingPasses,
+                    why: 'not in room contents; usually a save-game renumber' });
+        const again = await this.reconnect('recovering a renumbered object id');
+        this.selfMissingPasses = 0;
+        this.note(again.ok ? 'reconnected' : 'reconnect failed',
+                  again.ok ? { object_id: s.client?.selfId } : { why: again.why });
+        this.noProgress('reconnecting after losing our object id');
+        return null;
+      }
+    } else this.selfMissingPasses = 0;
+
+    return { room, v, hp };
   }
 
   // ── passFleeAndRest: extracted from pass() ────────────────────────────────
