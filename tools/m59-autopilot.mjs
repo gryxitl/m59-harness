@@ -6527,38 +6527,32 @@ export class Autopilot {
     if (await this.passArm(s, c)) return;
     if (await this.passPlaybook()) return;
 
-    // BEHAVIOR-TREE THREAT/SURVIVAL PATH (opt-in via policy.useBT)
+    // BEHAVIOR-TREE LOWER LADDER (opt-in via policy.useBT)
     //
-    // threatAndRestAction wraps passThreatAndRest (≡ passFleeAndRest) in the
-    // slot pattern. SUCCESS = threat handled, stop the pass. FAILURE = safe,
-    // fall through to farm. Mirrors the non-BT path exactly.
+    // threat → outside → errand → farm, each wrapped in the slot pattern.
+    // SUCCESS/RUNNING = consumed, return. FAILURE = safe, fall to next node.
+    // The blackboard is created once and shared across all four ticks.
     if (this.policy?.useBT === true) {
       const bb = updateBlackboard(
         this._btBlackboard || (this._btBlackboard = {}),
         { client: c, session: this, policy: this.policy },
       );
-      const result = await threatAndRestAction(this).tick(bb);
-      if (result === 'RUNNING') return;
-      if (result === 'SUCCESS') return;   // threat consumed
-      // FAILURE: safe — fall through to farm
-    } else {
-      if (await this.passFleeAndRest(s, c, room, v, hp)) return;
-    }
-    if (this.policy?.useBT === true) {
-      const bb = updateBlackboard(
-        this._btBlackboard || (this._btBlackboard = {}),
-        { client: c, session: this, policy: this.policy },
-      );
+      // threat/rest
+      const threatResult = await threatAndRestAction(this).tick(bb);
+      if (threatResult === 'RUNNING' || threatResult === 'SUCCESS') return;
+      // busy / parked
       const outsideResult = await outsideAction(this).tick(bb);
       if (outsideResult === 'RUNNING' || outsideResult === 'SUCCESS') return;
-      // FAILURE: not busy or parked — fall through to errand
+      // errand / bank / delivery
       const errandResult = await errandAction(this).tick(bb);
       if (errandResult === 'RUNNING' || errandResult === 'SUCCESS') return;
-      // FAILURE: no errand — fall through to farm
-    } else {
-      if (await this.passOutside()) return;
-      if (await this.passErrand()) return;
+      // farm (always ticks — fightRoundsAction result is informational)
+      await fightRoundsAction(this).tick(bb);
+      return;
     }
+    if (await this.passFleeAndRest(s, c, room, v, hp)) return;
+    if (await this.passOutside()) return;
+    if (await this.passErrand()) return;
     await this.passFarm(s, c, room, v, hp);
   }
 
@@ -8234,18 +8228,6 @@ export class Autopilot {
       } else {
         if (await this.navigateToPreyRoom(room)) return;
       }
-
-      // BT path: fightRoundsAction delegates to passFightRounds as a fire-and-forget slot.
-      if (this.policy?.useBT === true) {
-        const bb = updateBlackboard(
-          this._btBlackboard || (this._btBlackboard = {}),
-          { client: c, session: this, policy: this.policy },
-        );
-        const fightTree = fightRoundsAction(this);
-        await fightTree.tick(bb);
-        return;
-      }
-
 
       await this.passFightRounds(s, c, room, v, hp);
     }
