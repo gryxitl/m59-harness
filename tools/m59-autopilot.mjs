@@ -61,7 +61,7 @@ import { loadoutFor, keepTest, sellTest, dropRank, wantsOf, norm,
 // Behavior-tree subtree factories and the blackboard helper. Only getArmedTree is
 // wired today, behind a per-character policy.useBT opt-in. The rest (handle_threat,
 // farm, etc.) come later, gated on the m59-combat-test suite per docs/BT-PLAN.md.
-import { getArmedTree, handleThreatTree, farmNavigationTree, updateBlackboard } from './m59-bt-nodes.mjs';
+import { getArmedTree, handleThreatTree, farmNavigationTree, fightRoundsAction, updateBlackboard } from './m59-bt-nodes.mjs';
 import { mkdirSync, writeFileSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -8231,6 +8231,29 @@ export class Autopilot {
         if (await this.navigateToPreyRoom(room)) return;
       }
 
+      // BT path: fightRoundsAction delegates to passFightRounds as a fire-and-forget slot.
+      if (this.policy?.useBT === true) {
+        const bb = updateBlackboard(
+          this._btBlackboard || (this._btBlackboard = {}),
+          { client: c, session: this, policy: this.policy },
+        );
+        const fightTree = fightRoundsAction(this);
+        await fightTree.tick(bb);
+        return;
+      }
+
+
+      await this.passFightRounds(s, c, room, v, hp);
+    }
+
+    this.note('nothing to do', { health: v.health, vigor: v.vigor, room: room?.name });
+  }
+
+  // ── passFightRounds: extracted fight section of passFarm() ───────────────
+  // Called by the non-BT path directly and by fightRoundsAction (BT path).
+  // Receives the same args as passFarm and owns everything from the hunt-guard
+  // through to the fight result logging.
+  async passFightRounds(s, c, room, v, hp) {
       if (!this.policy.hunt) {
         // No quarry named is the same situation as idle mode: rest up rather than
         // stand there, so that whenever a job does arrive it starts from a full bar.
@@ -8509,6 +8532,7 @@ export class Autopilot {
           // refusing to fight or flee is the definition of stuck. Reporting progress
           // in that state is what let the dead zone hide for so long.
           this.doing = 'recovering';
+          const near = this.inReachOfUs();
           if (near.length) {
             this.note('cornered while too hurt to engage', {
               health: Math.round(hp * 100) + '%', crowd: near.length,
@@ -9310,9 +9334,6 @@ export class Autopilot {
         ...(f.refused?.length ? { left_on_the_floor: f.refused.length } : {}),
       });
       return;
-    }
-
-    this.note('nothing to do', { health: v.health, vigor: v.vigor, room: room?.name });
   }
 
 

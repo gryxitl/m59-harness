@@ -624,6 +624,61 @@ export function farmNavigationTree(opts = {}) {
   return navigateToPreyAction(keeper);
 }
 
+// ---------------------------------------------------------------------------
+// FIGHT SUBTREE
+//
+// Wraps keeper.passFightRounds() as a BT action. The fight loop is deeply
+// stateful — it maintains this.hold, this.foeId, this.pendingPull, quarry
+// claims, the vigor/health gates, safe-spot probing, pull-and-wait sequences,
+// and party coordination. All of that state lives on the keeper where it is
+// proven by the 471 combat tests. The BT node fires it fire-and-forget,
+// returns RUNNING while it runs, and maps its completion to SUCCESS (fight
+// pass consumed) or FAILURE (nothing to do — no hunt named).
+//
+// Shape:
+//   fight_rounds (Action)
+//     → delegates to keeper.passFightRounds(s, c, room, v, hp)
+//     → returns RUNNING while in flight
+//     → returns SUCCESS when the pass was consumed (found prey, cleared bags,
+//       rested, probed wall, swung, etc.)
+//     → returns FAILURE when no hunt is named (idling)
+// ---------------------------------------------------------------------------
+
+// fight_rounds: wraps keeper.passFightRounds. The keeper receives the
+// session + client from its own fields (s, s.client); this node pulls them
+// off `bb.session` (which IS the keeper / Autopilot instance).
+export function fightRoundsAction(keeper) {
+  const key = 'bt_fight_rounds';
+  return new Action((bb, slot) => {
+    if (!slot || slot.done === undefined) {
+      slot = { done: false, ok: false };
+      bb._bt[key] = slot;
+      const k = keeper ?? bb?.session;
+      Promise.resolve()
+        .then(async () => {
+          if (!k || typeof k.passFightRounds !== 'function') return false;
+          const s = k.s;
+          const c = s?.client;
+          if (!s || !c) return false;
+          const v = c.vitals?.() ?? {};
+          const hp = (v.health?.max ? v.health.value / v.health.max : null);
+          const room = s.world?.room ?? null;
+          await k.passFightRounds(s, c, room, v, hp);
+          // passFightRounds returns undefined; success is "we ran it"
+          return !!(k.policy?.hunt);
+        })
+        .then(r => { slot.ok = !!r; slot.done = true; })
+        .catch(() => { slot.ok = false; slot.done = true; });
+      return RUNNING;
+    }
+    if (!slot.done) return RUNNING;
+    const ok = slot.ok;
+    delete bb._bt[key];
+    return ok ? SUCCESS : FAILURE;
+  }, { key, name: 'fight_rounds' });
+}
+fightRoundsAction._key = 'bt_fight_rounds';
+
 // updateBlackboard: a thin convenience that snapshots the live client into a
 // plain blackboard object before each tick. Trees should never reach behind
 // `bb.client` for state, but GOAP writes strategic fields (assigned_room,
