@@ -63,7 +63,18 @@ function mockKeeper(overrides = {}) {
         statsById: new Map([['stamina', { value: 20 }]]),
         rsc: { get: () => 'giant rat' },
         inventory: [],
-        armed: () => true,
+        // ARMED IS NOW A FACT ABOUT THE USE LIST, so the fixture has to state a use
+        // list rather than a verdict. It was `armed: () => true` on both the client and
+        // the keeper -- neither of which the predicate reads, because skills.isArmed()
+        // asks equipment(). A fake that answers a question the real code never asks
+        // agrees with anything, which is how `client.armed()` survived in
+        // m59-bt-nodes.mjs while never existing. The `armed` override is still honoured
+        // and still spelled the same at every call site; it now decides what is in the
+        // character's hand, and the real predicate draws its own conclusion.
+        equipment: () => ({
+          known: true,
+          equipped: (overrides.armed ? overrides.armed() : true) ? [{ name: 'mace' }] : [],
+        }),
       },
     },
     hold: null,

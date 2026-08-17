@@ -27,6 +27,7 @@ import {
 } from './m59-bt.mjs';
 import { updateBlackboard } from './m59-bt-nodes.mjs';
 import { lootRecoveryNode } from './m59-bt-recover.mjs';
+import { isArmed } from './m59-skills.mjs';
 
 // ---------------------------------------------------------------------------
 // Helper: read vitals from the blackboard
@@ -269,7 +270,7 @@ export function getAWallNode(keeper) {
       keeper.policy.restBelow,
       0,
       keeper.recoverUntilWhole && !keeper.recovered() ? 1 : 0,
-      keeper.mode === 'farm' && keeper.policy.hunt && !keeper.recoverUntilWhole && keeper.armed()
+      keeper.mode === 'farm' && keeper.policy.hunt && !keeper.recoverUntilWhole && isArmed(keeper.s.client)
         ? keeper.safety().engageAt : 0
     );
     const vigorRestAt = Math.min(keeper.policy.restBelow, REST_VIGOR_CAP);
@@ -318,7 +319,7 @@ export function vigorWalkNode(keeper) {
       keeper.policy.restBelow,
       0,
       keeper.recoverUntilWhole && !keeper.recovered() ? 1 : 0,
-      keeper.mode === 'farm' && keeper.policy.hunt && !keeper.recoverUntilWhole && keeper.armed()
+      keeper.mode === 'farm' && keeper.policy.hunt && !keeper.recoverUntilWhole && isArmed(keeper.s.client)
         ? keeper.safety().engageAt : 0
     );
     const vigPct = v.vigor?.max ? v.vigor.value / v.vigor.max : 1;
@@ -495,7 +496,7 @@ export function armHealthNode(keeper) {
       keeper.policy.restBelow,
       sheltered ? keeper.policy.holdResumeAbove : 0,
       keeper.recoverUntilWhole && !keeper.recovered() ? 1 : 0,
-      keeper.mode === 'farm' && keeper.policy.hunt && !keeper.recoverUntilWhole && keeper.armed()
+      keeper.mode === 'farm' && keeper.policy.hunt && !keeper.recoverUntilWhole && isArmed(keeper.s.client)
         ? keeper.safety().engageAt : 0
     );
 
@@ -600,7 +601,7 @@ export function restNode(keeper) {
       keeper.policy.restBelow,
       sheltered ? keeper.policy.holdResumeAbove : 0,
       keeper.recoverUntilWhole && !keeper.recovered() ? 1 : 0,
-      keeper.mode === 'farm' && keeper.policy.hunt && !keeper.recoverUntilWhole && keeper.armed()
+      keeper.mode === 'farm' && keeper.policy.hunt && !keeper.recoverUntilWhole && isArmed(keeper.s.client)
         ? keeper.safety().engageAt : 0
     );
     const REST_VIGOR_CAP = 0.4;

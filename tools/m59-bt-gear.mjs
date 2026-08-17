@@ -33,7 +33,7 @@
 
 import { SUCCESS, FAILURE, RUNNING } from './m59-bt.mjs';
 import { loadoutFor } from './m59-loadout.mjs';
-import { wearBest } from './m59-skills.mjs';
+import { wearBest, isArmed } from './m59-skills.mjs';
 
 // AsyncAction (same pattern as m59-bt-farm.mjs / m59-bt-flee.mjs)
 class AsyncAction {
@@ -123,7 +123,7 @@ export function gearUpgradeNode(keeper) {
     // fallback for when the character is fighting with fists.
     const c = keeper.s?.client;
     if (!c) return FAILURE;
-    const isUnarmed = !keeper.armed();
+    const isUnarmed = !isArmed(keeper.s.client);
     const effectiveWants = isUnarmed
       ? [...wants, { slot: 'weapon', re: /sword|mace|axe|hammer|dagger|knife|spear|club|cudgel/i, fallback: /sword|mace|axe|hammer|dagger|knife|spear|club|cudgel/i, what: 'any weapon' }]
       : wants;

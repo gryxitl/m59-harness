@@ -331,7 +331,7 @@ export function scavengeNode(keeper) {
     if (!room || !c) return FAILURE;
 
     // Only when unarmed.
-    if (keeper.armed()) return FAILURE;
+    if (skills.isArmed(keeper.s.client)) return FAILURE;
 
     // Find any attackable creature in the room (not a player).
     const { findCreature, fight } = keeper.constructor._combatSkills || {};
@@ -494,9 +494,9 @@ export function unarmedNode(keeper) {
     const skills = getSkills();
     if (!skills) {
       // Fall back to the keeper's own check
-      if (keeper.armed()) return FAILURE;
+      if (skills.isArmed(keeper.s.client)) return FAILURE;
     }
-    const weapons = skills ? skills.weaponsOf(c) : (keeper.armed() ? [c] : []);
+    const weapons = skills ? skills.weaponsOf(c) : (skills.isArmed(keeper.s.client) ? [c] : []);
     if (weapons.length) {
       keeper.clearRefusal('UNARMED_NO_DONOR');
       if (keeper.waitingOn?.code === 'MANA_FOR_CREATE_WEAPON') keeper.doneWaiting();

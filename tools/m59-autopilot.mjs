@@ -1947,28 +1947,6 @@ export class Autopilot {
   // unproven spot is treated exactly like open floor, which is what it might be.
   holdWorks() { return !!(this.hold && this.hold.proven); }
 
-  // IS THERE A WEAPON IN OUR HAND -- asked of the server, never of our own intentions.
-  //
-  // plUsing is the only authority (see equipment()): "the last use we sent was not
-  // refused" has been wrong every time it mattered, because a weapon that shatters
-  // mid-fight leaves the use list without anything being sent at all. A character that
-  // cannot answer is treated as ARMED, because refusing to fight on a failed read would
-  // idle the whole fleet the first time an inventory request timed out -- the guard is
-  // meant to catch the empty hand, not to become a new way to stop.
-  armed() {
-    const c = this.s.client;
-    const eq = c?.equipment?.();
-    if (!eq || eq.known === false) return true;
-    return (eq.equipped || []).some(o => {
-      const name = o.name ?? c.rsc?.get?.(o.nameRsc) ?? '';
-      if (skills.weaponScore(name) > 0) return true;
-      // When the rsc table is absent the name is an unresolved "<rsc N>" placeholder.
-      // The server already confirmed the item is equipped -- treat it as potentially a
-      // weapon rather than looping forever waiting for mana to conjure one.
-      if (/^<rsc \d+>$/.test(name)) return true;
-      return false;
-    });
-  }
 
   // THE SAME QUESTION, FAILING THE OTHER WAY.
   //
@@ -6946,6 +6924,22 @@ export class Autopilot {
     // the rest of the cycle. Once armed, the existing sequential pass() body below
     // is the source of truth and runs unchanged.
     // ------------------------------------------------------------------
+    //
+    // THIS BRANCH HAS NEVER RUN, AND IT IS LEFT THAT WAY ON PURPOSE FOR NOW.
+    //
+    // `c` is the CLIENT, and a client has no `armed` — that predicate was
+    // Autopilot.armed() and is now skills.isArmed(). So `typeof c.armed ===
+    // 'function'` is false on every pass, and the whole get-armed subtree behind it
+    // has been dead for as long as it has shipped. `m59-bt-nodes.mjs`'s
+    // `wielding_weapon` condition asks the same non-existent method and has the same
+    // problem, which is why neither ever reported anything wrong: a branch that never
+    // runs cannot fail.
+    //
+    // Repointing this at skills.isArmed(c) is a one-word change and is NOT being made
+    // as part of extracting the predicate, because it would ACTIVATE an untested code
+    // path as a side effect of a refactor — which is how a fleet finds out about new
+    // behaviour from a death rather than from a decision. Activate it deliberately,
+    // against one character, and watch it.
     if (this.policy && this.policy.useBT === true &&
         c && typeof c.armed === 'function' && !c.armed()) {
       // Snapshot the live client into a blackboard at tick start. GOAP writes
@@ -7556,7 +7550,7 @@ export class Autopilot {
     await sleep(1500);
     await this.s.pacer.submit('read', () => this.s.client.requestInventory()).catch(() => {});
     await this.s.client.waitFor({ kinds: ['inventory'], timeoutMs: 2000 }).catch(() => {});
-    const armed = this.armed();
+    const armed = skills.isArmed(this.s.client);
     this.note('outfit run finished', { exit_ok: ok, armed, why });
     return armed;
   }
@@ -7587,7 +7581,7 @@ export class Autopilot {
     //
     // Ahead of the danger and rest branches on purpose: being unarmed is WHY the fight
     // is going badly, and the shortest way out is to be holding something.
-    if (!this.armed()) {
+    if (!skills.isArmed(this.s.client)) {
       // WHEN CALLED FROM THE BT KEEPER'S LEGACY DELEGATION (step 6), DO NOT
       // WALK THE CHARACTER TO TOWN FOR GEAR. The BT keeper's gear_upgrade node
       // handles purchases natively, and the scavenge node handles fighting while
@@ -7597,7 +7591,7 @@ export class Autopilot {
         return false;
       }
       const ok = await this.armSelf().catch(() => false);
-      if (ok && this.armed()) { this.progress('armed itself'); return; }
+      if (ok && skills.isArmed(this.s.client)) { this.progress('armed itself'); return; }
       // makeWeapon refreshes the spell list before reporting failure when mana is
       // sufficient. Below 15 mana it cannot do that, so refresh once before deciding
       // whether mana recovery can ever produce a weapon.
@@ -7683,7 +7677,7 @@ export class Autopilot {
           });
           this._lastOutfitAt = now;
           await this.buyWeaponsAtNearestSmith({ why });
-          if (this.armed()) return true;
+          if (skills.isArmed(this.s.client)) return true;
         }
         // Outfit ran (or is on cooldown) and character still unarmed — fall through
         // to the original stop() so the board shows the right state and a human can
@@ -8081,7 +8075,7 @@ export class Autopilot {
     // and 15 mana, against a character that otherwise farms nothing until someone
     // notices. See armed() for why the server's own use list is the only acceptable
     // evidence here.
-    const unarmed = !this.armed();
+    const unarmed = !skills.isArmed(this.s.client);
     const wantsToFight = this.mode === 'farm' && !!this.policy.hunt && !recovering && !unarmed;
     const restAt = Math.max(
       this.policy.restBelow,
@@ -10453,7 +10447,7 @@ export class Autopilot {
     const floor = this.policy.walkingMoney ?? 400;
     const spare = inv.filter(o => !/shilling/i.test(c.rsc.get(o.nameRsc) || '')).length;
     if (carried < floor && spare >= 4) {
-      const armed = this.armed();
+      const armed = skills.isArmed(this.s.client);
       if (!armed) {
         return { sell: true, trigger: 'unarmed_broke', carried, spare,
                  why: `unarmed with ${carried} sh (floor ${floor}) and ${spare} stacks of goods -- sell to buy a weapon` };

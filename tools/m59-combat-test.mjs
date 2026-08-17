@@ -24,7 +24,7 @@ import {
   brokenSet, brokenWeaponText, abilityOf, equippedNow, inspectForBroken, carryCapacity, freeRoomFor, wouldFit, signetRings, returnSignetRings,
   signetPayout, signetOwnerOf, SIGNET_OWNERS,
   parseDeathBroadcast, deathBroadcastFor,
-  landedHitSummary,
+  landedHitSummary, isArmed,
 } from './m59-skills.mjs';
 import { Autopilot, bearingIn, DEBUG_STATES, belowRoomRetreatHealth,
          rankQuarries, claimQuarry, releaseQuarry,
@@ -1411,25 +1411,32 @@ console.log('\nwho should be holding a signet ring');
 // still reports fighting, so nothing about it reads as broken from outside.
 console.log('\nrefusing to hunt with nothing in hand');
 {
-  const keeper = (equipped, known = true) => {
-    const k = Object.create(Autopilot.prototype);
-    k.s = { client: { equipment: () => ({ known, equipped }), rsc: { get: () => '' } } };
-    return k;
-  };
-  ok('a wielded mace counts as armed', keeper([{ name: 'mace' }]).armed() === true);
-  ok('an empty use list is NOT armed', keeper([]).armed() === false);
+  // ASKED OF A CLIENT, NOT OF A KEEPER. This was Autopilot.armed() and is now
+  // isArmed(client): the predicate reads nothing but the equipment list, so
+  // holding a keeper to ask it was what forced every behavior-tree node to carry one.
+  // The fixture shrinks to match -- no Autopilot.prototype, just a client.
+  const client = (equipped, known = true) =>
+    ({ equipment: () => ({ known, equipped }), rsc: { get: () => '' } });
+  ok('a wielded mace counts as armed', isArmed(client([{ name: 'mace' }])) === true);
+  ok('an empty use list is NOT armed', isArmed(client([])) === false);
   ok('armour alone is not a weapon',
-     keeper([{ name: 'leather armor' }, { name: 'shield' }]).armed() === false);
+     isArmed(client([{ name: 'leather armor' }, { name: 'shield' }])) === false);
   ok('a weapon among the armour still counts',
-     keeper([{ name: 'leather armor' }, { name: 'short sword' }]).armed() === true);
+     isArmed(client([{ name: 'leather armor' }, { name: 'short sword' }])) === true);
   // Junk that merely looks like a weapon must not satisfy the check -- "broken mace" is
   // a real junk item, and weaponScore already excludes it.
   ok('a junk "broken mace" does not count as armed',
-     keeper([{ name: 'broken mace' }]).armed() === false);
+     isArmed(client([{ name: 'broken mace' }])) === false);
   // A read we could not make must not idle the fleet: unknown is treated as armed, so
   // the guard catches empty hands rather than becoming a new way to stop.
   ok('an unreadable use list is treated as armed, not as unarmed',
-     keeper([], false).armed() === true);
+     isArmed(client([], false)) === true);
+  // A CLIENT CARRIES NO armed() OF ITS OWN, and asking it for one is the live bug this
+  // extraction closes: m59-bt-nodes.mjs guards its wielding_weapon condition on
+  // `client.armed()`, so that condition has answered false for every character since it
+  // shipped. Pin the shape so the mistake cannot be made again silently.
+  ok('a client carries no armed() of its own -- isArmed() is the question',
+     typeof client([]).armed === 'undefined');
 }
 
 
