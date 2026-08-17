@@ -179,6 +179,47 @@ if (BLESS) {
   process.exit(0);
 }
 
+// ---------------------------------------------------------------------------
+// ORPHANS. A module nothing imports is not neutral: it is code that looks
+// available, tests green, and runs never -- and the next person to need that
+// behaviour writes it again rather than finding it.
+//
+// This was not hypothetical. m59-bt-farming.mjs was imported by nothing, and it
+// transitively kept m59-bt-combat, m59-bt-shop and m59-bt-atomics reachable-only-
+// from-an-orphan: 3,966 lines of module and test, including the entire ten-node
+// atomic library, none of it executed by any keeper. Two of the four carried
+// conditions that were always false against a real client. 613 assertions passed
+// throughout.
+//
+// Reported, never failed: an orphan is sometimes deliberate (a module kept as the
+// base for the next phase, which is exactly why bt-nav and bt-walk survive today).
+// The point is that the choice is visible rather than discovered a year later.
+// ---------------------------------------------------------------------------
+// A module that can be RUN is not an orphan even if nothing imports it --
+// m59-goap.mjs is a CLI. The tell is a main guard.
+const isEntryPoint = (src) => /import\.meta\.url|process\.argv\[1\]/.test(src);
+
+// NOTE THE LIMIT: this is "imported by nothing live", one level deep, not true
+// reachability from a running keeper. A module imported only by another orphan
+// still reads as fine here -- which is exactly how m59-bt-atomics stayed
+// invisible behind m59-bt-shop. Walking the graph from m59-broker.mjs would be
+// stricter; it is not done yet, so read a clean report as "no NEW orphan" rather
+// than as "everything is wired".
+function orphans(dir, files) {
+  const importedBy = new Map(files.map(f => [f, []]));
+  for (const f of readdirSync(dir).filter(x => x.endsWith('.mjs'))) {
+    const src = stripComments(readFileSync(join(dir, f), 'utf8'));
+    for (const target of files) {
+      if (f === target) continue;
+      if (f === target.replace(/\.mjs$/, '-test.mjs')) continue;   // its own test
+      if (src.includes(`./${target}`)) importedBy.get(target).push(f);
+    }
+  }
+  return files.filter(f =>
+    !isEntryPoint(readFileSync(join(dir, f), 'utf8')) &&
+    importedBy.get(f).every(x => x.includes('-test')));
+}
+
 // ── the ratchet ────────────────────────────────────────────────────────────
 if (!existsSync(BASELINE)) {
   console.error(`no baseline at ${basename(BASELINE)} -- run with --bless to create one`);
@@ -205,6 +246,14 @@ for (const [f, r] of report) {
 }
 
 console.log(`\n  total ${total} (baseline ${base.total})`);
+
+const orphaned = orphans(HERE, files);
+if (orphaned.length) {
+  console.log('\n  ORPHANED -- imported by nothing but their own tests:');
+  for (const f of orphaned) console.log(`    ${f}`);
+  console.log('  Deliberate or forgotten? An orphan that is neither wired nor deleted\n' +
+              '  is how 3,966 lines of always-false code passed 613 assertions.');
+}
 
 if (failed) {
   console.error(
