@@ -763,11 +763,14 @@ const UNREACHABLE_EXIT =
 // building — the Streets of Tos crossing is 24 squares and its worst legitimate detour is a
 // handful — and far short of the sixty-odd squares of oscillation that prompted it.
 const WALK_STALL_STEPS = Number(process.env.M59_WALK_STALL_STEPS || 24);
-// How many times one walk may break a dither with a validated random step, and how
-// far each escape goes. Deliberately tiny: the escape exists to move the STATE the
-// planner sees, not to walk the route itself.
+// How many times one walk may break a dither, and how many validated steps each escape
+// takes. Small on purpose: the escape exists to move the STATE the planner sees, not to
+// walk the route itself. But ONE step is too small to be worth the machinery — measured
+// live in Raza, a single step logged `went: 42,12` from `at: 42,12`, which is no
+// perturbation at all — and the first version of this defeated its own loop with an
+// unconditional break, so the knob was a lie: it read STEPS and always did one.
 const WALK_ESCAPE_TRIES = Number(process.env.M59_WALK_ESCAPE_TRIES || 3);
-const WALK_ESCAPE_STEPS = Number(process.env.M59_WALK_ESCAPE_STEPS || 1);
+const WALK_ESCAPE_STEPS = Number(process.env.M59_WALK_ESCAPE_STEPS || 3);
 
 const HOST = process.env.M59_HOST || '127.0.0.1';
 
@@ -4156,38 +4159,51 @@ class Session {
         // in whether the square is legal.
         if (escapes < WALK_ESCAPE_TRIES) {
           escapes++;
-          const legal = [];
-          for (const [dr, dc] of [[0,1],[0,-1],[1,0],[-1,0],[1,1],[1,-1],[-1,1],[-1,-1]]) {
-            const nr = now.row + dr, nc = now.col + dc;
-            if (!geo?.inBounds?.(nr, nc)) continue;
-            if (blockedEdges.has(edgeKey(now.row, now.col, nr, nc))) continue;
-            if (avoidSquares?.has?.(`${nr},${nc}`)) continue;
-            if (geo.moverStepLands && !geo.moverStepLands(now.row, now.col, nr, nc)) continue;
-            legal.push({ row: nr, col: nc });
-          }
-          // PREFER GROUND THIS WALK HAS NOT STOOD ON. The dither is made of revisits, so a
-          // step back onto a seen square is the likeliest way to re-enter the same loop.
-          const fresh = legal.filter(sq => !seenSquares.has(`${sq.row},${sq.col}`));
-          const pool = fresh.length ? fresh : legal;
-          if (pool.length) {
-            const walked = [];
-            for (let n = 0; n < WALK_ESCAPE_STEPS && pool.length; n++) {
-              const pick = pool[Math.floor(Math.random() * pool.length)];
-              const er = await this.step(pick.col, pick.row, { beforeMutation });
-              if (er.left_room)
-                return { arrived: false, left_room: true, steps: taken,
-                         note: 'an escape step crossed the room edge' };
-              if (isTerminalMovementReason(er.reason)) break;
-              const at = c.self;
-              if (!at) break;
-              walked.push(`${at.col},${at.row}`);
-              seenSquares.add(`${at.row},${at.col}`);
-              if (at.col !== pick.col || at.row !== pick.row) break;   // slid: stop here
-              break;   // one validated step is the whole escape; replan decides the rest
+          // THE LEGAL NEIGHBOURS OF WHEREVER THE BODY IS NOW — recomputed every step.
+          // Computing this once and stepping several times aims the second step at
+          // neighbours of a square the body has already left, which is a walk into
+          // whatever happens to be there.
+          const legalFrom = (sq) => {
+            const out = [];
+            for (const [dr, dc] of [[0,1],[0,-1],[1,0],[-1,0],[1,1],[1,-1],[-1,1],[-1,-1]]) {
+              const nr = sq.row + dr, nc = sq.col + dc;
+              if (!geo?.inBounds?.(nr, nc)) continue;
+              if (blockedEdges.has(edgeKey(sq.row, sq.col, nr, nc))) continue;
+              if (avoidSquares?.has?.(`${nr},${nc}`)) continue;
+              if (geo.moverStepLands && !geo.moverStepLands(sq.row, sq.col, nr, nc)) continue;
+              out.push({ row: nr, col: nc });
             }
+            return out;
+          };
+          const walked = [];
+          let from = { row: now.row, col: now.col };
+          for (let n = 0; n < WALK_ESCAPE_STEPS; n++) {
+            const legal = legalFrom(from);
+            if (!legal.length) break;
+            // PREFER GROUND THIS WALK HAS NOT STOOD ON. The dither is made of revisits, so
+            // stepping back onto a seen square is the likeliest way to re-enter the loop.
+            const fresh = legal.filter(sq => !seenSquares.has(`${sq.row},${sq.col}`));
+            const pool = fresh.length ? fresh : legal;
+            const pick = pool[Math.floor(Math.random() * pool.length)];
+            const er = await this.step(pick.col, pick.row, { beforeMutation });
+            if (er.left_room)
+              return { arrived: false, left_room: true, steps: taken,
+                       note: 'an escape step crossed the room edge' };
+            if (isTerminalMovementReason(er.reason)) break;
+            const at = c.self;
+            if (!at) break;
+            taken++;
+            walked.push(`${at.col},${at.row}`);
+            seenSquares.add(`${at.row},${at.col}`);
+            // A SLID ESCAPE STEP IS STILL AN ESCAPE — the body moved, which is the whole
+            // point — but carry on from where it ACTUALLY is, never from where it aimed.
+            from = { row: at.row, col: at.col };
+            if (at.col === now.col && at.row === now.row) break;   // went nowhere: stop trying
+          }
+          if (walked.length) {
             // LOUDLY. An escape that reads as a successful walk is a routing fault nobody
             // ever looks at again, which is the failure mode of every quiet remedy.
-            this.note?.('dither — escaped with a validated random step and replanned', {
+            this.note?.(`dither — escaped with ${walked.length} validated random step(s) and replanned`, {
               at: `${now.col},${now.row}`, went: walked.join(' ') || '(nowhere)',
               toward: `${col},${row}`, best_gap: bestGap, escape: escapes,
               of: WALK_ESCAPE_TRIES, revisits: sinceCloser,
