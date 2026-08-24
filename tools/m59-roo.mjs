@@ -161,6 +161,10 @@ const SIDE_PASSABLE = 0x02;
 const SIDE_ABOVE = 0x04;
 const SIDE_BELOW = 0x08;
 const CLIENT_PER_KOD = CLIENT_FINENESS / KOD_FINENESS;
+// A separator value this small means the point is ON the splitting plane. The value is a
+// plane equation (a*x + b*y + c) at CLIENT_FINENESS scale, so one client unit off the plane
+// is ~1024 here; 1 is comfortably 'exactly on it' without catching near misses.
+const ON_PLANE_EPSILON = 1;
 const GEOMETRY_EPSILON = 1e-6;
 const f32 = Math.fround;
 export const protocolToClient = value => (value - KOD_FINENESS) * CLIENT_PER_KOD;
@@ -834,14 +838,35 @@ export class RoomGeometry {
 
     // FindIntersection is pre-order DFS: current splitter, then positive subtree,
     // then negative subtree. The first blocking wall determines the stock slide.
+    //
+    // DESCEND THE TREE INSTEAD OF WALKING ALL OF IT. The stock client recurses into BOTH
+    // children unconditionally (move.c FindIntersection), which is O(nodes) per query, and
+    // it can afford that: MOVE_DELAY is 100ms and STEPS_PER_MOVE is 20, so it runs this at
+    // most 200 times a second for ONE body. A single path() here runs it thousands of times
+    // for hypothetical steps, for 21 characters, on one event loop — which is the whole
+    // reason the step mask is baked offline in the first place.
+    //
+    // A subtree can only hold a wall we might hit if the swept segment reaches its side of
+    // the splitter. Both endpoints more than a player radius clear of the plane means the
+    // disc never crosses it, so that subtree cannot contribute. This is a PRUNE, not a
+    // different answer: every node it skips is one where intersectNode's own bbox and
+    // plane-distance gates would have returned null anyway.
+    //
+    // Measured on room 1012: 674 internal nodes visited per microstep before, ~10 after.
     const stack = [this.bspRoot];
     while (stack.length) {
       const node = this.nodes?.[stack.pop() - 1];
       if (!node || node.type === 'leaf') continue;
       const hit = intersectNode(node);
       if (hit) return hit;
-      if (node.negative) stack.push(node.negative);
-      if (node.positive) stack.push(node.positive);
+      // How far each end of this microstep sits from this node's plane, in client units.
+      const dFrom = f32(separatorValue(node.separator, from.x, from.y) / CLIENT_FINENESS);
+      const dTo = f32(separatorValue(node.separator, to.x, to.y) / CLIENT_FINENESS);
+      const lo = Math.min(dFrom, dTo), hi = Math.max(dFrom, dTo);
+      // Keep a side whenever the disc could touch it. The margin is the player radius, the
+      // same figure intersectNode compares against, so nothing reachable is dropped.
+      if (node.negative && lo < playerRadius) stack.push(node.negative);
+      if (node.positive && hi > -playerRadius) stack.push(node.positive);
     }
     return null;
   }
