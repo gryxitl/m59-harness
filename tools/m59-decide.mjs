@@ -39,6 +39,7 @@ import { pickFood } from './m59-act/eat.mjs';
 import { knownSpells } from './m59-act/cast.mjs';
 import { affordances } from './m59-parse.mjs';
 import './m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
+import { sameRegion } from './m59-navgrid.mjs';
 
 // BROKEN-WEAPON TRACKING (the fix for the shattered-mace loop).
 //
@@ -836,6 +837,31 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           // unreachable mummy. The A* is bounded (maxNodes 4000, ~100ms) and only
           // runs when there's no sticky target — not every tick. This prevents the
           // "cycle through 5 unreachable mummies at 1.5s each" loop.
+          // IS THE QUARRY EVEN IN THE SAME PIECE OF THE ROOM?
+          //
+          // Prey does not spawn where a character can walk. Room 1016's free space falls into
+          // EIGHT disconnected pieces — a body of 9,582 cells and seven sealed pockets, the
+          // largest 378 and 184 — because 88.6% of its tiles are crossed by a solid wall. A
+          // mummy in one of those cannot be reached by any route at any quality of
+          // pathfinding, and watched live that is a keeper picking it, failing to path,
+          // blinking, and sitting still.
+          //
+          // This is a different question from "how far is it". Region membership is one array
+          // lookup against a flood of free space, and it is exact: two points are mutually
+          // reachable exactly when their labels match.
+          //
+          // NULL MEANS PERMISSION. A room with no collision data cannot answer, and refusing
+          // every target there would cost the character its whole day — so only an explicit
+          // false excludes.
+          const reachable = (o) => {
+            if (!geo || me.col == null || o.col == null) return null;
+            return sameRegion(geo,
+              { x: me.col * 1024 + 512, y: me.row * 1024 + 512 },
+              { x: o.col * 1024 + 512, y: o.row * 1024 + 512 });
+          };
+          const sealedOff = new Set();
+          for (const { o } of candidates) if (reachable(o) === false && o.id != null) sealedOff.add(o.id);
+
           const needPathCheck = true;
           if (needPathCheck) {
             // Rank candidates by traversal distance (path length), not Euclidean.
@@ -843,6 +869,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             const toCheck = candidates.slice(0, 8);
             for (const { o, d2 } of toCheck) {
               if (o.id != null && _blacklist.has(o.id)) continue;
+              if (o.id != null && sealedOff.has(o.id)) continue;   // another piece of the room
               const plen = pathLen(o);
               // plen === Infinity means unreachable (no fine path). Skip it.
               // plen === null means no geometry (fallback to Euclidean).
@@ -852,9 +879,15 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             }
             // Fallback: if no candidate had a valid path length (all unreachable
             // or no geometry), pick the nearest by Euclidean as before.
+            // THE FALLBACK IS WHERE THIS WENT WRONG. It used to pick the nearest by
+            // straight-line distance whenever no candidate produced a path length — which is
+            // exactly the case when every candidate is UNREACHABLE, so "all sealed off" chose
+            // one anyway. A target known to be in another piece of the room is excluded here
+            // too; only "cannot say" falls through.
             if (!best) {
               for (const { o, d2 } of candidates) {
                 if (o.id != null && _blacklist.has(o.id)) continue;
+                if (o.id != null && sealedOff.has(o.id)) continue;
                 if (d2 < bestD2) { bestD2 = d2; best = o; }
               }
             }
@@ -862,6 +895,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             // Throttled: keep the previous target if it's still valid, else nearest by Euclidean.
             for (const { o, d2 } of candidates) {
               if (o.id != null && _blacklist.has(o.id)) continue;
+              if (o.id != null && sealedOff.has(o.id)) continue;
               if (d2 < bestD2) { bestD2 = d2; best = o; }
             }
           }
