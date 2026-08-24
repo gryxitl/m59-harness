@@ -1086,6 +1086,9 @@ const walkTo = compileSessionMethod(brokerSource,
     // Fourteen is generous enough to go round a building and far short of the sixty-odd
     // squares of oscillation measured crossing The Streets of Tos.
     WALK_STALL_STEPS: 24,
+    // The dither escape's knobs. See the note at the dither site in m59-game.mjs.
+    WALK_ESCAPE_TRIES: 3,
+    WALK_ESCAPE_STEPS: 1,
     // THE REAL FLAGS, not a stub. `walkTo` asks whether the body in its way is a PLAYER —
     // a player is also dodging and needs the object-id tie-break, a monster gets the fixed
     // clockwise-first order — and a fixture that invented its own bit would build a room

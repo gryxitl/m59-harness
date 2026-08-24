@@ -763,6 +763,11 @@ const UNREACHABLE_EXIT =
 // building — the Streets of Tos crossing is 24 squares and its worst legitimate detour is a
 // handful — and far short of the sixty-odd squares of oscillation that prompted it.
 const WALK_STALL_STEPS = Number(process.env.M59_WALK_STALL_STEPS || 24);
+// How many times one walk may break a dither with a validated random step, and how
+// far each escape goes. Deliberately tiny: the escape exists to move the STATE the
+// planner sees, not to walk the route itself.
+const WALK_ESCAPE_TRIES = Number(process.env.M59_WALK_ESCAPE_TRIES || 3);
+const WALK_ESCAPE_STEPS = Number(process.env.M59_WALK_ESCAPE_STEPS || 1);
 
 const HOST = process.env.M59_HOST || '127.0.0.1';
 
@@ -3504,6 +3509,8 @@ class Session {
     const recentredAt = new Set();
     // The closest this walk has ever been to its target, and how long since that improved.
     let bestGap = Infinity, sinceCloser = 0;
+    // Bounded escapes from a dither, and what they did — reported, never silent.
+    let escapes = 0; const escapeLog = [];
     // Where the body has already been. A dither revisits; a detour walks new ground.
     const seenSquares = new Set();
     const edgeKey = (fr, fc, tr, tc) => `${fr},${fc}>${tr},${tc}`;
@@ -4122,14 +4129,84 @@ class Session {
       seenSquares.add(hereKey);
       if (gapNow < bestGap) { bestGap = gapNow; sinceCloser = 0; }
       else if (r.reason === 'object_blocked') { /* the body path owns this one */ }
-      else if (revisited && ++sinceCloser > WALK_STALL_STEPS)
-        return { arrived: false, steps: taken, replans,
+      else if (revisited && ++sinceCloser > WALK_STALL_STEPS) {
+        // A DITHER IS A DETERMINISTIC PLANNER MEETING A STATE IT CANNOT LEAVE, SO MOVE THE
+        // STATE. A* is a function: the same position and the same map give the same plan,
+        // for ever. Once the body is oscillating, replanning from where it stands cannot
+        // help — only being somewhere else can.
+        //
+        // WHY NOISE RATHER THAN BLAMING AN EDGE. Banning the edge that closes the loop is
+        // the sharper tool and it needs something this code cannot reliably do at the first
+        // sighting: name the guilty edge. The attribution rules a few hundred lines below —
+        // blame the edge ASKED FOR not the landing, blame the APPROACH not the ledge — exist
+        // because getting it wrong deletes a good edge, and in room 578 that deleted the only
+        // way down and bounced the walk until its budget ran out. A short random step needs no
+        // attribution at all, so it cannot remove a way through that was never the problem.
+        //
+        // WHY NOT SIMPLY GIVE UP, WHICH IS WHAT THIS DID. Because the caller cannot tell a
+        // dither from a wall. Bbbb spent THREE HUNDRED AND EIGHTY SECONDS in The Streets of
+        // Tos and never left: the guard fired, `walkTo` handed back a failure, and
+        // `leaveViaAny` read it as `every square for that exit refused` — a dither became an
+        // unreachable door. Escaping and replanning keeps the failure inside the walk, where
+        // the facts are.
+        //
+        // EVERY STEP GOES THROUGH THE SAME VALIDATOR. `this.step` is the path the planned
+        // walk uses, so an escape cannot reach a square a plan could not, and it cannot
+        // invent a traversal the mover would refuse. It is noise in WHICH legal square, never
+        // in whether the square is legal.
+        if (escapes < WALK_ESCAPE_TRIES) {
+          escapes++;
+          const legal = [];
+          for (const [dr, dc] of [[0,1],[0,-1],[1,0],[-1,0],[1,1],[1,-1],[-1,1],[-1,-1]]) {
+            const nr = now.row + dr, nc = now.col + dc;
+            if (!geo?.inBounds?.(nr, nc)) continue;
+            if (blockedEdges.has(edgeKey(now.row, now.col, nr, nc))) continue;
+            if (avoidSquares?.has?.(`${nr},${nc}`)) continue;
+            if (geo.moverStepLands && !geo.moverStepLands(now.row, now.col, nr, nc)) continue;
+            legal.push({ row: nr, col: nc });
+          }
+          // PREFER GROUND THIS WALK HAS NOT STOOD ON. The dither is made of revisits, so a
+          // step back onto a seen square is the likeliest way to re-enter the same loop.
+          const fresh = legal.filter(sq => !seenSquares.has(`${sq.row},${sq.col}`));
+          const pool = fresh.length ? fresh : legal;
+          if (pool.length) {
+            const walked = [];
+            for (let n = 0; n < WALK_ESCAPE_STEPS && pool.length; n++) {
+              const pick = pool[Math.floor(Math.random() * pool.length)];
+              const er = await this.step(pick.col, pick.row, { beforeMutation });
+              if (er.left_room)
+                return { arrived: false, left_room: true, steps: taken,
+                         note: 'an escape step crossed the room edge' };
+              if (isTerminalMovementReason(er.reason)) break;
+              const at = c.self;
+              if (!at) break;
+              walked.push(`${at.col},${at.row}`);
+              seenSquares.add(`${at.row},${at.col}`);
+              if (at.col !== pick.col || at.row !== pick.row) break;   // slid: stop here
+              break;   // one validated step is the whole escape; replan decides the rest
+            }
+            // LOUDLY. An escape that reads as a successful walk is a routing fault nobody
+            // ever looks at again, which is the failure mode of every quiet remedy.
+            this.note?.('dither — escaped with a validated random step and replanned', {
+              at: `${now.col},${now.row}`, went: walked.join(' ') || '(nowhere)',
+              toward: `${col},${row}`, best_gap: bestGap, escape: escapes,
+              of: WALK_ESCAPE_TRIES, revisits: sinceCloser,
+            });
+            escapeLog.push({ at: `${now.col},${now.row}`, went: walked.join(' ') || null });
+            bestGap = Infinity; sinceCloser = 0;
+            queue.length = 0;                       // discard the plan; replan from here
+            continue;
+          }
+        }
+        return { arrived: false, steps: taken, replans, escapes: escapeLog,
                  blocked_at: { col: now.col, row: now.row },
                  reason: 'no_ground_gained',
                  note: `${sinceCloser} revisited squares without getting closer than ` +
-                       `${bestGap} — this is a dither, not a walk. The plan is what is wrong, ` +
-                       'so the caller gets it back rather than another lap of the same two ' +
-                       'squares.' };
+                       `${bestGap} — this is a dither, not a walk` +
+                       (escapes ? `, and ${escapes} validated escape(s) did not break it` : '') +
+                       '. The plan is what is wrong, so the caller gets it back rather than ' +
+                       'another lap of the same two squares.' };
+      }
       if (now.col === next.col && now.row === next.row) {
         // It landed where it was aimed, so the reach it used is one the ground supports.
         if (was && (was.col !== now.col || was.row !== now.row)) prevSquare = was;
