@@ -12,9 +12,24 @@
 // holds the current phase and produces one action per tick.
 // The decider queries it when the _fight goal is active.
 
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { loadSpawns } from './m59-spawns.mjs';
 import { KOD_FINENESS, protocolToClient } from './m59-roo.mjs';
 import { zapStatus, shouldCastZap, findZapSpell, equippedWeapon } from './m59-zap.mjs';
 import './m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
+
+const SPAWNS_FILE = join(dirname(fileURLToPath(import.meta.url)), '..', 'compendium', 'data', 'spawns.json');
+
+// A name reduced to its words, sorted, so a class name and a display name for the same
+// creature land on the same key. See _creatureNames.
+export const creatureKey = (name) => String(name ?? '')
+  .replace(/([a-z0-9])([A-Z])/g, '$1 $2')     // SpiderBaby -> Spider Baby
+  .toLowerCase()
+  .split(/[^a-z0-9]+/)
+  .filter(Boolean)
+  .sort()
+  .join('|');
 import { recordEvent } from './m59-ledger.mjs';
 import * as tougher from './m59-tougher.mjs';
 
@@ -299,12 +314,29 @@ export class CombatController {
         // a window. That also pinned him: has_target stayed true, _fight outranks hunt, and a
         // character fighting himself never travels — which is the whole reason he sat in The
         // Sweet Grass Prairies with a hunt room assigned.
+        // AND IT MUST BE A CREATURE, NOT MERELY "NOT US".
+        //
+        // Guarding on o.is_player has the same defect as o.is_self did: the flag is added by
+        // an enricher and these objects are raw, so it never fired either. With the self-guard
+        // in and nothing else, the scan simply moved on to the next body in the room — and
+        // that was Gountrug, another character in this fleet. Swinging at our own people is a
+        // worse failure than swinging at ourselves.
+        //
+        // So the test is positive rather than negative: the name has to be a creature the
+        // compendium knows. Anything we cannot identify as a mob is left alone, which is the
+        // right default for a swing.
+        const creatures = this._creatureNames();
         for (const o of objects.values()) {
           if (o.is_player || this._isSelf(o, c)) continue;
           if (o.col == null || o.row == null) continue;
+          const nm = String(c.rsc?.get?.(o.nameRsc) ?? o.name ?? '').toLowerCase();
+          // No compendium is a reason to swing at NOTHING, not at anything. The previous
+          // shape (`creatures.size && ...`) would have quietly restored the behaviour that
+          // put Lee's mace into a fleet-mate.
+          if (!nm || !creatures.has(creatureKey(nm))) continue;
           target = o;
           this.targetId = o.id;
-          this.targetName = c.rsc?.get?.(o.nameRsc) ?? o.name ?? 'mob';
+          this.targetName = nm || 'mob';
           break;
         }
       }
@@ -709,6 +741,29 @@ export class CombatController {
    */
   _walkToward(act, dest, what, me) {
     return this._walkTo(act, dest, what, me);
+  }
+
+  // Every creature name the compendium knows, cached for the life of the controller. The
+  // spawns file is the same source m59-decide.mjs uses to tell a mob from a barrel.
+  _creatureNames() {
+    if (this._creatures) return this._creatures;
+    this._creatures = new Set();
+    try {
+      // The same source and loader m59-decide.mjs uses, so the two agree about what a mob is.
+      // THE COMPENDIUM STORES CLASS NAMES, THE WIRE SENDS DISPLAY NAMES.
+      //
+      // `SpiderBaby` against "baby spider", `GiantRat` against "giant rat". A plain
+      // lowercase compare matches only where the two happen to coincide — `Centipede` does,
+      // which is exactly why this looked like it worked. Lee's two assigned quarries, baby
+      // spider and giant rat, both failed it.
+      //
+      // So both sides are reduced to a SORTED SET OF WORDS: camel case is split, spaces and
+      // punctuation are separators, and the result is compared order-independently.
+      // SpiderBaby -> baby|spider, "baby spider" -> baby|spider.
+      const spawns = loadSpawns(SPAWNS_FILE);
+      for (const name of Object.keys(spawns?.byMonster ?? {})) this._creatures.add(creatureKey(name));
+    } catch { /* no compendium: the set stays empty, and the scan refuses rather than guessing */ }
+    return this._creatures;
   }
 
   // Is this object us? By id when we know it, and by name always — see the caller.
