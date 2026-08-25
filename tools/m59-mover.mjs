@@ -35,6 +35,12 @@ import './m59-navgeom.mjs';   // installs the height model + lenient fine path o
 
 // 256 client units = 16 protocol units per 100ms tick (walking).
 // Running is 2 * MOVEUNITS = 32 protocol units.
+// How many recent squares the shuffle detector remembers, and how few distinct ones count as
+// going nowhere. Six samples and two squares catches the A-B-A-B bounce without flagging a
+// character legitimately squeezing through a doorway.
+export const SHUFFLE_WINDOW = 6;
+export const SHUFFLE_SQUARES = 2;
+
 export const MOVEUNITS_PROTO = 16;
 export const RUNUNITS_PROTO = 32;
 
@@ -630,12 +636,34 @@ export class Mover {
       if (process.env.M59_MOVE_DEBUG !== '0')
         console.error(`[movedbg-gate] t3 gateCLOSED step=(${stepCol},${stepRow}) me=(${me.col},${me.row}) server=(${myProtoX},${myProtoY}) lastReport=(${this._lastReportX},${this._lastReportY}) interval=${Date.now()-this._lastReportAt}ms`);
     }
-    if (me && this.lastPos && this.lastPos.col === me.col && this.lastPos.row === me.row) {
-      this.stuckTicks++;
-    } else {
-      this.stuckTicks = 0;
+    // A SHUFFLE IS A STALL, AND STILLNESS IS NOT THE ONLY WAY TO STAND STILL.
+    //
+    // This counted a tick as stuck only when the square did not change, so a body bouncing
+    // between two squares cleared the counter on every sample and could shuffle for ever.
+    // Watched live on JayB in room 1012: 257 walkTo calls, every one returning arrived:true,
+    // alternating (32,11) -> (33,11) -> (32,11) for eighteen minutes while `travel` reported
+    // progress and the stuck detector never fired once. He never reached the Mausoleum and
+    // never swung at anything.
+    //
+    // So: remember the last few squares and ask whether the body is actually GETTING
+    // ANYWHERE. Revisiting a square we stood on two or three moves ago is not travel, and it
+    // is the commonest shape of a stalled route — docs/m59-routing.md has the warning this
+    // code did not implement.
+    if (me) {
+      this._recent = this._recent ?? [];
+      const key = `${me.col},${me.row}`;
+      const revisit = this._recent.includes(key);
+      this._recent.push(key);
+      if (this._recent.length > SHUFFLE_WINDOW) this._recent.shift();
+      const distinct = new Set(this._recent).size;
+      const stillHere = this.lastPos && this.lastPos.col === me.col && this.lastPos.row === me.row;
+      // Stuck when we did not move at all, OR when the last SHUFFLE_WINDOW moves only ever
+      // touched a couple of squares and we are back on one of them.
+      if (stillHere || (this._recent.length >= SHUFFLE_WINDOW && distinct <= SHUFFLE_SQUARES && revisit))
+        this.stuckTicks++;
+      else this.stuckTicks = 0;
+      this.lastPos = { col: me.col, row: me.row };
     }
-    if (me) this.lastPos = { col: me.col, row: me.row };
     return { state: 'moving', to: { col: stepCol, row: stepRow } };
   }
 
