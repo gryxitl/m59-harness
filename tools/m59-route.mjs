@@ -275,16 +275,36 @@ export class Router {
     // in the direction of the exit. Walking to it triggers
     // the room change.
     let edgeTarget = exit.edge_target ?? null;
-    if (!edgeTarget && exit.direction) {
-      const dir = exit.direction.toLowerCase();
+    const finiteP = (p) => p && Number.isFinite(p.col) && Number.isFinite(p.row);
+    if (!finiteP(edgeTarget)) edgeTarget = null;
+    // The exit's own direction if it has one, the baked anchor's `dir` if it does not.
+    let dir = String(exit.direction ?? exit.dir ?? '').toLowerCase();
+    // AND FAILING BOTH, THE BOUNDARY THE STAGING SQUARE IS STANDING ON.
+    //
+    // An edge crossing fires by walking PAST the boundary, so the target has to be a square
+    // BEYOND it. With no direction and no baked edge_target there was nothing to aim at, and
+    // the earlier guard fell back to the standOn — which is where the character already is, so
+    // it arrives, re-aims, arrives again. Watched on Lee at (60,2) in West Jasper: five
+    // `travel crossing -> 557` decisions and three `ARRIVED at (60,2)` in a row, never
+    // crossing. A staging square sits ON the boundary by definition, so which boundary it is
+    // tells us which way is out.
+    if (!dir && standOn && this.leg?.kind !== 'go') {
+      const geo = this._geo?.();
+      const rows = geo?.rows ?? null, cols = geo?.cols ?? null;
+      if (standOn.row <= 1) dir = 'north';
+      else if (rows && standOn.row >= rows) dir = 'south';
+      else if (standOn.col <= 1) dir = 'west';
+      else if (cols && standOn.col >= cols) dir = 'east';
+    }
+    if (!edgeTarget && dir) {
       const dx = dir === 'east' ? 1 : dir === 'west' ? -1 : 0;
       const dy = dir === 'south' ? 1 : dir === 'north' ? -1 : 0;
-      edgeTarget = { col: standOn.col + dx, row: standOn.row + dy };
+      if (dx || dy) edgeTarget = { col: standOn.col + dx, row: standOn.row + dy };
     }
 
     return { leg: { fromRoom: here, next, standOn,
                     edgeTarget,
-                    direction: exit.direction ?? null,
+                    direction: exit.direction ?? dir ?? null,
                     kind: exit.kind ?? 'walk',
                     startedAt: this.now() } };
   }
