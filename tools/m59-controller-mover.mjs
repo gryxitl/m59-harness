@@ -1,0 +1,214 @@
+// THE CONTROLLER, WEARING THE MOVER'S INTERFACE.
+//
+// `m59-combat.mjs:_walkTo` drives `session._mover` with `to(col,row)` then `tick(me)` every
+// pass, and acts on three of the states that come back: `arrived` clears the walk, `no-route`
+// blacklists the target, `stuck` escalates to a blink. That is the seam the fleet actually
+// moves through — `Actuator.walk()` and `session.walkTo` carry travel and errands, not combat
+// — so this is where a new mover has to fit.
+//
+// WHY REPLACE IT AT ALL. Measured on JayB in the Mausoleum over one run: 1,658 swings, 49
+// walk attempts, 62 blinks, thirty seconds of standing still before each blink and 42 of the
+// 62 from two adjacent squares. Every one of those squares is walkable, floored, and in the
+// same 9,582-cell region as the mummy he was chasing — `sameRegion` says the route exists and
+// the legacy mover could not walk it. Handed the same grid plan, the controller arrives on all
+// five of the walks he was failing, in 3.4s to 18.9s, with zero blocked ticks:
+//
+//     (38,28) -> (22,30)   arrived 16.9s   157 waypoints   slid 0  blocked 0
+//     (38,26) -> (22,30)   arrived 16.1s   149            slid 0  blocked 0
+//     (23,20) -> (22,30)   arrived  4.1s    40            slid 0  blocked 0
+//     (38,28) -> (20,34)   arrived 18.9s   175            slid 0  blocked 0
+//     (26,24) -> (22,30)   arrived  3.4s    32            slid 0  blocked 0
+//
+// AND IT PLANS ON THE GRID, NOT THE TRACE. `m59-navtrace.mjs` refuses all five of those walks,
+// because `traceFineMoveClient` disagrees with `moverStepLands` on 16% of this room's steps and
+// the refusals cluster at doorways. The grid plan was never the problem; executing it was. Keep
+// M59_NAV_TRACE=off here until that disagreement is closed — see docs/m59-controller-plan.md.
+//
+// FALLING BACK IS NOT OPTIONAL. Rooms without collision geometry exist, and a character whose
+// mover has no opinion must not stand still. Anything this cannot answer goes to the mover the
+// router built, which is kept and delegated to rather than discarded.
+import { CharacterController } from './m59-controller.mjs';
+
+// How many consecutive ticks the controller may report no progress before we tell the keeper
+// `stuck` and let it blink. The legacy mover waited 30s; three seconds is long enough to be a
+// real obstruction and short enough that a blink is still cheap.
+const STUCK_TICKS = 30;
+
+// The server's own word arrives asynchronously and is square-granular. Reconciling against it
+// every tick would treat its resolution as error — see CharacterController.reconcile.
+const RECONCILE_EVERY_MS = 1000;
+
+// HOW FAR BACK THE SERVER'S WORD IS ABOUT. A position push describes where the body was when
+// the server last processed it, so the error has to be measured against what WE believed at
+// roughly that moment. A ring of recent beliefs is the honest way to find it; the alternative
+// — comparing against a snapshot taken when we last SENT — freezes the moment sending stops,
+// and a blocked body stops sending immediately. That is how drift reached 3,254 units (three
+// squares) on the first live run while reconcile fired seven times and corrected nothing.
+const BELIEF_RING_MS = 3000;
+
+export class ControllerMover {
+  constructor(session, fallback) {
+    this.session = session;
+    this.fallback = fallback;          // the router's Mover, kept for what we cannot do
+    this.ctl = new CharacterController();
+    this.dest = null;
+    this.active = false;
+    this._lastTickAt = 0;
+    this._lastReconcileAt = 0;
+    this._beliefs = [];        // {x,y,at}, most recent last
+    this._noProgress = 0;
+    this._sentSeen = 0;
+    this.stats = { ticks: 0, arrived: 0, stuck: 0, noRoute: 0, delegated: 0, replans: 0,
+                   moving: 0, blockedTicks: 0, planFail: 0 };
+    this._lastSummary = 0;
+    this._agent = session?.agent ?? session?.name ?? '?';
+  }
+
+  get _geo() { return this.session?.world?.geometry ?? this.session?._roomGeo ?? null; }
+
+  to(col, row) {
+    const isNew = !this.dest || this.dest.col !== col || this.dest.row !== row;
+    this.dest = { col, row };
+    this.active = true;
+    // The legacy mover has to keep tracking the aim even while we are steering, or a
+    // delegated tick would resume against a stale destination.
+    try { this.fallback?.to?.(col, row); } catch { /* it is a fallback, not a dependency */ }
+    if (isNew) {
+      this._noProgress = 0;
+      this._plannedFor = null;           // force a plan on the next tick
+    }
+  }
+
+  // Passed through untouched: the decider calls it every pass and it belongs to the legacy
+  // mover's lazy position reporting, which still runs for travel.
+  maybeConfirm(...a) { return this.fallback?.maybeConfirm?.(...a); }
+
+  cancel() {
+    this.active = false; this.dest = null;
+    try { this.ctl.clear(); } catch { /* ignore */ }
+    try { this.fallback?.cancel?.(); } catch { /* ignore */ }
+  }
+
+  _delegate(posOverride, why) {
+    this.stats.delegated++;
+    if (!this.fallback?.tick) return { state: 'blocked', why: why ?? 'no fallback mover' };
+    return this.fallback.tick(posOverride);
+  }
+
+  _summarise(state) {
+    const now = Date.now();
+    if (now - this._lastSummary < 20000) return;
+    this._lastSummary = now;
+    const s = this.stats, c = this.ctl.stats ?? {};
+    console.error(`[ctlmover] ${this._agent} ${state} dest=${this.dest ? `(${this.dest.col},${this.dest.row})` : '-'}`
+      + ` at=(${this.ctl.square?.().col},${this.ctl.square?.().row})`
+      + ` | ticks=${s.ticks} moving=${s.moving} arrived=${s.arrived} stuck=${s.stuck}`
+      + ` noRoute=${s.noRoute} planFail=${s.planFail} blocked=${s.blockedTicks} delegated=${s.delegated}`
+      + ` | ctl sent=${c.sent ?? 0} slid=${c.slid ?? 0} ctlBlocked=${c.blocked ?? 0} reconciled=${c.reconciled ?? 0} drift=${Math.round(c.drift_max ?? 0)}`);
+  }
+
+  tick(posOverride) {
+    this.stats.ticks++;
+    if (!this.active || !this.dest) return { state: 'idle' };
+
+    const c = this.session?.client;
+    if (!c || c.state !== 'game') return { state: 'not-in-game' };
+    const me = posOverride ?? c.self;
+    if (!me || me.col == null) return { state: 'no-position' };
+
+    const geo = this._geo;
+    // A room we cannot collide in is a room the controller has no business steering in.
+    if (!geo?.collisionReady) return this._delegate(posOverride, 'no collision geometry');
+
+    const now = Date.now();
+    const dt = this._lastTickAt ? Math.min(now - this._lastTickAt, 1000) : 0;
+    this._lastTickAt = now;
+
+    // POSITION: adopt the server's word once, then own it.
+    if (this.ctl.x == null) this.ctl.syncFrom(me);
+    else {
+      this._beliefs.push({ x: this.ctl.x, y: this.ctl.y, at: now });
+      while (this._beliefs.length && now - this._beliefs[0].at > BELIEF_RING_MS) this._beliefs.shift();
+      if (now - this._lastReconcileAt >= RECONCILE_EVERY_MS) {
+        this._lastReconcileAt = now;
+        // What did we believe about a second ago? That is the belief the server's word is
+        // about. If we have not moved in that time the answer is simply "here", and the
+        // reconcile becomes a straight correction — which is exactly right for a body that
+        // is wedged and needs its position fixed rather than its travel preserved.
+        const want = now - RECONCILE_EVERY_MS;
+        let snap = this._beliefs[0] ?? null;
+        for (const b of this._beliefs) if (Math.abs(b.at - want) < Math.abs(snap.at - want)) snap = b;
+        if (this.ctl.reconcile({ col: me.col, row: me.row }, snap)) this._plannedFor = null;
+      }
+    }
+
+    // PLAN: once per destination, on the grid. Re-planning at tick rate is what held the
+    // first live run to 1.14 squares/sec.
+    const key = `${this.dest.col},${this.dest.row}`;
+    if (this._plannedFor !== key || !this.ctl.path) {
+      const plan = this.ctl.setDestination(geo, this.dest.col, this.dest.row, me);
+      this.stats.replans++;
+      if (!plan?.ok) {
+        // NO ROUTE IS A REAL ANSWER AND THE KEEPER ACTS ON IT — it blacklists the target
+        // rather than chasing something behind a wall. Only say it when the planner refused,
+        // never when we merely failed to make progress.
+        this.stats.noRoute++; this.stats.planFail++;
+        this.active = false;
+        console.error(`[ctlmover] ${this._agent} NO-ROUTE to (${this.dest.col},${this.dest.row})`
+          + ` from (${me.col},${me.row}): ${plan?.reason ?? '?'}`);
+        return { state: 'no-route', why: plan?.reason ?? 'no path to destination' };
+      }
+      this._plannedFor = key;
+      // NOT resetting _noProgress here. A blocked tick forces a replan, so resetting the
+      // counter on every plan means it can never reach STUCK_TICKS — which is why the first
+      // live run reported stuck=0 while the body stood in one square for 998 ticks. Only real
+      // movement, or a new destination, clears it.
+    }
+
+    if (!dt) return { state: 'moving', to: this.dest };
+
+    const before = this.ctl.square();
+    const r = this.ctl.step(dt, { geo, client: c });
+
+    if (r.state === 'blocked' || r.state === 'no-path') this.stats.blockedTicks++;
+    else if (r.state === 'moving') this.stats.moving++;
+    this._summarise(r.state);
+
+    if (r.state === 'arrived') {
+      this.stats.arrived++;
+      console.error(`[ctlmover] ${this._agent} ARRIVED at (${this.ctl.square().col},${this.ctl.square().row})`);
+      this.active = false;
+      // The last position is worth a packet even though the throttle would hold it: the
+      // keeper is about to swing, and swinging from where the server thinks we are is the
+      // difference between a hit and a whiff.
+      try { this.ctl.replicate(c, true); } catch { /* best effort */ }
+      return { state: 'arrived', position: this.ctl.square() };
+    }
+
+    const after = this.ctl.square();
+    const moved = after.col !== before.col || after.row !== before.row;
+    if (moved) this._noProgress = 0; else this._noProgress++;
+
+    if (r.state === 'blocked' || r.state === 'no-path') {
+      // The controller gave the plan up. Try once more from where we now are; a body that
+      // slid into a corner often has a route the plan made from the old position did not.
+      this._plannedFor = null;
+      if (this._noProgress >= STUCK_TICKS) {
+        this.stats.stuck++;
+        this._noProgress = 0;
+        console.error(`[ctlmover] ${this._agent} STUCK (blocked) at (${after.col},${after.row}) aiming (${this.dest.col},${this.dest.row})`);
+        return { state: 'stuck', why: `controller blocked at (${after.col},${after.row})` };
+      }
+      return { state: 'moving', to: this.dest, blocked: true };
+    }
+
+    if (this._noProgress >= STUCK_TICKS) {
+      this.stats.stuck++;
+      this._noProgress = 0;
+      this._plannedFor = null;
+      return { state: 'stuck', why: `no progress for ${STUCK_TICKS} ticks at (${after.col},${after.row})` };
+    }
+
+    return { state: 'moving', to: this.dest };
+  }
+}

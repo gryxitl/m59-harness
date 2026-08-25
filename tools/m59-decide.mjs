@@ -442,13 +442,30 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
               }
               return false;
             });
+          // THE EXEMPTIONS MUST RESET THE CLOCK, NOT MERELY SKIP THE BLINK.
+          //
+          // `_lastPosAt` only advances when the position CHANGES (below), so a character
+          // standing still for a legitimate reason ages the stuck timer the whole time it is
+          // exempt. The moment the exemption lapses — the target dies, or reads out of reach
+          // for one pass — `held` is ALREADY past STUCK_MS and it blinks on the spot, then
+          // again every STUCK_MS after.
+          //
+          // Watched live on JayB: seven blinks from (12,31), every one reporting "stuck for
+          // 30s", while the same window logged 194 swings at a mummy in reach. He was never
+          // stuck; he was fighting, and the timer was counting the fight. 62 blinks in the
+          // previous run have the same shape.
+          //
+          // So being exempt means the clock starts WHEN THE EXEMPTION ENDS. A character that
+          // stops fighting and then stands still for STUCK_MS is stuck; one that just spent
+          // four minutes swinging is not.
           if (_resting) {
-            // Resting: not stuck, just not moving.
+            _lastPosAt = now();          // resting is not moving, and not stuck either
           } else if ((_fighting && !targetOutOfReach) || (mobNearby && !targetOutOfReach)) {
             // Genuinely engaged: fighting a target in reach, or a hostile mob
             // is within 4 squares. Not stuck — just holding position. A "fight"
             // frozen against a far target (or no mob nearby) is stuck-on-a-ledge,
             // so fall through and let the stuck-detector blink/walk out.
+            _lastPosAt = now();
           } else {
             const held = now() - _lastPosAt;
             if (held > STUCK_MS) {

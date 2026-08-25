@@ -122,7 +122,20 @@ async function join() {
         console.error(`[keeper] ${agent} map warm failed (${e.message}); will build lazily on first use`);
       }
       const router = new Router({ session });
+      // COMBAT MOVES THROUGH session._mover; TRAVEL MOVES THROUGH router.mover. They were the
+      // same object, and swapping only this one hands the controller the fight while leaving
+      // the router's own journeys on the mover they were tuned against.
       session._mover = router.mover;
+      if (process.env.M59_TICK_CONTROLLER === '1') {
+        try {
+          const { ControllerMover } = await import('./m59-controller-mover.mjs');
+          session._mover = new ControllerMover(session, router.mover);
+          console.error(`[keeper] ${agent} combat movement on the CHARACTER CONTROLLER`
+            + ` (planner=${process.env.M59_NAV_TRACE || 'on'})`);
+        } catch (e) {
+          console.error(`[keeper] ${agent} controller mover unavailable (${e.message}); staying on the legacy mover`);
+        }
+      }
       session._router = router;
       INTENTS.travel = routeIntent(router);
 
