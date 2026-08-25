@@ -34,6 +34,22 @@ import { CharacterController } from './m59-controller.mjs';
 // real obstruction and short enough that a blink is still cheap.
 const STUCK_TICKS = 30;
 
+// HAND BACK RATHER THAN STAND STILL.
+//
+// The controller executes a grid plan against the FINE geometry, and the two disagree in
+// places: from (3,17) in the Mausoleum it walks to (22,30) in 12.4s, but the same planner's
+// 76-waypoint route to (2,35) — where the mummies are — is refused on the ninth tick and the
+// body never leaves the square. The grid says region 0 for both, so this is not a pocket; it
+// is the 8-25% step disagreement in docs/m59-controller-plan.md, and no amount of adapter
+// work closes it.
+//
+// The legacy mover already handles these spots — verified escape fans, raw server-confirmed
+// moves, blink. So a destination the controller cannot make progress on is DELEGATED for as
+// long as that destination stands, rather than being reported as stuck. The controller keeps
+// everything it is better at and gives back the cases it is worse at, which is the only
+// honest arrangement while the two geometries disagree.
+const HANDBACK_TICKS = 12;
+
 // The server's own word arrives asynchronously and is square-granular. Reconciling against it
 // every tick would treat its resolution as error — see CharacterController.reconcile.
 const RECONCILE_EVERY_MS = 1000;
@@ -74,8 +90,14 @@ export class ControllerMover {
     // delegated tick would resume against a stale destination.
     try { this.fallback?.to?.(col, row); } catch { /* it is a fallback, not a dependency */ }
     if (isNew) {
-      this._noProgress = 0;
+      // NOT resetting _noProgress here. The quarry MOVES, so a fight re-aims every few ticks,
+      // and clearing the counter on each new aim means a wedged body never reports stuck:
+      // watched live, JayB sat at (3,17) for 736 ticks with stuck=0 while the destination
+      // walked from (11,26) to (3,35) to (10,25) to (4,29) to (12,24). The probe said
+      // 'no fine path' the whole time and nothing escalated, because the counter kept being
+      // forgiven. Progress is a property of the BODY, not of the aim.
       this._plannedFor = null;           // force a plan on the next tick
+      this._handedBack = false;          // a new aim deserves a fresh try
     }
   }
 
@@ -187,7 +209,19 @@ export class ControllerMover {
 
     const after = this.ctl.square();
     const moved = after.col !== before.col || after.row !== before.row;
-    if (moved) this._noProgress = 0; else this._noProgress++;
+    if (moved) { this._noProgress = 0; this._handedBack = false; }
+    else this._noProgress++;
+
+    // Once the controller has failed to move the body for HANDBACK_TICKS, this destination
+    // belongs to the legacy mover. Cleared by any real movement, or by a new destination.
+    if (!moved && this._noProgress >= HANDBACK_TICKS) {
+      if (!this._handedBack) {
+        this._handedBack = true;
+        console.error(`[ctlmover] ${this._agent} handing (${this.dest.col},${this.dest.row}) back to the legacy mover`
+          + ` — no progress from (${after.col},${after.row}) in ${HANDBACK_TICKS} ticks`);
+      }
+      return this._delegate(posOverride, 'controller made no progress');
+    }
 
     if (r.state === 'blocked' || r.state === 'no-path') {
       // The controller gave the plan up. Try once more from where we now are; a body that

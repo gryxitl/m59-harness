@@ -290,3 +290,60 @@ wrong about each — that is the question everything else has been waiting on.
 walled-off mummy, and `sameRegion` is a flood over `freeSpace`. An earlier note in this file
 called the grid disposable if trace planning worked; that was wrong on two counts — trace
 planning does not work yet, and the region flood is load-bearing regardless of who plans.
+
+
+## Where it got to: the real-time keeper, running
+
+Combat movement is on the controller (`M59_TICK_CONTROLLER=1`), planning on the grid.
+Measured on JayB in the Mausoleum, same room and same character throughout:
+
+| | baseline (legacy mover) | controller |
+|---|---|---|
+| blinks | 62 | 0 |
+| blinks per 100 swings | 3.7 | 0 |
+| stuck-and-blink loops | 30s median, 92s worst | none |
+| arrivals | n/a | 18 in one 14-minute run |
+| tick errors | 0 | 0 (8,142 ticks) |
+
+Four bugs had to be fixed before any of it showed, and only one was in the controller:
+
+1. **The stuck clock counted the fight.** `_lastPosAt` advances only when the position
+   changes, and the fighting/resting exemptions skipped the blink without resetting it — so
+   the moment a target died the character was already "stuck for 30s" and blinked on the
+   spot. Seven blinks from (12,31) in a window logging 194 swings at a mummy in reach.
+
+2. **Reconcile compared against a snapshot taken when we last SENT**, which freezes the
+   instant a blocked body stops sending. Drift reached 3,254 units — three squares — while
+   reconcile fired seven times and corrected nothing. A ring of recent beliefs fixes it.
+
+3. **`scanBrokenFromEvents` re-read the whole event ring every call**, so one genuine "it's
+   broken" refusal condemned a different good weapon on every subsequent equip: thirteen
+   condemnations marching down the pack until `armed` could only answer "no weapon to
+   equip". `eventsSince` and a watermark exist for exactly this.
+
+4. **Nothing in the tick path ever called `requestInventory`.** `client.equipment()` stays
+   `known:false` until a `BP_USE_LIST` arrives, and `armed` is a `whenUnknown:true` fact —
+   so an unread hand read as ARMED for the life of the session. The survive keeper asks in
+   six places; this loop asked nowhere.
+
+**And a false reading cost an hour.** `/health` reported `equipment` by filtering the pack on
+`flags & 0x04` and returned `[]` for a character `/probe` showed wielding a mace. What you
+carry and what you are wearing are two different lists, `client.equipment()` is the only
+answer, and it distinguishes `known:false` from empty — which a flag filter cannot.
+
+### What it still cannot do, and why that is not an adapter problem
+
+From (3,17) the controller walks to (22,30) in 12.4s. The same planner's 76-waypoint route to
+(2,35) — where the mummies are — is refused on the ninth tick and the body never leaves the
+square. Both points are region 0, so it is not a pocket: it is the 8-25% step disagreement
+between `moverStepLands` and `traceFineMoveClient`, and no amount of adapter work closes it.
+
+So a destination the controller cannot make progress on after twelve ticks is **handed back**
+to the legacy mover, which already has verified escape fans, raw server-confirmed moves and
+blink. The controller keeps what it is better at and returns what it is worse at. Live, that
+is 87 swings, 0 blinks and 11 handbacks in an eight-minute run.
+
+**`kills/min` cannot measure any of this.** `recordKill` is called only from
+`m59-autopilot.mjs`; the tick keeper never writes to the ledger, so `m59-minimal.mjs` reports
+0.00 for a tick-keeper character no matter what it kills. That is the next thing to fix if the
+question is "is it earning", and it is a reporting gap rather than a keeper one.
