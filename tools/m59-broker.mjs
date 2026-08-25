@@ -11290,7 +11290,12 @@ async function callTool(name, args, caller) {
       unrecognised = extra;
       console.warn(`[${name}] unrecognised setting(s) ignored: ${extra.join(', ')} — ` +
                    'not declared by this tool, so nothing was applied for them');
-      rec?.line('call', { tool: name, unrecognised: extra });
+      // `rec?.line(...)` only guards that rec EXISTS — it still throws when rec has no
+      // line method, and this one throws BEFORE t.run(), so a call carrying an undeclared
+      // argument never ran at all and came back "error: rec?.line is not a function".
+      // The success path below had the same shape and threw AFTER t.run(), which is worse:
+      // the action applied and the caller was told it failed. Both now guard the CALL.
+      rec?.line?.('call', { tool: name, unrecognised: extra });
     }
   }
 
@@ -11301,7 +11306,7 @@ async function callTool(name, args, caller) {
     // wrong is the one reading this reply.
     if (unrecognised && out && typeof out === 'object' && !Array.isArray(out))
       out.unrecognised_settings = unrecognised;
-    rec?.line('call', { tool: name, args: recordedArgs, ms: Date.now() - t0 });
+    rec?.line?.('call', { tool: name, args: recordedArgs, ms: Date.now() - t0 });
     return out;
   } catch (e) {
     if (rec?.line) rec.line('call', { tool: name, args: recordedArgs, ms: Date.now() - t0, error: e.message });

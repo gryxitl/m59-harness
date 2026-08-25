@@ -53,7 +53,7 @@ const PULL_RANGE = 12;
 // Measured before the change: JayB, 331 swings in nine minutes at level-25 mummies, zero
 // kills, neither side losing health. A swing refused for range costs the whole second of
 // cooldown it was paced against, so a boundary swing is not a cheap miss — it is the round.
-const MELEE_REACH = 2;
+const MELEE_REACH = 3;
 // CAST_REACH: how close a caster needs to be to cast a bolt at a mob.
 // Bolt spells (zap, fire bolt) travel several squares, so casters can
 // engage from farther out than melee.
