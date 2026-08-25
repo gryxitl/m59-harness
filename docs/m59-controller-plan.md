@@ -105,3 +105,58 @@ graph for the path; the body moves continuously and never asks whether a tile is
 A new step function beside the existing one, selected by a flag, so the old path stays
 intact and a character can be switched back. Measured the same way for both: squares per
 second sustained, and whether the body ends up somewhere `moverStepLands` refuses.
+
+## Why walks still fail, measured — and the fix that does not work
+
+Arrival sat at 14-16 of 25 in room 1016 while the other rooms managed 19-23. Four
+hypotheses were tested and all were wrong: clearance radius (no effect between 248 and
+160), `navPath` returning the start cell (a real bug, fixed, and arrival got slightly
+WORSE), the blocked policy (marginal), and replan cadence (no effect between every tick
+and never).
+
+Instrumenting a single failing walk found it in one tick. The body sat at y=33018 while
+every waypoint marched north — 32640, 32384, 32128, 31872 — and each trace stopped after
+15-18 units with `geometry_blocked`. The wall responsible is 250 units away, one unit
+outside the 248 player radius:
+
+    passable = true    z1 = 3392  z2 = 4416
+    canCrossWallAt  pos = false   neg = true
+
+**A one-way wall.** `freeSpace` filters obstacles with `w.passable === false`, so it treats
+the `WF_PASSABLE` flag as the whole answer and does not see this wall at all. The planner
+routes through it, the mover correctly refuses, and the body grinds against something the
+plan says is not there — 77 blocked ticks against 16 replans.
+
+`m59-roo.mjs` already carries this exact lesson about `canCrossWallAt`: *"We treated
+`passable` as the whole answer, and it is only the third of three."* Step height, headroom,
+and the flag, evaluated PER SIDE. The planner reintroduced the mistake one file away from
+the comment describing it.
+
+It also explains the three dead hypotheses: the wall is not in the clearance set at ANY
+radius, so sweeping the radius could not move it, and every replan produced a route through
+the same invisible wall, so cadence could not either.
+
+**And asking `canCrossWallAt` instead of the flag does not fix it.** Blocking a cell when
+either side refuses was tried and measured:
+
+    room 1016 region 0        9,582 cells (94%)  ->  960 cells (11%)
+    false refusals on held    1.80%              ->  2.69%
+
+The Mausoleum is built of one-way ledges and tomb rails, and treating each as a wall
+shatters it. Arrival appeared to rise to 23/25 only because the test then drew its random
+pairs from a 960-cell fragment: shorter walks, not better walking. Reverted.
+
+So the dilemma is structural, and it is the same shape as the tile problem one level down:
+
+- block when EITHER side refuses -> over-blocks; 1016 collapses
+- block only when BOTH refuse    -> under-blocks; back to planning through the one-way wall
+
+**A cell grid cannot express side-dependent passability**, because freedom is a property of
+the cell and crossability is a property of the EDGE and the direction taken. The fix is
+directed edges — per-edge, per-direction passability computed with `canCrossWallAt` from the
+approaching side — rather than a per-cell free/blocked bit. That is a navmesh with directed
+arcs, and it is a bigger change than a filter.
+
+Until then the controller is correct and the planner occasionally hands it a route through a
+one-way wall; the controller blocks, the caller replans, and in rooms with many such walls
+that costs roughly a third of walks.
