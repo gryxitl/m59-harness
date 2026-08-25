@@ -522,3 +522,39 @@ Assert against our own validator, which is the only thing this repository contro
   of 49 health through rooms holding six to nine things, and it died going through. That is
   an accepted outcome of a planned trip, not a defect to engineer around.
 
+
+## AN EDGE EXIT IS AN EDGE, AND THE BAKE PICKS ONE SQUARE OF IT
+
+Lee, in The Sweet Grass Prairies (557), spent an afternoon reporting "stuck" and trying to
+leave for a hunt room seventeen times. He was never trapped, and the room was never sealed.
+
+Room 557 leaves by **edge exits** — there are no `goExits` at all:
+
+    south -> 382  West Jasper          north -> 556  Deep Forest of Farol
+    west  -> 547  Deep in the Forest of Farol
+
+The bake records ONE anchor per exit: `{kind:"edge", dir:"south", to:382, row:49, col:12,
+region:0}`. Lee's reachable ground is at columns 32-46. He touches the SAME south edge — a
+slide-enabled flood from his position reaches (49,43), (49,44), (49,45) and (49,46), all
+walkable — but the anchor is twenty columns west in a region he cannot reach, so the router
+concludes there is no way out.
+
+**A `go` exit is a doorway and genuinely is one square. An edge exit is the whole boundary,**
+and any walkable square on it leaves the room. Baking one square of it turns a wide-open
+border into a single door, and a character who cannot reach that door is reported stuck in a
+room he could walk out of in ten steps.
+
+The fix is to choose the crossing square at ROUTE TIME from the squares reachable by the
+character, rather than at BAKE time from the room as a whole — for edge exits only, since a
+`go` exit really is a point. `stranded_exits` in the baked table already counts anchors that
+cannot be reached from the room's body (232 of 1,341 across the world); this is the same fact
+seen from the character's side, and for an edge exit it is usually not a real obstruction.
+
+Two secondary notes from the same investigation:
+
+- The region grid is stricter than the body. `regions()` puts Lee in a 106-cell region that
+  touches no edge square; the slide-enabled flood reaches 444 cells including four of them.
+  `freeSpace` demands a full player radius of clearance from every solid wall, and the game
+  does not — the file's own comment measures the cost at 10.55% of held pairs.
+- The one-way walls around him (`posCross=false, negCross=true`, z1=0, z2=11200) are ledges,
+  not bugs. He dropped down something he cannot climb, which is ordinary terrain.
