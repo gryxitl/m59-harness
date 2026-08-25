@@ -72,6 +72,7 @@ export class ControllerMover {
     this._lastTickAt = 0;
     this._lastReconcileAt = 0;
     this._beliefs = [];        // {x,y,at}, most recent last
+    this._room = null;         // the room our believed position belongs to
     this._noProgress = 0;
     this._sentSeen = 0;
     this.stats = { ticks: 0, arrived: 0, stuck: 0, noRoute: 0, delegated: 0, replans: 0,
@@ -126,7 +127,8 @@ export class ControllerMover {
       + ` at=(${this.ctl.square?.().col},${this.ctl.square?.().row})`
       + ` | ticks=${s.ticks} moving=${s.moving} arrived=${s.arrived} stuck=${s.stuck}`
       + ` noRoute=${s.noRoute} planFail=${s.planFail} blocked=${s.blockedTicks} delegated=${s.delegated}`
-      + ` | ctl sent=${c.sent ?? 0} slid=${c.slid ?? 0} ctlBlocked=${c.blocked ?? 0} reconciled=${c.reconciled ?? 0} drift=${Math.round(c.drift_max ?? 0)}`);
+      + ` | ctl sent=${c.sent ?? 0} slid=${c.slid ?? 0} ctlBlocked=${c.blocked ?? 0} reconciled=${c.reconciled ?? 0} drift=${Math.round(c.drift_max ?? 0)}`
+      + ` roomResyncs=${s.roomResyncs ?? 0}`);
   }
 
   tick(posOverride) {
@@ -141,6 +143,36 @@ export class ControllerMover {
     const geo = this._geo;
     // A room we cannot collide in is a room the controller has no business steering in.
     if (!geo?.collisionReady) return this._delegate(posOverride, 'no collision geometry');
+
+    // A ROOM CHANGE INVALIDATES EVERYTHING WE BELIEVE.
+    //
+    // The controller owns its position, and that position means nothing in a room it was not
+    // measured in. Nothing here tracked the room, so a character walking through a door kept
+    // integrating the OLD room's coordinates against the NEW room's geometry — planning from a
+    // point that does not exist, colliding with walls that are not there, and reporting no
+    // progress because the body it is steering is somewhere else entirely.
+    //
+    // The tell was drift_max = 22,356 client units. That is 21.8 squares, which is not drift;
+    // no amount of 1Hz replication error accumulates to twenty-one squares. It is the distance
+    // between two rooms' coordinate systems, and it also explains 310 handbacks scattered over
+    // a dozen positions with no wall in common, and 9 arrivals in 13,238 ticks.
+    //
+    // So: adopt the server's word outright, drop the plan, and start again. There is nothing
+    // worth preserving across a door.
+    const roomNow = c.room?.id ?? this.session?.world?.room?.num ?? null;
+    if (roomNow !== this._room) {
+      if (this._room !== null) {
+        console.error(`[ctlmover] ${this._agent} room ${this._room} -> ${roomNow}: resyncing position, dropping the plan`);
+        this.stats.roomResyncs = (this.stats.roomResyncs || 0) + 1;
+      }
+      this._room = roomNow;
+      this.ctl.clear();
+      this.ctl.x = null;                 // forces syncFrom(me) below
+      this._beliefs.length = 0;
+      this._plannedFor = null;
+      this._noProgress = 0;
+      this._handedBack = false;
+    }
 
     const now = Date.now();
     const dt = this._lastTickAt ? Math.min(now - this._lastTickAt, 1000) : 0;
