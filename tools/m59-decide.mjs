@@ -68,17 +68,35 @@ function brokenSetFor(session = null, client = null) {
 // id to the broken set. Called by the `equip` intent before sending `use`, so a
 // weapon the server just refused gets condemned before it's retried. Cheap: a linear
 // scan of the last ~500 events, only on ticks where `armed` is the active goal.
+// ONLY EVENTS WE HAVE NOT ALREADY READ.
+//
+// This used to walk the whole event ring on every call. The ring keeps hundreds of messages,
+// so ONE genuine "it's broken" refusal stayed in it and was re-read on every subsequent equip
+// — condemning whatever `_lastEquipId` happened to be that time. Watched on JayB: thirteen
+// condemnations marching straight down the pack, ids 7666, 7667, 7668 ... 8185, until every
+// mace he owned was marked broken and `armed` could only answer "no weapon to equip". He then
+// fought a level-25 mummy bare-handed for 212 swings and killed nothing, and kept buying more
+// maces to condemn — fourteen of them in the pack by the time this was found.
+//
+// `eventsSince` exists precisely for this: e.seq is monotonic, so a watermark reads each
+// refusal exactly once. Without it the scanner cannot tell a fresh refusal from the memory of
+// an old one, and that distinction is the whole of its job.
 function scanBrokenFromEvents(client, session = null) {
   if (!client?.events) return;
   const set = brokenSetFor(session, client);
   const inv = client.inventory ?? [];
+  const holder = session ?? client;
+  const since = holder._brokenScanSeq ?? 0;
+  const fresh = client.eventsSince ? client.eventsSince(since) : client.events;
+  // Advance the watermark even when nothing matches, or a quiet ring replays for ever.
+  if (fresh.length) holder._brokenScanSeq = fresh[fresh.length - 1].seq ?? since;
   // Build a name -> id map for the current pack (the refusal names the weapon).
   const nameToId = new Map();
   for (const o of inv) {
     const n = String(client.rsc?.get?.(o.nameRsc) ?? o.name ?? '').toLowerCase();
     if (n && o?.id != null) nameToId.set(n, o.id);
   }
-  for (const ev of client.events) {
+  for (const ev of fresh) {
     if (ev.kind !== 'message') continue;
     const t = String(ev.text ?? '');
     if (!BROKEN_TEXT.test(t)) continue;
@@ -1390,13 +1408,23 @@ export const DEFAULT_GOALS = [
       const v = ws._vigor;
       return v != null && v < 60 && ws.in_reach !== true;
     } },
+  // ARMED BEFORE FIGHT. This sat BELOW _fight, and in a room that always has a mummy in it
+  // the armed goal therefore never got a turn: JayB fought bare-handed for 212 swings and
+  // killed nothing, while fourteen maces sat in his pack. Being armed is a PRECONDITION of
+  // fighting, not a competing use of the tick — the hunt band itself is halved when unarmed
+  // (floor(level/4) against floor(level/2)), which is the same judgement expressed in the
+  // policy. Equipping costs one tick and the fight resumes on the next.
+  //
+  // The failure mode this ordering used to protect against — equip refused for ever, so the
+  // character never fights — is handled where it belongs: `equip` returns a refusal when
+  // every weapon is broken, and `armed` then plans `buy` instead of retrying.
+  { goal: 'armed',    when: ws => ws.armed === false },
   { goal: '_fight',   when: ws => ws.has_target === true && ws.target_in_band === true
                                  && ws.critical !== true
                                  && (ws.hurt === true || ws.vigor_floor !== false)
                                  // Don't fight if the target is on a
                                  // different elevation (unreachable).
                                  && ws._targetElevated !== true },
-  { goal: 'armed',    when: ws => ws.armed === false },
   // HUNT before eating: the character should go find work (a mob to fight)
   // rather than sitting in town eating. Vigor management matters during
   // combat, not while idle. If vigor is truly too low to fight, the

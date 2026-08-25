@@ -615,6 +615,28 @@ export class TickLoop {
       try { this.actuator.driveTick?.(); }
       catch (e) { this.stats.lastError = `driveTick: ${e?.message}`; }
 
+      // ASK WHAT WE ARE WEARING, OR NEVER LEARN IT.
+      //
+      // `client.equipment()` reports known:false until a BP_USE_LIST arrives, and one
+      // arrives with any inventory request (user.kod:955). The survive keeper asks in six
+      // places; THIS loop asked nowhere, so usingAt stayed null for the life of the session
+      // — and `armed` is a whenUnknown:true fact, so an unread hand reads as ARMED. The
+      // `armed` goal therefore never fired, the character never equipped, and JayB fought a
+      // level-25 mummy bare-handed for 212 swings with fourteen maces in his pack.
+      //
+      // The default is deliberately safe in the other direction (a failed read must not idle
+      // the fleet), which is exactly why the read has to actually happen: the fallback is
+      // designed for a lost packet, not for a keeper that never asks.
+      // OFF UNLESS A KEEPER ASKS. The loop itself sends nothing — `m59-tick-test` pins that,
+      // and it is the property that makes the sensor free. A keeper that wants to know what it
+      // is wearing sets inventoryEveryMs; the loop does not decide to speak on its own.
+      const invEvery = this.inventoryEveryMs ?? 0;
+      if (invEvery > 0 && Date.now() - (this._lastInventoryAt ?? 0) > invEvery) {
+        this._lastInventoryAt = Date.now();
+        try { this.actuator.requestInventory?.(); }
+        catch (e) { this.stats.lastError = `requestInventory: ${e?.message}`; }
+      }
+
       const out = this.decide(frame, this.actuator, this);
       // RULE 1, ENFORCED RATHER THAN TRUSTED. A decide that returns a promise is doing
       // something asynchronous, which is the exact habit this model exists to remove.

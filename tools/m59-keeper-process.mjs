@@ -179,6 +179,13 @@ async function join() {
 
       const loop = new TickLoop({
         session, decide, hz: 10,
+        // READ THE HAND EVERY 20s. `armed` is a whenUnknown:true fact and equipment() stays
+        // known:false until a BP_USE_LIST arrives, which any inventory request brings
+        // (user.kod:955). Nothing in the tick path asked, so an unread hand read as ARMED for
+        // the life of the session, the `armed` goal never fired, and the character fought
+        // bare-handed with a pack full of maces. The loop stays silent by default; this is the
+        // keeper deciding to ask.
+        inventoryEveryMs: 20000,
         onSessionDead: ({ staleMs }) => {
           // The session is a ghost: no server data for staleMs while we believed
           // we were in game. The client is replaying stale in-memory state — the
@@ -244,10 +251,21 @@ function state() {
     vigor: v.vigor ? { value: v.vigor.value, max: v.vigor.max } : null,
     mana: v.mana ? { value: v.mana.value, max: v.mana.max } : null,
     gold: me?.gold ?? null,
-    equipment: c?.inventory ? c.inventory
-      .filter(o => o.flags & 0x04)
-      .map(o => c.rsc?.get?.(o.nameRsc) ?? '')
-      .filter(Boolean) : [],
+    // WHAT YOU ARE WEARING IS NOT A FLAG ON WHAT YOU CARRY. This filtered the pack on
+    // flags & 0x04 and reported [] for a character who was demonstrably wielding a mace —
+    // /probe, asking client.equipment(), said {known:true, equipped:["mace"]} at the same
+    // moment. An hour was spent chasing a bare-handed character who was armed the whole
+    // time. `client.equipment()` is the only answer: it is the server's own plUsing list,
+    // and it says known:false rather than [] when no use-list has arrived, which is the
+    // distinction that matters and the one a flag filter cannot make.
+    equipment: (() => {
+      try {
+        const e = c?.equipment?.();
+        if (!e) return [];
+        return e.known === false ? { known: false, equipped: [] }
+                                 : e.equipped.map(o => o.name).filter(Boolean);
+      } catch { return []; }
+    })(),
     pack: c?.inventory ? c.inventory
       .filter(o => !(o.flags & 0x04))
       .map(o => {
