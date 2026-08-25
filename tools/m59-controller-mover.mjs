@@ -84,6 +84,17 @@ export class ControllerMover {
   get _geo() { return this.session?.world?.geometry ?? this.session?._roomGeo ?? null; }
 
   to(col, row) {
+    // A destination that is not a place gets handed straight back. Reporting `no-route` for it
+    // is worse than useless: the caller reads that as "this quarry is unreachable" and
+    // blacklists it, when in fact nobody ever named a square. Lee sat at the West Jasper
+    // border on four of these in a row.
+    if (!Number.isFinite(col) || !Number.isFinite(row)) {
+      this.stats.badDest = (this.stats.badDest || 0) + 1;
+      if (this.stats.badDest <= 3)
+        console.error(`[ctlmover] ${this._agent} refused a destination that is not a place (${col},${row})`);
+      try { this.fallback?.to?.(col, row); } catch { /* it is a fallback, not a dependency */ }
+      return;
+    }
     const isNew = !this.dest || this.dest.col !== col || this.dest.row !== row;
     this.dest = { col, row };
     this.active = true;

@@ -725,8 +725,18 @@ export class Router {
         || (me.col === sub.col && me.row === sub.row);
       if (onSub) this._advanceSubLeg({ col: sub.col, row: sub.row });
     }
-    const aim = this.subWp && this.subWp.length ? this.subWp[0]
-      : (at && this.leg.edgeTarget ? this.leg.edgeTarget : this.leg.standOn);
+    // A NON-FINITE AIM IS NOT AN AIM. `edgeTarget` comes either from the baked exit or is
+    // derived from the direction, and both can be absent or half-formed — a `{col:undefined,
+    // row:undefined}` reaches the mover as `to(undefined, undefined)`, which plans a route to
+    // NaN and comes back "no free space at the destination". Watched on Lee at the West Jasper
+    // border: four NO-ROUTEs in a row against an aim that was never a place.
+    const finite = (p) => p && Number.isFinite(p.col) && Number.isFinite(p.row);
+    const edgeAim = at && finite(this.leg.edgeTarget) ? this.leg.edgeTarget : null;
+    const aim = (this.subWp && this.subWp.length && finite(this.subWp[0])) ? this.subWp[0]
+      : (edgeAim ?? this.leg.standOn);
+    if (!finite(aim))
+      return this._say('blocked', { why: `leg to ${this.leg.next} has no usable aim`
+        + ` (standOn ${JSON.stringify(this.leg.standOn)}, edgeTarget ${JSON.stringify(this.leg.edgeTarget)})` });
     if (process.env.M59_ROUTE_DEBUG === '1')
       console.error(`[routedbg] t3 here=${here} me=(${me.col},${me.row}) standOn=(${this.leg.standOn?.col},${this.leg.standOn?.row}) sub=(${sub?sub.col+','+sub.row:'-'}) aim=(${aim.col},${aim.row}) dir=${this.leg.direction} kind=${this.leg.kind} subWp=${this.subWp?this.subWp.length:0}`);
 

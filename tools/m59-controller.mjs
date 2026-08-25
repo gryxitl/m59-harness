@@ -194,8 +194,27 @@ export class CharacterController {
     if (this.x == null || !geo?.collisionReady) return { state: 'no-position' };
     if (!this.path || this.pathIdx >= this.path.length) {
       if (!this.dest) return { state: 'idle' };
+      // ARRIVAL IS A SQUARE, NOT A POINT.
+      //
+      // This measured the distance to the destination's exact centre against a quarter of a
+      // square, so a body standing squarely ON the target — the thing every caller actually
+      // asks for — reported `no-path` whenever it settled more than 256 units off centre.
+      //
+      // Watched on JayB in the Raza Inn: an eight-by-eleven room, one region, a 24-waypoint
+      // plan, zero blocked ticks, and the run ended AT (6,1) — the exit staging square — and
+      // still answered no-path. The router read that as a failed leg and logged
+      // `geometry_blocked`, so he could not walk out of a room with nothing in the way.
+      //
+      // The callers judge arrival by square (`me.col === standOn.col && me.row === standOn.row`
+      // in m59-route.mjs), so this does too, and keeps the distance test as the finer of the
+      // two answers rather than the only one.
+      const here = this.square();
+      const want = { col: Math.floor(this.dest.x / CLIENT_PER_SQUARE) + 1,
+                     row: Math.floor(this.dest.y / CLIENT_PER_SQUARE) + 1 };
       const d = Math.hypot(this.dest.x - this.x, this.dest.y - this.y);
-      if (d <= MOVE_THRESHOLD_CLIENT) { this.stats.arrived++; this.clear(); return { state: 'arrived' }; }
+      if (d <= MOVE_THRESHOLD_CLIENT || (here.col === want.col && here.row === want.row)) {
+        this.stats.arrived++; this.clear(); return { state: 'arrived' };
+      }
       return { state: 'no-path' };
     }
 
