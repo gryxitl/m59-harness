@@ -347,3 +347,42 @@ is 87 swings, 0 blinks and 11 handbacks in an eight-minute run.
 `m59-autopilot.mjs`; the tick keeper never writes to the ledger, so `m59-minimal.mjs` reports
 0.00 for a tick-keeper character no matter what it kills. That is the next thing to fix if the
 question is "is it earning", and it is a reporting gap rather than a keeper one.
+
+
+## CORRECTION: the coordinate convention, and what it invalidates
+
+**`standPoint(row, col)` is `(col - 0.5) * 1024`, not `(col + 0.5) * 1024`.** Every
+`moverStepLands` vs `traceFineMoveClient` comparison recorded above used the second form and
+therefore compared TWO DIFFERENT SQUARES, one tile apart. The safe-spot work in this file is
+unaffected — it converts held squares with `(col - .5)`, which is correct — but the model
+comparisons are not.
+
+Re-measured with `standPoint` on both sides, which is the point the mover actually uses:
+
+    room 1012   3,044 steps   91.2% agree   geometry_blocked 267
+    room 1016   1,269         91.7%                         105
+    room  587   2,800         84.8%                         427
+    room   38   1,813         91.2%                         159
+
+So the disagreement is **8-15%, not 17-54%**, and every case is `geometry_blocked`.
+
+**And the floorless-squares finding was entirely an artifact.** "36.2% of the squares room 1016
+calls walkable have no floor under their centre" becomes **2.1%** at `standPoint`, and room 587
+goes from 20.7% to **0.0%**. There is no hole in the BSP and there never was; there was a
+one-tile offset in the query. The ground-truth check that appeared to corroborate it — 99.6% of
+held squares have a floor — was measured with the CORRECT convention, which is exactly why it
+disagreed with the broken one and should have been the tell.
+
+What survives:
+
+- The controller executes routes the legacy mover grinds on. That was measured with plans and
+  traces on the same points, and the live runs bear it out.
+- The four keeper bugs (stuck clock, reconcile snapshot, broken-weapon cascade, unread hand).
+- The travel oscillation and its fix.
+- A real 8-15% `geometry_blocked` disagreement, which is the thing still worth chasing.
+
+What does not:
+
+- Every "17-54%" or "46.2%" agreement figure.
+- The floorless-square finding and everything argued from it.
+- The claim that the coarse grid is "wrong about the void" — there is no void.
