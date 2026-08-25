@@ -215,6 +215,7 @@ export class CharacterController {
     const subs = Math.max(1, Math.min(STEPS_PER_MOVE,
       Math.round(NUM_STEPS_PER_SECOND * dt / 1000)));
     const beforeX = this.x, beforeY = this.y;
+    const startSq = this.square();
     let cx = this.x, cy = this.y, slid = false, blocked = false;
     for (let i = 0; i < subs; i++) {
       const tx = this.x + (aimX - this.x) * ((i + 1) / subs);
@@ -228,6 +229,27 @@ export class CharacterController {
       if (t.slid) slid = true;
       // A sub-step that goes nowhere means the wall is in front of us, not beside us.
       if (Math.hypot(nx - cx, ny - cy) < 0.5) { blocked = true; cx = nx; cy = ny; break; }
+
+      // DO NOT SLIDE INTO ROCK.
+      //
+      // The fine tracer answers from the BSP alone, so a slide along a wall will happily
+      // deposit the body on a square the coarse grid calls solid. `moverStepLands` refuses
+      // exactly that (`walkable(toRow,toCol)`) and this did not, so the controller could put
+      // the body somewhere the planner cannot plan FROM — and that is where it then sat.
+      //
+      // Measured on JayB: of ten distinct positions the controller gave up from, SEVEN were
+      // coarse-unwalkable, while all sixty-three destinations it was aiming at were fine. The
+      // plans were never the problem; the body was in rock.
+      //
+      // The origin square is exempt: a body already standing on one has to be able to leave.
+      if (geo.walkable) {
+        const sq = { col: Math.floor(nx / CLIENT_PER_SQUARE) + 1,
+                     row: Math.floor(ny / CLIENT_PER_SQUARE) + 1 };
+        if ((sq.col !== startSq.col || sq.row !== startSq.row) && !geo.walkable(sq.row, sq.col)) {
+          blocked = true;
+          break;                      // keep the last good position; do not commit this one
+        }
+      }
       cx = nx; cy = ny;
     }
     if (slid) this.stats.slid++;
