@@ -94,6 +94,25 @@ const FACE_EPS = 5;
 // ---------------------------------------------------------------------------
 // SENSOR -- free, synchronous, sends nothing
 // ---------------------------------------------------------------------------
+// THE CHARACTER CONTROLLER, OFF UNLESS ASKED FOR.
+//
+// `walk` below hands the body to `session.walkTo`, which is asynchronous, holds ONE
+// outstanding move, and can sit in a confirm for up to 8s — the exact shape this loop exists
+// to get away from. `m59-controller.mjs` is the replacement: own the position, integrate at
+// fixed dt, collide and slide against the room, and replicate on the move interval. It has
+// been written and benched and until now imported by NOTHING, which is why it has never been
+// tested on a character.
+//
+// M59_TICK_CONTROLLER=1 routes walk() through it. Off by default because the planner it
+// steers with disagrees with the fleet's own mover on 8-25% of steps (docs/m59-controller-plan.md),
+// so this changes how a character moves, not just how fast.
+// The one import in this file, and it is deliberately narrow: a pure class with no side
+// effects at load. This module is otherwise dependency-free and should stay that way.
+const USE_CONTROLLER = process.env.M59_TICK_CONTROLLER === '1';
+const { CharacterController } = USE_CONTROLLER
+  ? await import('./m59-controller.mjs')
+  : { CharacterController: null };
+
 export class Sensor {
   constructor(session) { this.session = session; this.lastAt = 0; }
 
@@ -157,6 +176,45 @@ export class Actuator {
     this.sent = [];            // a small ring, for the record and for tests
     this.walking = null;       // the one outstanding walk, if any
     this.maxSent = 64;
+    this.controller = USE_CONTROLLER ? new CharacterController() : null;
+    this.controlDest = null;   // {col,row} the controller is currently driving to
+    this._lastDriveAt = 0;
+  }
+
+  // Geometry for the room the body is in. The controller cannot collide without it, and a
+  // room that cannot answer is a room the controller must not drive in — see driveTick.
+  get _geo() {
+    return this.session?.world?.geometry ?? this.session?._roomGeo ?? null;
+  }
+
+  // ONE TICK OF PHYSICS. Called by TickLoop before decide(), so a decision made this tick
+  // reads a position that already accounts for this tick's motion.
+  //
+  // Everything here is wall clock: dt is measured, never assumed, because a tick that ran
+  // late must integrate the time that actually passed or the body silently walks slow.
+  driveTick() {
+    const ctl = this.controller;
+    if (!ctl || !this.controlDest) return null;
+    const now = Date.now();
+    const dt = this._lastDriveAt ? now - this._lastDriveAt : 0;
+    this._lastDriveAt = now;
+    if (!dt) return null;
+    const geo = this._geo;
+    const me = this.session?.world?.me ?? this.session?.me ?? null;
+    if (!geo || !me) return null;
+    try {
+      const r = ctl.step(dt, { geo, client: this.session.client });
+      if (r?.arrived) { this.controlDest = null; ctl.clear(); }
+      return r;
+    } catch (e) {
+      // A throwing controller must not kill the tick, and must not keep the body: hand the
+      // destination back so the next walk() falls to the async walker rather than standing
+      // still while every counter reports a healthy loop.
+      this.controlDest = null;
+      try { ctl.clear(); } catch { /* ignore */ }
+      this.session?.log?.(`[controller] step threw, releasing: ${e?.message}`);
+      return { error: e?.message };
+    }
   }
 
   get depth() { return this.session?.pacer?.depth ?? 0; }
@@ -203,6 +261,39 @@ export class Actuator {
   // can see, not a silent drop.
   walk(col, row, { maxSteps = 1 } = {}) {
     const rec = { kind: 'walk', at: Date.now(), ok: null, to: { col, row } };
+
+    // THE CONTROLLER PATH. Setting a destination is synchronous and cheap; the walking is
+    // done by driveTick over the following ticks. Re-aiming at the destination already being
+    // driven is a no-op rather than a replan — decide() calls walk() every tick while it
+    // wants to be somewhere, and replanning at 10Hz is how the first live run held 1.14
+    // squares/sec.
+    if (this.controller) {
+      const cur = this.controlDest;
+      if (cur && cur.col === col && cur.row === row) {
+        rec.ok = true; rec.driving = true; return rec;
+      }
+      const geo = this._geo;
+      const me = this.session?.world?.me ?? this.session?.me ?? null;
+      if (geo && me) {
+        try {
+          const plan = this.controller.setDestination(geo, col, row, me);
+          if (plan?.ok) {
+            this.controlDest = { col, row };
+            this._lastDriveAt = Date.now();
+            rec.ok = true; rec.driving = true; rec.planner = plan.planner;
+            rec.waypoints = plan.waypoints;
+            this.sent.push(rec);
+            if (this.sent.length > this.maxSent) this.sent.shift();
+            return rec;
+          }
+          // A refused plan FALLS THROUGH to the async walker below rather than reporting a
+          // failure. The planner disagreeing with the mover is the open question, not a
+          // reason to leave a character standing in a corridor.
+          rec.planRefused = plan?.reason ?? 'no plan';
+        } catch (e) { rec.planRefused = e?.message; }
+      }
+    }
+
     if (this.walking) { rec.ok = false; rec.why = 'a move is already in flight'; return rec; }
     if (typeof this.session.walkTo !== 'function') {
       rec.ok = false; rec.why = 'no walker on this session'; return rec;
@@ -490,6 +581,10 @@ export class TickLoop {
           } catch { /* best effort */ }
         }
       }
+      // PHYSICS BEFORE POLICY. One tick of integration, then the decision that reads it.
+      try { this.actuator.driveTick?.(); }
+      catch (e) { this.stats.lastError = `driveTick: ${e?.message}`; }
+
       const out = this.decide(frame, this.actuator, this);
       // RULE 1, ENFORCED RATHER THAN TRUSTED. A decide that returns a promise is doing
       // something asynchronous, which is the exact habit this model exists to remove.
