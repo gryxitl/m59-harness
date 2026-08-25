@@ -290,17 +290,22 @@ export class CombatController {
       // for a hostile when the world state says there is one.
       // This prevents swinging at items or exits.
       if ((ws == null || ws?.has_target === true) && objects instanceof Map) {
+        // THIS SCAN TAKES THE FIRST OBJECT IN THE ROOM, AND `objects` IS RAW.
+        //
+        // `is_self` is added by whoever ENRICHES an object (broker/keeper-process, as
+        // `o.id === c.selfId`); the map read here is `frame?.objects ?? c.room?.objects`,
+        // which carries no such flag. So `if (o.is_self) continue` never fired, the
+        // character's own object happened to be first, and Lee swung at himself 75-117 times
+        // a window. That also pinned him: has_target stayed true, _fight outranks hunt, and a
+        // character fighting himself never travels — which is the whole reason he sat in The
+        // Sweet Grass Prairies with a hunt room assigned.
         for (const o of objects.values()) {
-          if (o.is_player || o.is_self) continue;
-          // Only consider objects that look like mobs (have a name
-          // that's not an item/exit). The world state already
-          // filtered for hostiles; we just need to find the object.
-          if (o.col != null && o.row != null) {
-            target = o;
-            this.targetId = o.id;
-            this.targetName = c.rsc?.get?.(o.nameRsc) ?? o.name ?? 'mob';
-            break;
-          }
+          if (o.is_player || this._isSelf(o, c)) continue;
+          if (o.col == null || o.row == null) continue;
+          target = o;
+          this.targetId = o.id;
+          this.targetName = c.rsc?.get?.(o.nameRsc) ?? o.name ?? 'mob';
+          break;
         }
       }
       if (!target) {
