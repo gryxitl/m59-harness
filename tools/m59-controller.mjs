@@ -24,6 +24,24 @@
 // one on a 10Hz path; it is 3us now, so collide-and-slide per tick is free.
 import { KOD_FINENESS, protocolToClient, clientToProtocol } from './m59-roo.mjs';
 import { navPath } from './m59-navgrid.mjs';
+import { tracePath } from './m59-navtrace.mjs';
+
+// WHICH PLANNER STEERS, AND THE MIDDLE SETTING IS THE POINT.
+//
+// The two planners disagree because the two COLLISION MODELS disagree — `moverStepLands`
+// allows 17-54% more steps than `traceFineMoveClient`, and on the floored subset the residual
+// is 8-25%, all of it geometry_blocked. Until that is closed, `trace` refuses walks the fleet
+// makes all day, so it is not the default.
+//
+//   off      navPath steers. What the fleet did before any of this.
+//   shadow   navPath steers, tracePath is computed alongside and the disagreements counted.
+//            Measures without changing behaviour.
+//   on       tracePath steers, falling back to navPath when it refuses. THE DEFAULT.
+//   strict   tracePath steers and a refusal is a refusal. This is the mode that actually
+//            tests the thing: on the bench `on` fell back on 775 of 891 walks, so it steered
+//            by grid 87% of the time and would have reported that as trace-driven movement.
+//            A character that stands still under `strict` is the finding, not a malfunction.
+const NAV_MODE = (process.env.M59_NAV_TRACE || 'on').toLowerCase();
 
 const CLIENT_PER_SQUARE = 1024;
 const HALF_PROTO = KOD_FINENESS / 2;
@@ -85,17 +103,53 @@ export class CharacterController {
 
   clear() { this.path = null; this.pathIdx = 0; this.dest = null; }
 
-  // A new destination in SQUARES. Pathing is navPath: free space, synchronous, ~1ms.
+  // A new destination in SQUARES. navPath is ~1ms over a baked grid; tracePath is ~10ms and
+  // asks the mover's own question. See NAV_MODE.
   setDestination(geo, col, row, me) {
     if (this.x == null) this.syncFrom(me);
     const to = { x: (col - 0.5) * CLIENT_PER_SQUARE, y: (row - 0.5) * CLIENT_PER_SQUARE };
-    const plan = navPath(geo, { x: this.x, y: this.y }, to);
+    const from = { x: this.x, y: this.y };
     this.stats.replans++;
+
+    const grid = (NAV_MODE === 'on' || NAV_MODE === 'strict') ? null : navPath(geo, from, to);
+    let traced = null;
+    if (NAV_MODE !== 'off') {
+      const t0 = Date.now();
+      try { traced = tracePath(geo, from, to); } catch (err) { traced = { waypoints: [], blocked: true, error: String(err?.message || err) }; }
+      this.stats.trace_ms = (this.stats.trace_ms || 0) + (Date.now() - t0);
+      this.stats.trace_plans = (this.stats.trace_plans || 0) + 1;
+      if (traced.blocked) this.stats.trace_blocked = (this.stats.trace_blocked || 0) + 1;
+    }
+
+    // The comparison is only meaningful where both were asked, so it lives in shadow.
+    if (NAV_MODE === 'shadow' && grid && traced) {
+      if (grid.found && traced.blocked) this.stats.trace_stricter = (this.stats.trace_stricter || 0) + 1;
+      else if (!grid.found && !traced.blocked) this.stats.trace_looser = (this.stats.trace_looser || 0) + 1;
+      else if (grid.found && !traced.blocked) {
+        this.stats.trace_agreed = (this.stats.trace_agreed || 0) + 1;
+        // Both found one; a much longer traced route is a detour AROUND something the grid
+        // walked straight through, which is the same disagreement wearing a different hat.
+        const g = grid.waypoints.length, t = traced.waypoints.length;
+        if (t > g * 1.5 + 2) this.stats.trace_detoured = (this.stats.trace_detoured || 0) + 1;
+      }
+    }
+
+    let plan, steeredBy = 'grid';
+    if (NAV_MODE === 'on' || NAV_MODE === 'strict') {
+      if (traced && !traced.blocked) { plan = { found: true, waypoints: traced.waypoints }; steeredBy = 'trace'; }
+      else if (NAV_MODE === 'strict') { plan = { found: false, reason: 'trace_blocked' }; steeredBy = 'trace'; }
+      else {
+        plan = navPath(geo, from, to);
+        this.stats.trace_fellback = (this.stats.trace_fellback || 0) + 1;
+      }
+    } else plan = grid;
+    this.stats[`steered_${steeredBy}`] = (this.stats[`steered_${steeredBy}`] || 0) + 1;
+
     if (!plan.found) { this.clear(); return { ok: false, reason: plan.reason }; }
     this.path = plan.waypoints;
     this.pathIdx = 0;
     this.dest = to;
-    return { ok: true, waypoints: plan.waypoints.length };
+    return { ok: true, waypoints: plan.waypoints.length, planner: steeredBy };
   }
 
   // A SNAPSHOT OF WHAT WE BELIEVED WHEN A CONFIRMATION WAS ASKED FOR. Pass it back to
