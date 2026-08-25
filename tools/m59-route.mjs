@@ -279,7 +279,21 @@ export class Router {
     if (!finiteP(edgeTarget)) edgeTarget = null;
     // The exit's own direction if it has one, the baked anchor's `dir` if it does not.
     let dir = String(exit.direction ?? exit.dir ?? '').toLowerCase();
-    // AND FAILING BOTH, THE BOUNDARY THE STAGING SQUARE IS STANDING ON.
+    // FAILING BOTH, ASK THE MAP. The room's own edgeExits name the side you leave by
+    // ("north" -> 557), which is the authoritative answer and does not care where the staging
+    // square happens to sit. This is the case that actually bites: West Jasper's anchor to 557
+    // is at (60,1) with dir "north", but the staging square is (60,2) — one in from the
+    // boundary — so a rule keyed on the boundary never fires, and Lee logged 462 arrivals at
+    // (60,2) against 7 crossing attempts without ever leaving the room.
+    if (!dir) {
+      try {
+        const room = loadMap()?.rooms?.[here];
+        const e = (room?.edgeExits ?? []).find(x => Number(x.to) === Number(next));
+        if (e?.leaveName) dir = String(e.leaveName).toLowerCase();
+      } catch { /* no map: fall through to the boundary guess below */ }
+    }
+
+    // AND FAILING THAT, THE BOUNDARY THE STAGING SQUARE IS STANDING ON.
     //
     // An edge crossing fires by walking PAST the boundary, so the target has to be a square
     // BEYOND it. With no direction and no baked edge_target there was nothing to aim at, and
@@ -291,10 +305,11 @@ export class Router {
     if (!dir && standOn && this.leg?.kind !== 'go') {
       const geo = this._geo?.();
       const rows = geo?.rows ?? null, cols = geo?.cols ?? null;
-      if (standOn.row <= 1) dir = 'north';
-      else if (rows && standOn.row >= rows) dir = 'south';
-      else if (standOn.col <= 1) dir = 'west';
-      else if (cols && standOn.col >= cols) dir = 'east';
+      // At the edge OR one square in from it — a staging square is often the latter.
+      if (standOn.row <= 2) dir = 'north';
+      else if (rows && standOn.row >= rows - 1) dir = 'south';
+      else if (standOn.col <= 2) dir = 'west';
+      else if (cols && standOn.col >= cols - 1) dir = 'east';
     }
     if (!edgeTarget && dir) {
       const dx = dir === 'east' ? 1 : dir === 'west' ? -1 : 0;
