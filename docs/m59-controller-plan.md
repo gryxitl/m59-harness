@@ -386,3 +386,37 @@ What does not:
 - Every "17-54%" or "46.2%" agreement figure.
 - The floorless-square finding and everything argued from it.
 - The claim that the coarse grid is "wrong about the void" — there is no void.
+
+
+## AND THERE IS NO DISAGREEMENT. The whole premise was a slide.
+
+Of the 958 steps across four rooms where `moverStepLands` says yes and a strict trace says no:
+
+    room 1012   267 strict refusals  ->  267 land INSIDE the target square when sliding
+    room 1016   105                      105
+    room  587   427                      427
+    room   38   159                      159
+
+**Every one. Not a single step went nowhere.** The two collision models agree completely. The
+"8-25% disagreement" — and the 17-54% before the coordinate fix — was never a disagreement
+between models; it was the difference between `slide:false` and `slide:true`, and `slide:false`
+is the wrong question to ask about walking.
+
+The body is a DISC and a path is a line through points. Clipping a corner and sliding along it
+is HOW a disc crosses a square — `move.c` does it every frame, and `CharacterController.step`
+already does it. Demanding a clean straight line refuses ordinary walking.
+
+So `m59-navtrace.mjs` refused all five of JayB's failing walks because IT traced with
+`slide:false`. Fixing that took its false-refusal rate from 86.98% to 52.08% against held
+pairs — better, and still far worse than the grid's 1.80%, because sliding also makes the
+lattice drift and the search wander (347 waypoints where the grid uses 40).
+
+**Which settles the planner question: use the grid.** `navPath` refuses 1.80% of pairs the
+fleet has demonstrably walked, the controller executes its plans — all five failing walks
+arrive offline, 3.4s to 18.9s, zero blocked ticks — and that combination is what is deployed
+(`M59_NAV_TRACE=off`). `m59-navtrace.mjs` stays in the tree as a measured dead end, not as a
+fallback: it was written to solve a problem that does not exist.
+
+**The remaining movement question is the controller's handbacks** — 270 in a 30-minute arm —
+and it is NOT about planning. The plans are good and the collision models agree. It is about
+what happens between a good plan and a body that stops moving.

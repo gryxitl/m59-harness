@@ -41,7 +41,9 @@ const SQRT2 = Math.SQRT2;
 // A step counts as taken only if the trace LANDED where it was aimed. A slide that stops short
 // against a wall is a refusal for planning purposes even though it moved the body, which is why
 // this traces with slide off: we want the yes/no, not the salvage.
-const LAND_TOL = 24;                        // client units; trace lands on integers
+// How much of a 256-unit step must actually happen for it to count as a step. A quarter of it
+// keeps a genuine slide and drops a body grinding against a wall.
+const MIN_STEP_GAIN = CELL / 4;
 
 export const cellKey = (i, j) => (j + 4096) * 65536 + (i + 4096);
 export const cellOf = (x, y) => [Math.floor(x / CELL), Math.floor(y / CELL)];
@@ -52,15 +54,32 @@ function memoFor(geo) {
   return geo._navTrace;
 }
 
-// One step, traced from a REAL position toward a lattice offset. Returns the landing point, or
-// null if the mover would not make the step. Slide is off because we want the yes/no rather
-// than the salvage: a step that stops short has not connected these two nodes, and letting it
-// count is how a plan comes to contain legs the body cannot walk.
+// One step, traced from a REAL position toward a lattice offset. Returns where the body ENDS
+// UP, or null if it would not move at all.
+//
+// SLIDE IS ON, AND REFUSING A SLIDE WAS THE WHOLE BUG. This traced with slide:false and
+// demanded exact arrival, on the reasoning that a step stopping short has not connected two
+// nodes. That reasoning is wrong, and measurably so: of the 958 steps across four rooms where
+// `moverStepLands` said yes and a strict trace said no, **every single one** — 267, 105, 427,
+// 159 — put the body inside the target square once sliding was allowed. Not one went nowhere.
+//
+// The body is a DISC and the lattice is a line through points. Clipping a corner and sliding
+// along it is how a disc crosses a square; it is what collide-and-slide is for, and the stock
+// client does it every frame (move.c). Demanding a clean straight line refuses ordinary
+// walking, which is why this planner rejected all five of the walks JayB was actually failing
+// while the grid planner found routes for every one of them.
+//
+// So the node's position is WHERE THE SLIDE LANDED. A step counts when the body made real
+// ground; it is refused only when it could not move at all.
 function stepTo(geo, x0, y0, x1, y1, radius) {
   let t;
-  try { t = geo.traceFineMoveClient(x0, y0, x1, y1, { slide: false, playerRadius: radius }); }
+  try { t = geo.traceFineMoveClient(x0, y0, x1, y1, { slide: true, playerRadius: radius }); }
   catch { return null; }
-  if (!t || t.blocked || !t.arrived) return null;
+  if (!t || !t.available || !t.moved) return null;
+  // Ground actually gained. A slide that shaves a few units off a 256-unit step is progress;
+  // one that moves a hair and stops is the wall in front of us, not beside us.
+  const gained = Math.hypot((t.x ?? x0) - x0, (t.y ?? y0) - y0);
+  if (gained < MIN_STEP_GAIN) return null;
   return { x: t.x, y: t.y };
 }
 
