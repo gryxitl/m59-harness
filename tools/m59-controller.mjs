@@ -48,6 +48,10 @@ export const MOVE_THRESHOLD_CLIENT = CLIENT_PER_SQUARE / 4;
 // keep our own position: a confirmation is a square-granular read of a body that has moved
 // on since, so snapping to it every time would undo the integration this exists to do.
 export const RECONCILE_SNAP_CLIENT = CLIENT_PER_SQUARE;
+// And this much before the PLAN is suspect too. Three squares: far enough that the body is
+// somewhere the route did not anticipate — a knockback, a teleport, a refused stretch — and
+// not so tight that ordinary reading noise costs a replan.
+export const RECONCILE_REPLAN_CLIENT = CLIENT_PER_SQUARE * 3;
 
 export class CharacterController {
   constructor(session, { run = false } = {}) {
@@ -94,20 +98,40 @@ export class CharacterController {
     return { ok: true, waypoints: plan.waypoints.length };
   }
 
-  // RECONCILE, NEVER ADOPT. A confirmation is square-granular and already stale; snapping
-  // to it every tick would throw away the integration. Only a disagreement larger than a
-  // square means we are actually wrong.
-  reconcile(confirmed) {
+  // A SNAPSHOT OF WHAT WE BELIEVED WHEN A CONFIRMATION WAS ASKED FOR. Pass it back to
+  // reconcile(). Without it, reconciliation compares a two-second-old reading against a
+  // position that has legitimately moved five squares since, and calls the difference error.
+  snapshot() { return { x: this.x, y: this.y, at: Date.now() }; }
+
+  // RECONCILE AGAINST WHAT WE BELIEVED AT THE TIME, AND CORRECT BY THE DELTA.
+  //
+  // `confirmPosition` is a square-granular read of where the body WAS when the round trip
+  // started. Comparing it to where we are NOW measures staleness, not error — and the first
+  // live run did exactly that: 12 reconciles in 26 seconds, each nulling the path, 21
+  // replans, and the character held to 1.14 squares/sec because it kept throwing away a
+  // plan that was working.
+  //
+  // So: measure the error against the snapshot taken when the request went out, then apply
+  // that error to the CURRENT position. Travel since the request is preserved, which is the
+  // whole point of integrating in the first place. This is ordinary client-side prediction
+  // reconciliation, and the stock client needs none of it only because it never asks.
+  reconcile(confirmed, snap = null) {
     if (!confirmed || this.x == null) return false;
     const cx = (confirmed.col - 0.5) * CLIENT_PER_SQUARE;
     const cy = (confirmed.row - 0.5) * CLIENT_PER_SQUARE;
-    const drift = Math.hypot(cx - this.x, cy - this.y);
-    if (drift > this.stats.drift_max) this.stats.drift_max = drift;
-    if (drift <= RECONCILE_SNAP_CLIENT) return false;
-    this.x = cx; this.y = cy;
+    const ref = snap ?? { x: this.x, y: this.y };
+    const ex = cx - ref.x, ey = cy - ref.y;
+    const err = Math.hypot(ex, ey);
+    if (err > this.stats.drift_max) this.stats.drift_max = err;
+    // A square of disagreement is the reading's own resolution, not a mistake.
+    if (err <= RECONCILE_SNAP_CLIENT) return false;
+    this.x += ex; this.y += ey;
     this.stats.reconciled++;
-    this.path = null;                 // our belief was wrong; the plan rests on it
-    return true;
+    // The plan rests on where we thought we were, so a LARGE correction invalidates it. A
+    // small one does not, and abandoning the path for every small one is what cost the
+    // first live run more than half its speed.
+    if (err > RECONCILE_REPLAN_CLIENT) { this.path = null; return true; }
+    return false;
   }
 
   // ONE TICK. Synchronous, no awaits, no promises — the loop forbids them.
@@ -136,6 +160,7 @@ export class CharacterController {
     // tunnel and because sliding changes direction mid-move.
     const subs = Math.max(1, Math.min(STEPS_PER_MOVE,
       Math.round(NUM_STEPS_PER_SECOND * dt / 1000)));
+    const beforeX = this.x, beforeY = this.y;
     let cx = this.x, cy = this.y, slid = false, blocked = false;
     for (let i = 0; i < subs; i++) {
       const tx = this.x + (aimX - this.x) * ((i + 1) / subs);
@@ -161,8 +186,30 @@ export class CharacterController {
 
     if (Math.hypot(wp.x - this.x, wp.y - this.y) <= MOVE_THRESHOLD_CLIENT) this.pathIdx++;
 
-    // A blocked tick with no progress means the plan is wrong, not the body.
-    if (blocked && !slid) { this.path = null; return { state: 'blocked', at: this.square() }; }
+    // A BLOCKED TICK IS NOT AUTOMATICALLY A BAD PLAN. The body is a disc and the path is a
+    // line through cell centres, so clipping a corner and sliding is the ORDINARY case —
+    // it is what collide-and-slide is for. Throwing the plan away on every contact makes
+    // the controller replan its way across a room instead of walking it.
+    //
+    // So: contact that still made ground is progress, contact that made none is a waypoint
+    // the body cannot reach directly. Skip that waypoint first — the next one is usually
+    // reachable, because a path through free space rarely has two bad legs in a row — and
+    // only give the plan up when skipping stops helping.
+    if (blocked) {
+      const gained = Math.hypot(this.x - beforeX, this.y - beforeY);
+      if (gained < 1) {
+        this._deadLegs = (this._deadLegs ?? 0) + 1;
+        if (this._deadLegs >= 3) {
+          this._deadLegs = 0;
+          this.path = null;
+          return { state: 'blocked', at: this.square() };
+        }
+        this.pathIdx++;                       // try the next waypoint along
+        if (this.pathIdx >= this.path.length) { this.path = null; return { state: 'blocked', at: this.square() }; }
+        return { state: 'moving', at: this.square(), skipped: true };
+      }
+      this._deadLegs = 0;
+    } else this._deadLegs = 0;
 
     this.replicate(client);
     return { state: 'moving', at: this.square(), slid };

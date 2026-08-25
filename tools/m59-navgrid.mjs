@@ -140,6 +140,13 @@ export function navPath(geo, from, to, { radius = PLAYER_RADIUS, maxCells = 4000
       const cells = [];
       for (let n = key(i, j); n >= 0; n = came[n]) cells.push(n);
       cells.reverse();
+      // DROP THE START. The chain ends at the cell we are already standing in, so keeping
+      // it hands the caller a first waypoint zero units away: the trace succeeds, the body
+      // does not move, and a controller reading "did not move" as blocked gives up on its
+      // very first leg. Measured before this line existed: 12 of 12 paths failed on leg one
+      // and the body never slid once, because it never got far enough to touch a wall.
+      // m59-finepath.mjs has the same line for the same reason — `points.shift()`.
+      cells.shift();
       return { found: true, expanded,
                waypoints: cells.map(n => clientOfCell(n % W, (n - n % W) / W)) };
     }
