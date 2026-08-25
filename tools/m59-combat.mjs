@@ -440,7 +440,7 @@ export class CombatController {
               // Mob got back in range — attack once then keep distance.
               const now = Date.now();
               if (now - this.lastSwing >= SWING_MS) {
-                this.lastSwing = now; this.swings++; this.swings++;
+                this.lastSwing = now; this.swings++;
                 const deg = Math.atan2(tRow - me.row, tCol - me.col) * 180 / Math.PI;
                 act.face(deg);
                 const spell = this._attackSpell();
@@ -498,7 +498,7 @@ export class CombatController {
     // or the weapon.
     const now = Date.now();
     if (now - this.lastSwing >= SWING_MS) {
-      this.lastSwing = now;
+      this.lastSwing = now; this.swings++;   // the round the ledger records as `rounds`
       // 1. Zap enchantment: cast it if it's down and we can afford it.
       const zap = this._maybeCastZap(client);
       if (zap) return zap;
@@ -686,7 +686,19 @@ export class CombatController {
     return this._walkTo(act, dest, what, me);
   }
 
-  // THE TICK KEEPER'S KILLS, WRITTEN DOWN.
+  // THE TICK KEEPER'S KILLS, WRITTEN DOWN — AND THEY OVER-COUNT. MEASURED.
+  //
+  // 47% is the number: of 15 "the quarry left the room" events on JayB, only SEVEN left
+  // anything on the floor (34 items over those seven). A corpse drops; a mob that wandered
+  // off or despawned does not. So roughly half of what this records as a kill is not one,
+  // and a kills/min read from it is an upper bound rather than a count. The survive keeper's
+  // measure has the same property — see below — which is why they are still comparable.
+  //
+  // The honest fix is to wait for the loot result and only record when the floor had
+  // something, but lootFloor is async and multi-second and this is a synchronous tick. Doing
+  // it properly means recording the kill provisionally and confirming it from the loot
+  // callback in m59-decide.mjs.
+  //
   //
   // `recordEvent(name, 'killed', ...)` is the ONLY thing countKills() reads, and it was
   // called from m59-autopilot.mjs alone — so a tick-keeper character killed things and
