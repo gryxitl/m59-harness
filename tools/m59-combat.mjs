@@ -242,6 +242,26 @@ export class CombatController {
     const wsTargetId = ws?._targetId;
     if (wsTargetId != null && objects) {
       target = objects instanceof Map ? objects.get(wsTargetId) : null;
+      // NEVER SWING AT YOURSELF.
+      //
+      // The world state filters its own candidates on `o.is_self`, but that is computed as
+      // `o.id === c.selfId` by whoever enriched the object, and this branch takes the world
+      // state's id on trust without re-checking. Watched live: Lee logged 117 swings at "Lee"
+      // in one window and 76 in another, which also pinned him in place — `has_target` stayed
+      // true, `_fight` outranks `hunt`, and a character fighting himself never travels. That
+      // is why he sat in The Sweet Grass Prairies with a hunt room assigned.
+      //
+      // Checked here by id AND by name, because the two failure modes are different: a
+      // selfId that never resolved makes every is_self false, and a stale one makes the
+      // wrong object self. Our own name is the one thing we always know.
+      if (target && this._isSelf(target, c)) {
+        target = null;
+        if (!this._warnedSelf) {
+          this._warnedSelf = true;
+          console.error(`[combat] ${this.session?.name ?? '?'} refused to target ITSELF`
+            + ` (ws id ${wsTargetId}, selfId ${c?.selfId}) — dropping it`);
+        }
+      }
       if (target) {
         if (this.targetId !== target.id) this.swings = 0;   // a new quarry, a new count
         this.targetId = target.id;
@@ -684,6 +704,18 @@ export class CombatController {
    */
   _walkToward(act, dest, what, me) {
     return this._walkTo(act, dest, what, me);
+  }
+
+  // Is this object us? By id when we know it, and by name always — see the caller.
+  _isSelf(o, c) {
+    if (!o) return false;
+    if (o.is_self) return true;
+    const selfId = c?.selfId;
+    if (selfId != null && o.id === selfId) return true;
+    const mine = String(c?.me?.name ?? '').toLowerCase();
+    if (!mine) return false;
+    const theirs = String(o.name ?? c?.rsc?.get?.(o.nameRsc) ?? '').toLowerCase();
+    return !!theirs && theirs === mine;
   }
 
   // THE TICK KEEPER'S KILLS, WRITTEN DOWN — AND THEY OVER-COUNT. MEASURED.
