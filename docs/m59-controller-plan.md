@@ -247,3 +247,46 @@ blacklists a target, and `stuck` is what escalates to a blink.
 
 Until that is done the controller remains unexercised on a live character, and the flag is
 honest but inert for combat movement.
+
+
+## What the live run actually showed, and why the controller would not have fixed it
+
+JayB, tick keeper, Mausoleum, one run:
+
+    1,658 swings   49 walk attempts   62 blinks
+    stuck at (38,28) x24   (38,26) x18   (23,20) x8   ...
+    30s median stuck before each blink, 92s worst
+
+So he is NOT reaching his destinations. He walks, grinds for thirty seconds, blinks away,
+and does it again — 42 of the 62 blinks from two adjacent squares near the east wall.
+
+**And it is not a sealed pocket.** Every stuck square is walkable, has a floor, and sits in
+region 0 — the main 9,582-cell body — with the mummy he is chasing in the same region.
+`sameRegion` says the route exists. The mover simply cannot execute it. That is precisely the
+failure the controller was written for.
+
+**But the controller would not have fixed it.** On those five exact walks:
+
+    (38,28) -> (22,30)    grid OK 157 wp    trace REFUSED  (3,737 nodes)
+    (38,26) -> (22,30)    grid OK 149 wp    trace REFUSED
+    (23,20) -> (22,30)    grid OK  40 wp    trace REFUSED
+    (38,28) -> (20,34)    grid OK 175 wp    trace REFUSED
+    (26,24) -> (22,30)    grid OK  32 wp    trace REFUSED
+
+The grid finds a route every time and the mover cannot walk it; the trace planner refuses
+every one. Both are wrong, in opposite directions, and wiring the controller to `_mover`
+today would trade "walks and gets stuck" for "never sets off".
+
+The 84.2% step agreement in this room is not a small discrepancy to tidy up later — a 16%
+refusal rate concentrated at doorways is exactly enough to disconnect the room, and these
+five walks are what that looks like from the character's side.
+
+**So the blocker is `traceFineMoveClient`, and nothing downstream of it can compensate.**
+The place to work is room 1012: 757 `geometry_blocked` disagreements, zero floorless squares,
+so nothing else is mixed in. Take those steps one at a time and establish which model is
+wrong about each — that is the question everything else has been waiting on.
+
+**And `m59-navgrid.mjs` stays.** Sealed-pocket detection is what stops a keeper chasing a
+walled-off mummy, and `sameRegion` is a flood over `freeSpace`. An earlier note in this file
+called the grid disposable if trace planning worked; that was wrong on two counts — trace
+planning does not work yet, and the region flood is load-bearing regardless of who plans.
