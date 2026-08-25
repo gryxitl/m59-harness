@@ -81,7 +81,7 @@ export class ControllerMover {
     this._agent = session?.agent ?? session?.name ?? '?';
   }
 
-  get _geo() { return this.session?.world?.geometry ?? this.session?._roomGeo ?? null; }
+  _geo() { return this.session?.world?.geometry ?? this.session?._roomGeo ?? null; }
 
   to(col, row) {
     // A destination that is not a place gets handed straight back. Reporting `no-route` for it
@@ -142,6 +142,35 @@ export class ControllerMover {
       + ` roomResyncs=${s.roomResyncs ?? 0}`);
   }
 
+  // PHYSICS ON THE LOOP'S CLOCK, NOT THE DECIDER'S.
+  //
+  // tick() is called from m59-combat.mjs:_walkTo, which runs only when the decider picks a
+  // walk. Measured on Lee: 352 mover ticks against 3,952 loop ticks — NINE PER CENT. The
+  // controller integrates per call, so a body with a perfectly good 144-waypoint plan crossed
+  // it at a tenth of walking speed, in bursts, standing still for twenty seconds at a stretch
+  // with the path already in hand.
+  //
+  // So the loop advances the physics every tick and the decider keeps reading state. It is
+  // safe to call both: dt comes from the wall clock, so the decider's call immediately after
+  // integrates the ~0ms that remain rather than moving twice.
+  //
+  // This deliberately does NOT plan, and does NOT touch `active`. Planning and the no-route
+  // answer belong to the decider's call, because `no-route` is how the keeper learns to
+  // blacklist a quarry — swallowing it here would lose that signal.
+  physicsTick() {
+    if (!this.active || !this.dest || !this.ctl.path) return null;
+    const c = this.session?.client;
+    if (!c || c.state !== 'game') return null;
+    const geo = this._geo();
+    if (!geo?.collisionReady || this.ctl.x == null) return null;
+    const now = Date.now();
+    const dt = this._lastTickAt ? Math.min(now - this._lastTickAt, 1000) : 0;
+    if (!dt) return null;
+    this._lastTickAt = now;
+    try { return this.ctl.step(dt, { geo, client: c }); }
+    catch { return null; }
+  }
+
   tick(posOverride) {
     this.stats.ticks++;
     if (!this.active || !this.dest) return { state: 'idle' };
@@ -151,7 +180,7 @@ export class ControllerMover {
     const me = posOverride ?? c.self;
     if (!me || me.col == null) return { state: 'no-position' };
 
-    const geo = this._geo;
+    const geo = this._geo();
     // A room we cannot collide in is a room the controller has no business steering in.
     if (!geo?.collisionReady) return this._delegate(posOverride, 'no collision geometry');
 

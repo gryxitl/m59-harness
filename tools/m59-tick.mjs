@@ -615,6 +615,16 @@ export class TickLoop {
       try { this.actuator.driveTick?.(); }
       catch (e) { this.stats.lastError = `driveTick: ${e?.message}`; }
 
+      // AND ADVANCE THE MOVER'S PHYSICS ON THIS CLOCK TOO.
+      //
+      // session._mover is driven from m59-combat.mjs:_walkTo, which runs only on ticks where
+      // the decider picks a walk — measured at 9% of loop ticks. A controller that integrates
+      // per call therefore walks at a tenth speed. This gives it the loop's clock; it plans
+      // nothing and decides nothing, so the decider's own call still owns arrival and
+      // no-route.
+      try { this.session?._mover?.physicsTick?.(); }
+      catch (e) { this.stats.lastError = `physicsTick: ${e?.message}`; }
+
       // ASK WHAT WE ARE WEARING, OR NEVER LEARN IT.
       //
       // `client.equipment()` reports known:false until a BP_USE_LIST arrives, and one
