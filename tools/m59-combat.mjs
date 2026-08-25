@@ -15,6 +15,8 @@
 import { KOD_FINENESS, protocolToClient } from './m59-roo.mjs';
 import { zapStatus, shouldCastZap, findZapSpell, equippedWeapon } from './m59-zap.mjs';
 import './m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
+import { recordEvent } from './m59-ledger.mjs';
+import * as tougher from './m59-tougher.mjs';
 
 /**
  * Compute the adjacent square to walk to when engaging a target.
@@ -167,6 +169,7 @@ export class CombatController {
     this.targetId = null;      // the mob we're fighting
     this.targetName = null;
     this.lastSwing = 0;        // wall-clock ms of last swing
+    this.swings = 0;           // swings at the CURRENT quarry, for the ledger's `rounds`
     this.pullFrom = null;      // position before pull (to walk back to)
     this.stuckTicks = 0;
     this._approachStart = 0;   // wall-clock ms when approach started
@@ -179,6 +182,7 @@ export class CombatController {
     this._walkDest = null;
     this.targetName = null;
     this.lastSwing = 0;
+    this.swings = 0;
     this.pullFrom = null;
     this.stuckTicks = 0;
   }
@@ -227,7 +231,11 @@ export class CombatController {
     const wsTargetId = ws?._targetId;
     if (wsTargetId != null && objects) {
       target = objects instanceof Map ? objects.get(wsTargetId) : null;
-      if (target) { this.targetId = target.id; this.targetName = target.name ?? c.rsc?.get?.(target.nameRsc) ?? 'mob'; }
+      if (target) {
+        if (this.targetId !== target.id) this.swings = 0;   // a new quarry, a new count
+        this.targetId = target.id;
+        this.targetName = target.name ?? c.rsc?.get?.(target.nameRsc) ?? 'mob';
+      }
     }
     if (!target && this.targetId != null && objects) {
       target = objects instanceof Map ? objects.get(this.targetId) : null;
@@ -239,9 +247,11 @@ export class CombatController {
     if (this.targetId != null && !target) {
       const hadTarget = this.targetId;
       const hadName = this.targetName;
+      const rounds = this.swings || null;
       this.targetId = null;
       this.targetName = null;
       this.phase = 'idle';
+      this._recordKill(hadName, hadTarget, rounds, frame);
       return { kind: 'loot', what: `target ${hadName ?? hadTarget} left — looting`, lootId: hadTarget };
     }
     if (!target) {
@@ -419,7 +429,7 @@ export class CombatController {
               // Mob got back in range — attack once then keep distance.
               const now = Date.now();
               if (now - this.lastSwing >= SWING_MS) {
-                this.lastSwing = now;
+                this.lastSwing = now; this.swings++; this.swings++;
                 const deg = Math.atan2(tRow - me.row, tCol - me.col) * 180 / Math.PI;
                 act.face(deg);
                 const spell = this._attackSpell();
@@ -663,6 +673,44 @@ export class CombatController {
    */
   _walkToward(act, dest, what, me) {
     return this._walkTo(act, dest, what, me);
+  }
+
+  // THE TICK KEEPER'S KILLS, WRITTEN DOWN.
+  //
+  // `recordEvent(name, 'killed', ...)` is the ONLY thing countKills() reads, and it was
+  // called from m59-autopilot.mjs alone — so a tick-keeper character killed things and
+  // m59-minimal.mjs reported 0.00 kills/min for it no matter what it did. Every question
+  // about whether the real-time keeper earns anything was unanswerable for that reason.
+  //
+  // THE SIGNAL IS THE SAME ONE THE SURVIVE KEEPER USES, deliberately. m59-skills.mjs:2019
+  // is `if (!c.room.objects.has(foe.id)) killed = true` — the quarry we were engaged with
+  // left the room. It cannot tell a corpse from a mob that wandered off or despawned, and
+  // it will over-count in a room where they do. That is a known property of the existing
+  // measure, and matching it is the point: two keepers counting the same way can be
+  // compared, and a truer count on one side only would make the comparison worse.
+  //
+  // Nothing here is allowed to throw. A record that breaks the play it is recording is
+  // worse than no record.
+  _recordKill(name, id, rounds, frame) {
+    try {
+      const c = this.session?.client;
+      const who = c?.me?.name;
+      if (!who) return;
+      const room = frame?.room ?? c?.room ?? null;
+      const detail = {
+        creature: name ?? String(id),
+        room: room?.name ?? null,
+        room_num: room?.num ?? null,
+        rounds: rounds ?? undefined,
+        keeper: 'tick',
+      };
+      recordEvent(who, 'killed', { agent: this.session?.name ?? undefined, ...detail });
+      // The feed as well as the ledger: recordKill is what attributes a max-health gain to
+      // the creature that paid for it, and "you suddenly feel a little tougher" is the only
+      // announcement of the only thing this fleet is for.
+      tougher.recordKill(who, { creature: name ?? String(id), room: detail.room,
+                                room_num: detail.room_num, rounds: rounds ?? null });
+    } catch { /* never let the record break the play it is recording */ }
   }
 
   /**
