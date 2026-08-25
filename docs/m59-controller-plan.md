@@ -152,11 +152,71 @@ So the dilemma is structural, and it is the same shape as the tile problem one l
 - block only when BOTH refuse    -> under-blocks; back to planning through the one-way wall
 
 **A cell grid cannot express side-dependent passability**, because freedom is a property of
-the cell and crossability is a property of the EDGE and the direction taken. The fix is
-directed edges — per-edge, per-direction passability computed with `canCrossWallAt` from the
-approaching side — rather than a per-cell free/blocked bit. That is a navmesh with directed
-arcs, and it is a bigger change than a filter.
+the cell and crossability is a property of the EDGE and the direction taken.
 
-Until then the controller is correct and the planner occasionally hands it a route through a
-one-way wall; the controller blocks, the caller replans, and in rooms with many such walls
-that costs roughly a third of walks.
+## Planning without the bake, and what it uncovered
+
+**Corrected below.** The section above is right about the one-way wall and wrong to present it
+as the whole cause. The obvious next move — since the descent prune made a trace cheap — is to
+delete the intermediate representation and let A* expand a node by TRACING THE STEP, which
+takes a from and a to and therefore carries the direction a grid cannot hold. `m59-navtrace.mjs`
+does that. It is affordable: a 256-unit expansion is **6.1us**, a whole plan **9-15ms** over
+about 1,400 nodes, against **61-144ms** for the bake it replaces — and the bake pays for every
+cell in the room while the search pays only for what it examines.
+
+Cost was never the obstacle. Measuring it was, and the first two versions of this file were
+both wrong in the same way, which is worth recording:
+
+- Snapping nodes to **cell centres** put the start and goal inside walls on 100 of 891 pairs —
+  the 15.7%-of-Raza-centres bug, reintroduced at a finer resolution. A centre is not a proxy
+  for the space around it at ANY cell size. Fixed by making a node's position the point a trace
+  actually landed on, so every node is reachable by construction and the lattice survives only
+  as the visited set's key.
+- Re-testing clearance at each node, as `freeSpace` must, refuses gaps the game allows, because
+  the trace that arrived already enforced the radius with the mover's own geometry.
+
+With both fixed the planner still refused 87% of held pairs, and chasing that is what found the
+real thing.
+
+### The two collision models in this repository disagree, and the permissive one has been hiding it
+
+`moverStepLands` and `traceFineMoveClient` trace the same geometry live — no step mask is
+attached to any of these rooms — and they do not agree:
+
+    room    steps moverStepLands allows    the fine trace agrees
+      38                          1,813                    83.1%
+    1016                          1,269                    46.2%
+     587                          2,800                    66.9%
+
+Substepping is not the cause: all 683 of room 1016's refusals refuse identically as one
+full-tile trace. The largest single reason is `start_has_no_floor`, and behind it is a much
+blunter fact — **36.2% of the squares room 1016's coarse grid calls walkable have no floor
+under their centre in the BSP**, and nudging the query up to 64 units off the plane recovers
+none of them, so this is not the on-plane splitter bug. The two grids simply disagree, which
+`docs/m59-routing.md` already says they do.
+
+**Ground truth settles which one to believe.** Of the 944 squares the fleet has actually stood
+on, **940 have a floor — 99.6%**. The floorless regions are not a hole in the BSP; they are
+places the game never let anybody stand, and the coarse walkable grid is the party that is
+wrong about them. So those refusals are harmless — no real path begins in the void — and the
+comparison has to exclude them. Restricted to steps between two floored squares:
+
+    room      floored steps    trace agrees    residual
+      38              1,777           84.8%    geometry_blocked 267
+    1016                696           84.2%    geometry_blocked 106
+     587              2,046           91.6%    geometry_blocked 172
+    1012              3,044           74.8%    geometry_blocked 757
+
+That residual — 8 to 25 per cent, all of it `geometry_blocked` — is the honest open question,
+and one-way walls are part of it rather than all of it. It is also enough on its own to explain
+the 87%: a 15% edge refusal rate distributed at random barely dents connectivity, but these
+cluster at doorways, and a planner that loses a doorway loses everything past it.
+
+### Where that leaves it
+
+The controller moves with the strict model and the fleet's router plans with the permissive
+one, so the controller refuses steps the rest of the fleet makes all day. That gap is the bug
+to close, and it is a question about `traceFineMoveClient` and `moverStepLands` — not about
+navmeshes, and not something a better planner can paper over. Real-time planning is built,
+cheap, and ready; it should be wired in AFTER the two models agree, because until then it
+faithfully reports a disagreement as an impossible walk.
