@@ -960,14 +960,19 @@ const server = createServer(async (req, res) => {
               const loop = session._tickLoop;
               if (loop) {
                 const since = c.evSeq;  // events after this are from the cast
-                loop._frozen = true;
-                c.cast(spell.id, []);
                 const maxMs = Number(args.holdMs) || 15000;  // blink can take several s
-                const w = await c.waitFor({ since, kinds: ['moved'], timeoutMs: maxMs });
-                loop._frozen = false;
-                const moved = w.events.filter(e => e.kind === 'moved');
-                result = { sent: true, spell: spellName, frozenMs: Date.now() - since,
-                           relocated: moved.length > 0, timedOut: w.timedOut };
+                // THE CLEAR USED TO BE THE LINE AFTER THE AWAIT, AND THAT IS THE BUG. A
+                // `waitFor` that rejects skipped it, and the character stayed frozen for the
+                // life of the process — 165 keeper respawns against 6-9 for the agents with
+                // no tick loop. `freeze` carries a deadline and `finally` returns it early.
+                loop.freeze(maxMs + 1000, 'cast ' + spellName);
+                try {
+                  c.cast(spell.id, []);
+                  const w = await c.waitFor({ since, kinds: ['moved'], timeoutMs: maxMs });
+                  const moved = w.events.filter(e => e.kind === 'moved');
+                  result = { sent: true, spell: spellName, frozenMs: Date.now() - since,
+                             relocated: moved.length > 0, timedOut: w.timedOut };
+                } finally { loop.thaw(); }
               } else {
                 c.cast(spell.id, []);
                 result = { sent: true, spell: spellName };
@@ -1048,7 +1053,8 @@ const server = createServer(async (req, res) => {
             const obj = c.room?.objects?.get(targetId);
             if (!obj) { result = { error: `object ${targetId} not in room` }; break; }
             const loop = session._tickLoop;
-            if (loop) loop._frozen = true;
+            const thaw = loop ? loop.freeze(6000, 'shop') : () => {};
+            try {
             const sinceEv = c.evSeq ?? 0;
             await session.pacer.submit('buy', () => c.buy(targetId)).catch(e => { result = { error: e.message }; });
             let shopItems = null, msg = null;
@@ -1061,8 +1067,8 @@ const server = createServer(async (req, res) => {
                 if (m) msg = m.text ?? m.what;
               }
             } catch {}
-            if (loop) loop._frozen = false;
             result = { sent: true, targetId, name: c.rsc?.get?.(obj.nameRsc) ?? '', shopItems, msg };
+            } finally { thaw(); }
             break;
           }
           case 'buyitem': {
@@ -1074,7 +1080,7 @@ const server = createServer(async (req, res) => {
             const itemId = Number(args.itemId ?? args.item);
             if (!sellerId || !itemId) { result = { error: 'need seller and itemId' }; break; }
             const loop = session._tickLoop;
-            if (loop) loop._frozen = true;
+            const thaw = loop ? loop.freeze(8000, 'buyitem') : () => {};
             const sinceEv = c.evSeq ?? 0;
             try {
               // Open the shop to activate the seller.
@@ -1087,7 +1093,7 @@ const server = createServer(async (req, res) => {
               const msgs = (ev?.events ?? []).filter(e => e.text).map(e => e.text);
               result = { sent: true, sellerId, itemId, msgs, allEvents: (ev?.events ?? []).map(e => e.kind) };
             } catch (e) { result = { error: e.message }; }
-            if (loop) loop._frozen = false;
+            finally { thaw(); }
             break;
           }
           case 'use':

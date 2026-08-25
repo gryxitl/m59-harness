@@ -307,6 +307,14 @@ export class Actuator {
 // ---------------------------------------------------------------------------
 // TICK LOOP
 // ---------------------------------------------------------------------------
+// Nothing may hold the character still longer than this. Blink is the longest cast the fleet
+// uses and resolves in ~10s; 20s is a generous ceiling and still a bounded one.
+// How long the loop may produce no ticks, while NOT frozen, before this process gives up
+// and lets the supervisor replace it. Generous: a slow decide is 174ms, not seconds.
+const LOOP_DEAD_MS = Number(process.env.M59_LOOP_DEAD_MS || 30000);
+
+const MAX_FREEZE_MS = Number(process.env.M59_MAX_FREEZE_MS || 20000);
+
 export class TickLoop {
   /**
    * @param {object}   session  the Session (connection, pacer, pushed state)
@@ -330,42 +338,67 @@ export class TickLoop {
     this.onSessionDead = onSessionDead;
     this.timer = null;
     this.busy = false;
-    this._frozen = false;  // set true by the cast override to hold the character still
+    // A FREEZE IS A DEADLINE, NEVER A FLAG. See freeze() — a boolean here is how the tick
+    // loop came to sit frozen for the life of the process.
+    this._frozenUntil = 0;
+    this._frozenWhy = null;
     this._livenessFlagged = false;
-    this.stats = { ticks: 0, skipped: 0, errors: 0, awaited: 0,
+    this.stats = { ticks: 0, skipped: 0, errors: 0, awaited: 0, frozen_ticks: 0,
                    longest_decide_ms: 0, lastError: null, stale_sessions: 0 };
   }
+
+  // HOLD THE CHARACTER STILL FOR AT MOST `ms`, AND SAY WHY.
+  //
+  // A cast needs concentration: the tick driver sends move and turn packets at 10Hz and any
+  // one of them interrupts a spell. So the loop stops deciding while a cast charges.
+  //
+  // THIS USED TO BE A BOOLEAN AND THAT IS THE BUG IT EXISTS TO PREVENT. Three call sites set
+  // `_frozen = true`, did an `await`, and set it back — with no `finally` and no backstop. A
+  // `waitFor` that rejects, or a request handler that throws, skipped the clear and the
+  // character was frozen for the life of the process. Measured on prod: JayB's keeper logged
+  // "tick loop silent for 6s" every three seconds until the log reached 23 MB, and the broker
+  // respawned it 165 times, against 6-9 for the four agents that run no tick loop.
+  //
+  // A deadline cannot be forgotten. The worst a lost thaw() can now cost is `ms`.
+  freeze(ms, why = 'cast') {
+    const until = Date.now() + Math.max(0, Math.min(ms, MAX_FREEZE_MS));
+    if (until > this._frozenUntil) { this._frozenUntil = until; this._frozenWhy = why; }
+    return () => this.thaw(why);
+  }
+
+  thaw() { this._frozenUntil = 0; this._frozenWhy = null; }
+
+  get frozen() { return Date.now() < this._frozenUntil; }
 
   start() {
     if (this.timer) return this;
     this.timer = setInterval(() => this.tick(), this.intervalMs);
     this.timer.unref?.();
-    // A separate, un-unref'd watchdog: if the main tick timer stops firing (an
-    // unref'd timer can be starved), this one detects the silence and restarts the
-    // loop. This is the fix for the "0% CPU, no log" stall — the tick loop silently
-    // stops and nothing notices. The watchdog is un-unref'd so it always runs.
-    this._watchdog = setInterval(() => {
+    // NO WATCHDOG. There used to be one here that re-detected silence every three seconds
+    // and "forced recovery" by restarting the timer and firing a tick. It could not work:
+    // the loop was not starved, it was FROZEN, and every tick it forced returned at the same
+    // early exit. It logged 23 MB and recovered nothing.
+    //
+    // A watchdog that restarts a loop in place is a bandage over a cause, and it hides the
+    // cause by making the symptom intermittent. The cause was an unbounded freeze, and
+    // freeze() now carries a deadline, so a lost thaw costs at most MAX_FREEZE_MS.
+    //
+    // What remains is a LIVENESS ASSERTION, not a repair: if the loop is genuinely not
+    // ticking and is not frozen, this process is broken in a way it cannot diagnose from the
+    // inside, so it exits and lets the broker respawn it clean. That is the supervisor this
+    // repository already has — `[rejoin] tN keeper not reachable, respawning` — and failing
+    // into it is honest, where limping is not.
+    this._liveness = setInterval(() => {
       const now = Date.now();
-      if (now - (this._lastTickAt ?? now) > 5000) {
-        console.error(`[tick-watchdog] tick loop silent for ${Math.round((now - this._lastTickAt)/1000)}s (busy=${this.busy}, longest=${this.stats.longest_decide_ms}ms) — forcing recovery`);
-        this._lastTickAt = now;
-        // A decide() that has been running for > 5s is hung (decides should be < 50ms).
-        // The busy flag is stuck true, so every tick is skipped and the loop silently
-        // dies. Force-reset it so the next tick can run. We cannot interrupt the hung
-        // synchronous call, but we CAN ensure the NEXT tick proceeds once it returns
-        // (or never does — in which case the liveness guard will exit the keeper).
-        if (this.busy) {
-          console.error(`[tick-watchdog] forcing busy=false (a decide was hung for ${Math.round((now - this._lastTickAt)/1000)}s)`);
-          this.busy = false;
-        }
-        // The timer may have been cleared or starved. Restart it.
-        if (this.timer) { clearInterval(this.timer); this.timer = null; }
-        this.timer = setInterval(() => this.tick(), this.intervalMs);
-        this.timer.unref?.();
-        // Also fire one tick immediately to unstick.
-        try { this.tick(); } catch (e) { console.error(`[tick-watchdog] immediate tick failed: ${e?.message}`); }
-      }
-    }, 3000);
+      const silent = now - (this._lastTickAt ?? now);
+      if (silent <= LOOP_DEAD_MS) return;
+      if (this.frozen) return;                       // a deadline is holding it; it will pass
+      console.error(`[tick] loop has not ticked for ${Math.round(silent / 1000)}s ` +
+                    `(busy=${this.busy}, longest=${this.stats.longest_decide_ms}ms). ` +
+                    'Exiting so the broker can respawn this process clean.');
+      try { this.stop?.(); } catch {}
+      process.exit(17);
+    }, 5000);
     // NOT unref'd: the watchdog must always fire, even if the main tick timer is
     // starved. This is deliberate — it keeps the process alive while it is supposed
     // to be playing. (The HTTP server also keeps the process alive, but the watchdog
@@ -374,6 +407,7 @@ export class TickLoop {
   }
 
   stop() {
+    if (this._liveness) { clearInterval(this._liveness); this._liveness = null; }
     if (!this.timer) return;
     clearInterval(this.timer);
     this.timer = null;
@@ -388,7 +422,9 @@ export class TickLoop {
     // turn packet we send would interrupt the cast and make it fail. While _frozen is
     // set (by the /action cast override), the tick loop does NOTHING — no decide,
     // no actuate — so the character stands perfectly still until the cast resolves.
-    if (this._frozen) { return; }
+    // FROZEN IS ALIVE. The old early-return skipped the `_lastTickAt` update below, so a
+    // legitimate freeze read to the watchdog as a dead loop — which is what made it spin.
+    if (this.frozen) { this._lastTickAt = Date.now(); this.stats.frozen_ticks++; return; }
     this.busy = true;
     const t0 = Date.now();
     // DIAGNOSTIC: a heartbeat so a silent stall is visible. A tick loop that has stopped

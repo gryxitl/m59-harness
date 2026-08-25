@@ -553,15 +553,19 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
               c.turn?.(faceDeg);
               const loop = session?._tickLoop;
               if (loop) {
-                loop._frozen = true;
                 const BLINK_MS = 11000;  // blink casts ~10s; hold a beat past it
+                // A DEADLINE, NOT A FLAG. This path always had a setTimeout backstop, which
+                // is why it was not the one that froze JayB for ever — but the backstop was
+                // a second mechanism guarding a boolean. freeze() carries the deadline
+                // itself, so there is one thing to get right instead of two.
+                loop.freeze(BLINK_MS, 'blink');
                 // Unfreeze when the relocation lands OR after the cast window, whichever
                 // first. The moved-event path is the reliable one (the server confirms the
                 // teleport); the timeout is the backstop so a failed cast can't hold the
                 // character frozen for ever.
                 const since = c.evSeq;
                 let unfrozen = false;
-                const unfreeze = () => { if (!unfrozen) { unfrozen = true; loop._frozen = false; } };
+                const unfreeze = () => { if (!unfrozen) { unfrozen = true; loop.thaw(); } };
                 c.cast(blink.id, [])
                   .then?.(() => { try { c.waitFor?.({ since, kinds: ['moved'], timeoutMs: BLINK_MS }).then(() => unfreeze()).catch(() => unfreeze()); } catch { unfreeze(); } })
                   .catch?.(() => unfreeze());
