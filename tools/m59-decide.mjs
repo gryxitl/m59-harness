@@ -173,6 +173,29 @@ export const INTENTS = {
   },
   stand: (f, act) => ({ sent: !!act.stand(), what: 'stand' }),
 
+  // THE ONE WAY OUT OF THE NEWBIE ZONE: the portal in the Grand Museum at (11,2), touched
+  // TWICE. The first touch only warns and bounces you back off it, and the bounce does not
+  // reliably return you to the square you left — so this steps off and on again rather than
+  // assuming position. One-way; there is no walking back in.
+  //
+  // Two phases, one command per tick, like every other intent here: route to 1018 while
+  // outside it, then alternate (11,2) and (11,3) once inside.
+  leave_raza: (f, act, ctx) => {
+    const room = Number(f?.room?.num ?? ctx.client?.room?.num);
+    const MUSEUM = 1018;
+    if (room !== MUSEUM) {
+      const r = ctx.session?._router;
+      if (!r) return { sent: false, why: 'no router to reach the Grand Museum' };
+      r.to(MUSEUM);
+      return { sent: true, what: `route to the Grand Museum (${MUSEUM}) for the portal out` };
+    }
+    // Inside the museum: alternate so a bounce is followed by a fresh approach.
+    const n = (ctx.session._razaTouch = (ctx.session._razaTouch ?? 0) + 1);
+    const [col, row] = (n % 2) ? [11, 2] : [11, 3];
+    const sent = !!act.walk?.(col, row, { maxSteps: 40 });
+    return { sent, what: `portal: step to (${col},${row}) — touch ${Math.ceil(n / 2)} of 2+` };
+  },
+
   equip: (f, act, ctx) => {
     // Scan the event ring for a recent "it's broken" refusal so a shattered weapon
     // gets condemned BEFORE we retry it (prevents the use-flood on a broken mace).
@@ -1131,6 +1154,16 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       return;
     }
 
+    // 2a1. GRADUATE OUT OF RAZA. Same shape as the Underworld escape above: a directional
+    // decision the planner has no transition for, and the only way out of the zone.
+    if (active?.goal === 'leave_raza') {
+      const r = intend('leave_raza', frame, act, { client, session, ws });
+      note(active.goal, r.sent);
+      onDecision?.({ ticks, goal: 'leave_raza', action: 'leave_raza',
+        sent: r.sent, what: r.what ?? null, why: r.why ?? null });
+      return;
+    }
+
     // 2a2. VIGOR LOW: rest to recover vigor. The character
     // can't fight effectively below vigor 20. Resting
     // recovers vigor over time (faster at an inn).
@@ -1381,6 +1414,11 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
 // precondition cannot, which is the one rule docs/HANDOFF.md says must not be broken.
 export const DEFAULT_GOALS = [
   { goal: '!in_underworld', when: ws => ws.in_underworld === true },
+  // GRADUATE OUT OF RAZA. Second only to being dead, because everything below it is work the
+  // zone cannot pay for: from max health 25 the only creature Raza generates is a level-25
+  // mummy and advancement needs monster_level > base_max_health, so a character left here
+  // farms for ever and gains nothing. JayB did precisely that.
+  { goal: 'leave_raza', when: ws => ws.in_raza === true && ws.raza_outgrown === true },
   // FLEE first: if an out-of-band mob is IN REACH (actually threatening us), run before
   // anything else. The old condition fired on ANY out-of-band target (has_target &&
   // !target_in_band), which made the character FLEE from a passive mummy just because it

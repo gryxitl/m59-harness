@@ -188,6 +188,35 @@ export const SYMBOLS = {
     },
   },
 
+  // THE NEWBIE ZONE, AND WHETHER IT STILL PAYS.
+  //
+  // Raza is rooms 1011-1018 and there is NO door out: every map exit leads back inside and the
+  // eleven unresolved ones are locked. The way out is the portal in the Grand Museum (1018) at
+  // (11,2), touched TWICE — the first touch warns and bounces you back. It is one-way.
+  //
+  // It stops paying at max health 25. Advancement needs monster_level > base_max_health and the
+  // only thing Raza generates is the level-25 mummy, so from 25 onward a character can farm the
+  // whole zone for ever and gain nothing — which is exactly what JayB was doing.
+  in_raza: {
+    describe: 'inside the newbie zone (rooms 1011-1018)',
+    whenUnknown: false,
+    why_unknown: 'an unreadable room must not send anybody through a one-way portal',
+    produce: ({ client }) => {
+      const n = Number(client?.room?.num ?? client?.room?.id);
+      return Number.isFinite(n) ? (n >= 1011 && n <= 1018) : null;
+    },
+  },
+
+  raza_outgrown: {
+    describe: 'max health has reached 25, so the newbie zone can no longer pay anything',
+    whenUnknown: false,
+    why_unknown: 'do not graduate a character on an unreadable health bar',
+    produce: ({ client }) => {
+      const max = client?.vitals?.()?.health?.max;
+      return max == null ? null : max >= 25;
+    },
+  },
+
   vigor_floor: {
     describe: 'vigor is above the minimum for effective combat (>= 20)',
     whenUnknown: false,
