@@ -220,3 +220,30 @@ to close, and it is a question about `traceFineMoveClient` and `moverStepLands` 
 navmeshes, and not something a better planner can paper over. Real-time planning is built,
 cheap, and ready; it should be wired in AFTER the two models agree, because until then it
 faithfully reports a disagreement as an impossible walk.
+
+
+## Wiring it to a live character, and the seam that was wrong
+
+`M59_TICK_CONTROLLER=1` routes `Actuator.walk()` through the controller, and the loop
+integrates one tick of physics in `driveTick()` before `decide()` runs. That works, it is
+tested both ways, and on a live JayB it produced **zero** controller activity across 877
+ticks and nine walk decisions.
+
+**Because the tick keeper does not move through `Actuator.walk()`.** Combat movement goes
+`m59-combat.mjs:_walkTo` -> `session._mover` -> `m59-mover.mjs`, which is a third mover with
+its own A*, its own fine stepping, and its own `to()`/`tick()` contract. So the count is:
+
+| mover | driven by |
+|---|---|
+| `session._mover` (`m59-mover.mjs`) | the tick keeper, in combat — the one that carries the fleet |
+| `session.walkTo` | `Actuator.walk()`, and the travel/errand paths |
+| `CharacterController` | still nothing |
+
+`_mover.tick()` already has the controller's shape — a per-tick call returning `moving`,
+`arrived`, `blocked`, `stuck`, `no-route`, `raw-move`, `blinked` — which is why it is the
+seam that matters and `walkTo` is not. Wiring the controller in means satisfying THAT
+contract, including the states the keeper acts on: `no-route` sets `_moverNoRoute` and
+blacklists a target, and `stuck` is what escalates to a blink.
+
+Until that is done the controller remains unexercised on a live character, and the flag is
+honest but inert for combat movement.

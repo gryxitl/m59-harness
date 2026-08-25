@@ -179,6 +179,10 @@ export class Actuator {
     this.controller = USE_CONTROLLER ? new CharacterController() : null;
     this.controlDest = null;   // {col,row} the controller is currently driving to
     this._lastDriveAt = 0;
+    // A LOG THAT DOES NOT DROWN THE THING IT IS RECORDING. The t3 keeper log is 26MB; a line
+    // per tick at 10Hz would bury the run it is supposed to explain. First few of each kind,
+    // then a periodic summary.
+    this._ctlLog = { drove: 0, fell: 0, arrived: 0, blocked: 0, noGeo: 0, lastSummary: 0 };
   }
 
   // Geometry for the room the body is in. The controller cannot collide without it, and a
@@ -204,7 +208,19 @@ export class Actuator {
     if (!geo || !me) return null;
     try {
       const r = ctl.step(dt, { geo, client: this.session.client });
-      if (r?.arrived) { this.controlDest = null; ctl.clear(); }
+      const L = this._ctlLog;
+      if (r?.arrived) {
+        this.controlDest = null; ctl.clear();
+        if (++L.arrived <= 5) console.error(`[controller] ARRIVED (${L.arrived})`);
+      } else if (r?.blocked) {
+        if (++L.blocked <= 5) console.error(`[controller] blocked: ${r.reason ?? '?'} (${L.blocked})`);
+      }
+      if (Date.now() - L.lastSummary > 30000) {
+        L.lastSummary = Date.now();
+        const st = ctl.stats ?? {};
+        console.error(`[controller] drove=${L.drove} fellthrough=${L.fell} noGeo=${L.noGeo} arrived=${L.arrived} blocked=${L.blocked}`
+          + ` | replans=${st.replans ?? 0} steered_trace=${st.steered_trace ?? 0} steered_grid=${st.steered_grid ?? 0} fellback=${st.trace_fellback ?? 0}`);
+      }
       return r;
     } catch (e) {
       // A throwing controller must not kill the tick, and must not keep the body: hand the
@@ -212,7 +228,7 @@ export class Actuator {
       // still while every counter reports a healthy loop.
       this.controlDest = null;
       try { ctl.clear(); } catch { /* ignore */ }
-      this.session?.log?.(`[controller] step threw, releasing: ${e?.message}`);
+      console.error(`[controller] step threw, releasing the body: ${e?.message}`);
       return { error: e?.message };
     }
   }
@@ -274,10 +290,18 @@ export class Actuator {
       }
       const geo = this._geo;
       const me = this.session?.world?.me ?? this.session?.me ?? null;
+      if (!geo || !me) {
+        const L = this._ctlLog;
+        if (++L.noGeo <= 3)
+          console.error(`[controller] no ${!geo ? 'geometry' : 'position'} for this room — falling through to walkTo (${L.noGeo})`);
+      }
       if (geo && me) {
         try {
           const plan = this.controller.setDestination(geo, col, row, me);
           if (plan?.ok) {
+            const L = this._ctlLog;
+            if (++L.drove <= 5)
+              console.error(`[controller] DRIVING to (${col},${row}) via ${plan.planner}, ${plan.waypoints} waypoint(s) (${L.drove})`);
             this.controlDest = { col, row };
             this._lastDriveAt = Date.now();
             rec.ok = true; rec.driving = true; rec.planner = plan.planner;
@@ -289,8 +313,14 @@ export class Actuator {
           // A refused plan FALLS THROUGH to the async walker below rather than reporting a
           // failure. The planner disagreeing with the mover is the open question, not a
           // reason to leave a character standing in a corridor.
+          const L = this._ctlLog;
           rec.planRefused = plan?.reason ?? 'no plan';
-        } catch (e) { rec.planRefused = e?.message; }
+          if (++L.fell <= 5) console.error(`[controller] plan refused (${rec.planRefused}) — falling through to walkTo (${L.fell})`);
+        } catch (e) {
+          rec.planRefused = e?.message;
+          const L = this._ctlLog;
+          if (++L.fell <= 5) console.error(`[controller] plan threw (${e?.message}) — falling through (${L.fell})`);
+        }
       }
     }
 
