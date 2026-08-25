@@ -566,10 +566,22 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
                 const since = c.evSeq;
                 let unfrozen = false;
                 const unfreeze = () => { if (!unfrozen) { unfrozen = true; loop.thaw(); } };
-                c.cast(blink.id, [])
-                  .then?.(() => { try { c.waitFor?.({ since, kinds: ['moved'], timeoutMs: BLINK_MS }).then(() => unfreeze()).catch(() => unfreeze()); } catch { unfreeze(); } })
-                  .catch?.(() => unfreeze());
-                setTimeout(unfreeze, BLINK_MS);  // backstop
+                // `cast` IS FIRE AND FORGET AND RETURNS UNDEFINED — it writes a packet
+                // (m59-client.mjs: `cast(spellId, targets)` calls `this.send` and returns).
+                // This used to read `c.cast(...).then?.(...)`, and `?.` guards CALLING a
+                // method, not READING one off undefined, so it threw
+                // `Cannot read properties of undefined (reading 'then')` on every blink.
+                //
+                // That throw is what made the freeze permanent: it escaped decide() between
+                // setting the flag and clearing it, so the character never unfroze, the tick
+                // loop returned early for ever, and the watchdog spun every three seconds.
+                // One missing await-shaped assumption cost 165 keeper respawns.
+                try { c.cast(blink.id, []); } catch { unfreeze(); }
+                try {
+                  c.waitFor?.({ since, kinds: ['moved'], timeoutMs: BLINK_MS })
+                    ?.then(() => unfreeze())?.catch(() => unfreeze());
+                } catch { unfreeze(); }
+                setTimeout(unfreeze, BLINK_MS);  // backstop; freeze() also has its own deadline
               } else {
                 // No tick loop to freeze (shouldn't happen in the tick driver, but the
                 // decider is shared): plain cast, no concentration protection.
