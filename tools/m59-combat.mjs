@@ -712,7 +712,11 @@ export class CombatController {
     if (o.is_self) return true;
     const selfId = c?.selfId;
     if (selfId != null && o.id === selfId) return true;
-    const mine = String(c?.me?.name ?? '').toLowerCase();
+    // `client.me.name` is not always populated — the survive keeper reads
+    // `client?.me?.name ?? credentials?.character` for exactly this reason, and relying on the
+    // first alone is why this guard did not fire on Lee at all.
+    const mine = String(c?.me?.name ?? this.session?.credentials?.character
+                        ?? this.session?.name ?? '').toLowerCase();
     if (!mine) return false;
     const theirs = String(o.name ?? c?.rsc?.get?.(o.nameRsc) ?? '').toLowerCase();
     return !!theirs && theirs === mine;
