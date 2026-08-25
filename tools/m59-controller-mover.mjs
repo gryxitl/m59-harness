@@ -178,7 +178,10 @@ export class ControllerMover {
         this.active = false;
         console.error(`[ctlmover] ${this._agent} NO-ROUTE to (${this.dest.col},${this.dest.row})`
           + ` from (${me.col},${me.row}): ${plan?.reason ?? '?'}`);
-        return { state: 'no-route', why: plan?.reason ?? 'no path to destination' };
+        // `no-route` for the combat caller, which blacklists the target on it. The ROUTER
+        // has no case for that name and would fall through to its default 'moving', so it
+        // would keep believing a leg was in progress that can never advance.
+        return { state: 'no-route', blocked: true, why: plan?.reason ?? 'no path to destination' };
       }
       this._plannedFor = key;
       // NOT resetting _noProgress here. A blocked tick forces a replan, so resetting the

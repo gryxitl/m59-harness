@@ -122,15 +122,25 @@ async function join() {
         console.error(`[keeper] ${agent} map warm failed (${e.message}); will build lazily on first use`);
       }
       const router = new Router({ session });
-      // COMBAT MOVES THROUGH session._mover; TRAVEL MOVES THROUGH router.mover. They were the
-      // same object, and swapping only this one hands the controller the fight while leaving
-      // the router's own journeys on the mover they were tuned against.
+      // COMBAT MOVES THROUGH session._mover; TRAVEL MOVES THROUGH router.mover.
+      //
+      // Both get the controller, and both get the SAME INSTANCE. Two ControllerMovers on one
+      // session would each integrate their own believed position and quietly fight over the
+      // body — the controller owns the position, so there has to be exactly one of it.
+      //
+      // Travel was left on the legacy mover at first, out of caution. That was the wrong
+      // caution: travel is where it fails worst. JayB spent eighteen minutes in room 1012
+      // oscillating (33,11) <-> (32,11), 257 walkTo calls all returning arrived:true, while
+      // the exit to the Mausoleum sat at (44,8) in the same region with a 58-waypoint grid
+      // path to it. The controller walks that path in 6.4s with zero blocked ticks.
       session._mover = router.mover;
       if (process.env.M59_TICK_CONTROLLER === '1') {
         try {
           const { ControllerMover } = await import('./m59-controller-mover.mjs');
-          session._mover = new ControllerMover(session, router.mover);
-          console.error(`[keeper] ${agent} combat movement on the CHARACTER CONTROLLER`
+          const cm = new ControllerMover(session, router.mover);
+          router.mover = cm;
+          session._mover = cm;
+          console.error(`[keeper] ${agent} movement on the CHARACTER CONTROLLER — combat AND travel`
             + ` (planner=${process.env.M59_NAV_TRACE || 'on'})`);
         } catch (e) {
           console.error(`[keeper] ${agent} controller mover unavailable (${e.message}); staying on the legacy mover`);
