@@ -42,7 +42,18 @@ function engageSquare(me, target) {
 const PULL_RANGE = 12;
 // How close (in squares) for "in reach" — melee is a disc of
 // radius 2-3 on square coordinates.
-const MELEE_REACH = 3;
+//
+// TWO, NOT THREE, AND THE REASON IS THE METRIC MISMATCH. The check below measures
+// MANHATTAN distance (|dx| + |dy|, what the mover costs) while the server's attack range is
+// squared EUCLIDEAN. At 3 those disagree exactly at the boundary: a target 3 tiles NSEW is
+// Manhattan 3 and Euclidean 3, sitting on the outer edge of a 2-3 disc, so the swing is the
+// server's to refuse. Manhattan <= 2 guarantees Euclidean <= 2 for every arrangement, which
+// is inside the disc whatever the server rounds to.
+//
+// Measured before the change: JayB, 331 swings in nine minutes at level-25 mummies, zero
+// kills, neither side losing health. A swing refused for range costs the whole second of
+// cooldown it was paced against, so a boundary swing is not a cheap miss — it is the round.
+const MELEE_REACH = 2;
 // CAST_REACH: how close a caster needs to be to cast a bolt at a mob.
 // Bolt spells (zap, fire bolt) travel several squares, so casters can
 // engage from farther out than melee.
