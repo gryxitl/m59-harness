@@ -1,0 +1,69 @@
+[routes] 264 room(s) planning on the mover's own geometry
+[routes] inferred-reverse table built at startup in 209ms, 4 rooms (off the first tick)
+[routes] 264 room geometries parsed at startup in 0ms (off the first tick)
+[keeper] t3 starting on port 8913 (fleet: default)
+[keeper] t3 mode from file at startup: "tick" (entry.autopilot.mode="tick")
+[keeper] t3 HTTP API on port 8913
+[keeper] t3 joined as JayB
+[keeper] t3 map warmed at startup in 1ms (reverse=4 rooms)
+[keeper] t3 tick driver started (10hz, watchdog on)
+[liveness-guard] lastRx=1787619202407 age=0s threshold=45s inGame=true wouldFire=false
+[tick] t3 vigor_low -> rest (rest)
+[tick-alive] ticks=1 skipped=0 errors=0 longest=100ms staleRx=0s busy=true
+[tick-metrics] t3 n=10 median=0ms p99=100ms max=100ms avg=10ms
+[liveness-guard] lastRx=1787619206651 age=1s threshold=45s inGame=true wouldFire=false
+[tick-alive] ticks=100 skipped=0 errors=0 longest=100ms staleRx=0s busy=true
+[liveness-guard] lastRx=1787619212293 age=0s threshold=45s inGame=true wouldFire=false
+[tick] t3 _fight -> stand (stand before moving)
+[tick] t3 _fight -> walk (close gap)
+[liveness-guard] lastRx=1787619217627 age=0s threshold=45s inGame=true wouldFire=false
+[tick-alive] ticks=198 skipped=0 errors=0 longest=150ms staleRx=1s busy=true
+[liveness-guard] lastRx=1787619221571 age=1s threshold=45s inGame=true wouldFire=false
+[liveness-guard] lastRx=1787619227759 age=0s threshold=45s inGame=true wouldFire=false
+[tick-alive] ticks=297 skipped=0 errors=0 longest=150ms staleRx=0s busy=true
+[liveness-guard] lastRx=1787619232857 age=0s threshold=45s inGame=true wouldFire=false
+[tick-metrics] t3 n=295 median=23ms p99=88ms max=150ms avg=20ms
+[liveness-guard] lastRx=1787619237919 age=0s threshold=45s inGame=true wouldFire=false
+[tick-alive] ticks=396 skipped=0 errors=0 longest=150ms staleRx=0s busy=true
+[liveness-guard] lastRx=1787619242615 age=0s threshold=45s inGame=true wouldFire=false
+[liveness-guard] lastRx=1787619248152 age=0s threshold=45s inGame=true wouldFire=false
+[tick-alive] ticks=495 skipped=0 errors=0 longest=150ms staleRx=0s busy=true
+[liveness-guard] lastRx=1787619252665 age=1s threshold=45s inGame=true wouldFire=false
+[liveness-guard] lastRx=1787619258331 age=0s threshold=45s inGame=true wouldFire=false
+[tick-alive] ticks=594 skipped=0 errors=0 longest=150ms staleRx=0s busy=true
+[liveness-guard] lastRx=1787619262636 age=1s threshold=45s inGame=true wouldFire=false
+[tick-metrics] t3 n=295 median=29ms p99=101ms max=103ms avg=34ms
+[tick-ERROR] #1: Cannot read properties of undefined (reading 'then')
+TypeError: Cannot read properties of undefined (reading 'then')
+    at decide (file:///Users/costas/Documents/Projects/m59-harness/tools/m59-decide.mjs:570:19)
+    at TickLoop.decide (file:///Users/costas/Documents/Projects/m59-harness/tools/m59-keeper-process.mjs:149:9)
+    at TickLoop.tick (file:///Users/costas/Documents/Projects/m59-harness/tools/m59-tick.mjs:493:24)
+[tick-alive] ticks=616 skipped=0 errors=1 longest=150ms staleRx=0s busy=true
+[liveness-guard] lastRx=1787619276091 age=0s threshold=45s inGame=true wouldFire=false
+[tick-ERROR] #2: Cannot read properties of undefined (reading 'then')
+TypeError: Cannot read properties of undefined (reading 'then')
+    at decide (file:///Users/costas/Documents/Projects/m59-harness/tools/m59-decide.mjs:570:19)
+    at TickLoop.decide (file:///Users/costas/Documents/Projects/m59-harness/tools/m59-keeper-process.mjs:149:9)
+    at TickLoop.tick (file:///Users/costas/Documents/Projects/m59-harness/tools/m59-tick.mjs:493:24)
+[tick-alive] ticks=617 skipped=0 errors=2 longest=150ms staleRx=0s busy=true
+[liveness-guard] lastRx=1787619287194 age=0s threshold=45s inGame=true wouldFire=false
+[tick-ERROR] #3: Cannot read properties of undefined (reading 'then')
+TypeError: Cannot read properties of undefined (reading 'then')
+    at decide (file:///Users/costas/Documents/Projects/m59-harness/tools/m59-decide.mjs:570:19)
+    at TickLoop.decide (file:///Users/costas/Documents/Projects/m59-harness/tools/m59-keeper-process.mjs:149:9)
+    at TickLoop.tick (file:///Users/costas/Documents/Projects/m59-harness/tools/m59-tick.mjs:493:24)
+[tick-alive] ticks=618 skipped=0 errors=3 longest=150ms staleRx=0s busy=true
+[liveness-guard] lastRx=1787619298116 age=0s threshold=45s inGame=true wouldFire=false
+[tick-alive] ticks=619 skipped=0 errors=4 longest=150ms staleRx=1s busy=true
+[liveness-guard] lastRx=1787619308593 age=1s threshold=45s inGame=true wouldFire=false
+[tick-alive] ticks=620 skipped=0 errors=5 longest=150ms staleRx=1s busy=true
+[liveness-guard] lastRx=1787619318972 age=1s threshold=45s inGame=true wouldFire=false
+[tick-alive] ticks=621 skipped=0 errors=6 longest=150ms staleRx=0s busy=true
+[liveness-guard] lastRx=1787619331421 age=0s threshold=45s inGame=true wouldFire=false
+[tick] t3 vigor_low -> rest (rest)
+[tick-metrics] t3 n=16 median=20ms p99=89ms max=89ms avg=24ms
+[liveness-guard] lastRx=1787619335807 age=1s threshold=45s inGame=true wouldFire=false
+[tick] t3 _fight -> stand (stand before moving)
+[tick-alive] ticks=687 skipped=0 errors=7 longest=150ms staleRx=0s busy=true
+[liveness-guard] lastRx=1787619348772 age=0s threshold=45s inGame=true wouldFire=false
+[keeper] t3 SIGTERM received
