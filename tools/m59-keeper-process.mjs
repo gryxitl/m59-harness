@@ -75,6 +75,37 @@ const { account, password, character } = entry.credentials;
 const credHost = entry.credentials.host || host;
 const credPort = entry.credentials.port || serverPort;
 const policy = entry.autopilot?.policy || {};
+
+// THE LOADOUT IS THE STANDING PLAN, AND THE TICK KEEPER WAS NOT READING IT.
+//
+// `applyLoadoutPolicyOverlay` lives on the survive keeper (m59-autopilot.mjs) and nothing
+// else called it, so a character on `mode: tick` got its orders from the roster alone — and
+// the roster is the wrong place to put them: edits there were silently reverted on every
+// restart, three times in a row, while the loadout file sat unread.
+//
+// `substrate/loadouts/<character>.json` is the documented home for per-character orders
+// (CLAUDE.md, "AND NEITHER DO ORDERS"), it is reapplied on every load by design, and
+// POLICY_KEYS is the declared overridable surface. So the tick keeper reads it too.
+//
+// Applied at startup rather than per-tick: this process is restarted about once a minute by
+// the supervisor, so the file is re-read often enough, and a stat() on the tick path is a
+// cost with no reader.
+try {
+  const { loadoutFor, POLICY_KEYS } = await import('./m59-loadout.mjs');
+  const lp = loadoutFor(character)?.policy;
+  if (lp && Object.keys(lp).length) {
+    const applied = {};
+    for (const [key, spec] of Object.entries(POLICY_KEYS)) {
+      if (lp[key] === null || lp[key] === undefined) continue;
+      if (policy[spec.as] !== lp[key]) applied[spec.as] = lp[key];
+      policy[spec.as] = lp[key];
+    }
+    if (Object.keys(applied).length)
+      console.error(`[keeper] ${agent} took policy from ${character}'s loadout: ${JSON.stringify(applied)}`);
+  }
+} catch (e) {
+  console.error(`[keeper] ${agent} could not read the loadout (${e.message}); using the roster policy alone`);
+}
 const mode = entry.autopilot?.mode || 'goap';
 // Log the mode source so a silent revert to 'survive' is visible. This is the value this
 // process read from the fleet file at startup. If the broker later rewrites the file, the

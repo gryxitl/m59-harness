@@ -236,6 +236,40 @@ export class Router {
       if (alt?.stand_on) standOn = alt.stand_on;
     }
 
+    // AN EDGE EXIT IS AN EDGE, SO SLIDE ALONG IT TO SOMETHING WE CAN REACH.
+    //
+    // A `go` exit is a doorway and really is one square. An EDGE exit is the whole boundary —
+    // any walkable square on it leaves the room — but the bake records one anchor for it, and
+    // a character who cannot reach that one square is reported stuck in a room he could walk
+    // out of in ten steps.
+    //
+    // Lee, in The Sweet Grass Prairies: the south anchor is (49,12); his reachable ground is
+    // columns 32-46 and touches the SAME south edge at (49,43) through (49,46), every one
+    // walkable. He tried to leave seventeen times. The room has no `go` exits at all, so
+    // there was no other candidate and the fallback above kept the anchor he cannot walk to.
+    //
+    // `fineSet` is already computed for the sort, so this costs a scan of it: keep the
+    // anchor's fixed coordinate (the boundary itself) and take the nearest reachable square
+    // along the other one.
+    if (standOn && fineSet && !fineSet.has(`${standOn.col},${standOn.row}`)
+        && (exit.kind === 'edge' || exit.direction)) {
+      const dir = String(exit.direction ?? '').toLowerCase();
+      const alongCol = dir === 'north' || dir === 'south';   // the row is fixed, the column varies
+      let best = null, bestD = Infinity;
+      for (const key of fineSet) {
+        const [c, r] = key.split(',').map(Number);
+        if (!Number.isFinite(c) || !Number.isFinite(r)) continue;
+        if (alongCol ? r !== standOn.row : c !== standOn.col) continue;
+        const d = Math.hypot(c - (meNow?.col ?? standOn.col), r - (meNow?.row ?? standOn.row));
+        if (d < bestD) { bestD = d; best = { col: c, row: r }; }
+      }
+      if (best) {
+        this.session?.log?.(`[route] edge exit to ${next}: anchor (${standOn.col},${standOn.row})`
+          + ` unreachable, crossing at (${best.col},${best.row}) instead`);
+        standOn = best;
+      }
+    }
+
     // Compute an edge target if the exit doesn't provide one.
     // The edge target is one square beyond the staging square,
     // in the direction of the exit. Walking to it triggers
