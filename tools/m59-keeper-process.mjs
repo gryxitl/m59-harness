@@ -717,15 +717,25 @@ const server = createServer(async (req, res) => {
         const leg = session._router?.leg ?? null;
         const aim = leg?.standOn ?? (mover?.dest ?? null);
         if (aim && Number.isFinite(aim.col) && Number.isFinite(aim.row)) {
+          // DRAW THE PLAN THE MOVER IS ACTUALLY FOLLOWING.
+          //
+          // This asked finePathProtocol while the controller steers on navPath, so the overlay
+          // showed a second opinion rather than the truth. They disagree exactly where it
+          // matters: a staging square one or two from the map edge cannot hold a body of
+          // radius 248, so finePathProtocol refuses it, while the grid planner routes there
+          // happily. JayB in the Sweet Grass Prairies — navPath FOUND 152 waypoints to (20,2)
+          // and the overlay drew nothing, which reads as "he has no way there" when he does.
+          //
+          // navPath works in CLIENT units; the viewer wants 0-indexed squares.
           let tpath = [];
-          if (geo?.finePathProtocol) {
-            const ax = aim.col * F + H, ay = aim.row * F + H;
-            const sx2 = me.col * F + H, sy2 = me.row * F + H;
-            const p2 = geo.finePathProtocol(sx2, sy2, ax, ay, { step: 8, margin: 12 * F, maxNodes: 4000 });
-            if (p2.found) tpath = (p2.waypoints ?? []).map(w => ({
-              x: Math.round((w.x - H) / F) - 1, z: Math.round((w.y - H) / F) - 1,
+          try {
+            const { navPath } = await import('./m59-navgrid.mjs');
+            const toClient = (col, row) => ({ x: (col - 0.5) * 1024, y: (row - 0.5) * 1024 });
+            const np = navPath(geo, toClient(me.col, me.row), toClient(aim.col, aim.row));
+            if (np?.found) tpath = (np.waypoints ?? []).map(w => ({
+              x: w.x / 1024 - 0.5, z: w.y / 1024 - 0.5,
             }));
-          }
+          } catch { /* diagnostic only */ }
           travel = {
             path: tpath,
             to: { x: aim.col - 1, z: aim.row - 1 },
@@ -805,6 +815,29 @@ const server = createServer(async (req, res) => {
         target: t ? { col: t.col, row: t.row, name: c?.rsc?.get?.(t.nameRsc) } : null,
         reach,
         geoReady: !!geo?.collisionReady,
+        // THE ROUTER'S OWN STATE. Without this, a route that stops advancing is invisible:
+        // the mover reports ARRIVED every tick and the position never changes, and there is
+        // no way from outside to tell whether the chain is stale, exhausted, or never moved.
+        // JayB stood on (13,49) in the Sweet Grass Prairies for 760 arrivals with the leg
+        // still aiming (20,2) and nothing to say which of the two was wrong.
+        route: (() => {
+          try {
+            const r = session._router;
+            if (!r) return null;
+            return {
+              dest: r.dest ?? null,
+              state: r.lastState ?? null,
+              leg: r.leg ? { next: r.leg.next, kind: r.leg.kind,
+                             standOn: r.leg.standOn ?? null,
+                             edgeTarget: r.leg.edgeTarget ?? null,
+                             direction: r.leg.direction ?? null } : null,
+              subWp: r.subWp ? r.subWp.length : 0,
+              subHead: r.subWp?.[0] ?? null,
+              subReplans: r._subWpReplans ?? null,
+              mark: r.mark ?? null,
+            };
+          } catch { return 'err'; }
+        })(),
         // Equipment + inventory + spells, for debugging the caster combat.
         equipment: (() => { try { const e = c.equipment?.(); return e ? { known: e.known, equipped: e.equipped.map(o => o.name) } : null; } catch { return 'err'; } })(),
         inventory: (() => { try { const inv = c.inventory ?? []; return inv.map(o => ({ n: c.rsc?.get?.(o.nameRsc) ?? o.name ?? '', id: o.id ?? null, count: o.count ?? o.amount ?? 1, flags: o.flags ?? null, rarity: o.rarity ?? null })); } catch { return 'err'; } })(),

@@ -35,6 +35,11 @@ import { PLAYER_RADIUS } from './m59-roo.mjs';
 // the clearance margin. See sameRegion for the measurement behind the number.
 export const POCKET_FRACTION = 0.05;
 
+// What an out-of-margin cell costs relative to a free one, when navPath has to thread a
+// seam the clearance test sealed. High enough that open space always wins where it exists;
+// finite so that a sealed pocket is a detour rather than a dead end. See navPath.
+export const SQUEEZE_COST = Number(process.env.M59_NAV_SQUEEZE_COST || 12);
+
 export const CELL = 256;                        // client units; 4 cells to a 1024 tile
 export const PER_TILE = 1024 / CELL;
 
@@ -117,9 +122,33 @@ const DIRS = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
 
 // PLAN FROM WHERE THE BODY IS TO WHERE IT IS GOING, both in client units. Returns waypoints
 // in client units, or a reason. `maxCells` bounds the search the way path() bounds its own.
-export function navPath(geo, from, to, { radius = PLAYER_RADIUS, maxCells = 40000 } = {}) {
+export function navPath(geo, from, to, { radius = PLAYER_RADIUS, maxCells = 40000,
+                                         squeeze = SQUEEZE_COST } = {}) {
   const grid = freeSpace(geo, { radius });
   const { W, H, free } = grid;
+  // WHEN THE MARGIN SEALS A POCKET, SQUEEZE RATHER THAN REFUSE.
+  //
+  // Requiring a full player radius of clearance splinters a room: 557 breaks into 28
+  // regions, and JayB stood in an 89-cell one at (19,48) while his staging square (20,2)
+  // sat in the 14,383-cell main body. Pure free space then has no route, and it is not a
+  // near miss — the pocket stays sealed even at half the radius. But the seam is not a
+  // wall: he walked out of it repeatedly under the legacy mover, which is what the stock
+  // client does too, sliding past at an angle.
+  //
+  // So a cell outside the margin is still crossable, at a price. The price keeps every
+  // plan in open space where open space exists — a squeezed cell costs SQUEEZE_COST times
+  // an ordinary one, so the search only threads a seam when the alternative is no route —
+  // and the tile gate below means we never plan through actual geometry, only through the
+  // clearance band the two grids disagree about. The mover re-checks every step against
+  // the real collision model regardless, so an optimistic plan costs a refused step, not
+  // a walk through a wall.
+  const walkableTile = (i, j) => {
+    if (!geo?.fineWalkable) return false;
+    const { x, y } = clientOfCell(i, j);
+    return geo.fineWalkable(Math.floor(y / 1024) + 1, Math.floor(x / 1024) + 1) === true;
+  };
+  const passable = (k, i, j) => free[k] || (squeeze > 0 && walkableTile(i, j));
+  const costOf = (k, i, j) => (free[k] ? 1 : squeeze);
   const s = nearestFree(grid, ...cellOfClient(from.x, from.y));
   const g = nearestFree(grid, ...cellOfClient(to.x, to.y));
   if (!s) return { found: false, reason: 'no free space at the start' };
@@ -155,11 +184,13 @@ export function navPath(geo, from, to, { radius = PLAYER_RADIUS, maxCells = 4000
       const ni = i + di, nj = j + dj;
       if (ni < 0 || nj < 0 || ni >= W || nj >= H) continue;
       const k = key(ni, nj);
-      if (!free[k]) continue;
+      if (!passable(k, ni, nj)) continue;
       // A DIAGONAL MAY NOT CUT A CORNER. Both orthogonal neighbours must be free, or the
-      // body clips the corner of whatever makes the diagonal a diagonal.
-      if (di && dj && (!free[key(i + di, j)] || !free[key(i, j + dj)])) continue;
-      const ng = gHere + (di && dj ? Math.SQRT2 : 1);
+      // body clips the corner of whatever makes the diagonal a diagonal. A squeezed cell
+      // is held to the same rule against the same test it was admitted by.
+      if (di && dj && (!passable(key(i + di, j), i + di, j)
+                       || !passable(key(i, j + dj), i, j + dj))) continue;
+      const ng = gHere + costOf(k, ni, nj) * (di && dj ? Math.SQRT2 : 1);
       if (ng < gScore[k]) { gScore[k] = ng; came[k] = key(i, j); open.push([ng + h(ni, nj), ni, nj]); }
     }
   }

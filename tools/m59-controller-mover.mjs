@@ -204,8 +204,33 @@ export class ControllerMover {
     const dt = this._lastTickAt ? Math.min(now - this._lastTickAt, 1000) : 0;
     if (!dt) return null;
     this._lastTickAt = now;
+    // THE LEAD CHECK BELONGS ON THE PATH THAT ACTUALLY INTEGRATES, AND THIS IS IT.
+    //
+    // `tick()` had this guard and `physicsTick` did not — but physicsTick is the one the
+    // 10Hz loop drives, while tick() only runs when the decider gets round to it. So the
+    // belief integrated freely between decisions and outran the server, and the divergence
+    // check further down snapped it back: "believed (26,31) but the server says (24,39) —
+    // 8 squares", over and over. Eight is exactly twice MAX_LEAD_SQUARES, which is what a
+    // guard on the slow path and none on the fast one looks like from the outside. The
+    // snap IS the rubberband; holding here is what stops it being needed.
+    if (this._leadExceeded(c)) return null;
     try { return this.ctl.step(dt, { geo, client: c }); }
     catch { return null; }
+  }
+
+  // Is the belief further ahead than the server's echo can explain? Integrating past this
+  // only builds a correction that has to be paid back as a visible snap. Holding keeps
+  // replicating, so the confirmations catch up instead. Shared by both tick paths, because
+  // a guard that only one of them honours is the same as no guard at all.
+  _leadExceeded(c) {
+    const here = c?.self;
+    if (!here || !Number.isFinite(here.col) || !Number.isFinite(here.row)) return false;
+    const b = this.ctl.square?.();
+    if (!b || !Number.isFinite(b.col)) return false;
+    if (Math.hypot(b.col - here.col, b.row - here.row) <= MAX_LEAD_SQUARES) return false;
+    this.stats.held = (this.stats.held || 0) + 1;
+    try { this.ctl.replicate(c, true); } catch { /* best effort */ }
+    return true;
   }
 
   tick(posOverride) {
@@ -232,7 +257,11 @@ export class ControllerMover {
       //
       // Rate-limited to one a second exactly as the client is, and the body deliberately does
       // not move while it waits.
-      this._requestOffRoom(c);
+      // `c` is bound further down for the ordinary path; this branch returns before it, so
+      // read the client here. Passing the not-yet-declared binding silently did nothing —
+      // _requestOffRoom takes `(x, c)` and bailed on the undefined client, which is why three
+      // off-map crossings were noticed and zero requests were ever sent.
+      this._requestOffRoom(this.session?.client);
       return this._delegate(posOverride, 'boundary crossing');
     }
     if (!this.active || !this.dest) return { state: 'idle' };
@@ -403,15 +432,7 @@ export class ControllerMover {
     // DO NOT RUN AHEAD OF THE SERVER. If the belief is already further ahead than the echo
     // can explain, integrating more only builds a correction we will have to pay back as a
     // rubberband. Hold, keep replicating, and let the confirmations arrive.
-    {
-      const b = this.ctl.square();
-      const lead = Math.hypot(b.col - me.col, b.row - me.row);
-      if (lead > MAX_LEAD_SQUARES) {
-        this.stats.held = (this.stats.held || 0) + 1;
-        try { this.ctl.replicate(c, true); } catch { /* best effort */ }
-        return { state: 'moving', to: this.dest, holding: true };
-      }
-    }
+    if (this._leadExceeded(c)) return { state: 'moving', to: this.dest, holding: true };
 
     const before = this.ctl.square();
     const r = this.ctl.step(dt, { geo, client: c });

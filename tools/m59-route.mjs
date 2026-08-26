@@ -622,6 +622,7 @@ export class Router {
     // the approach point (closest fine-reachable square); the Mover pushes the last gap.
     const { chain } = this._planSubLegs(me, standOn);
     if (chain.length) this.subWp = chain;
+    this._dropReachedSubWp();
   }
 
   // We reached the current sub-waypoint (subWp[0]). Advance the chain: drop it, and if
@@ -638,11 +639,41 @@ export class Router {
     if (now - this._subWpPlanAt > SUBLEG_REPLAN_MS && this._subWpReplans < SUBLEG_MAX_REPLANS) {
       this._subWpReplans++;
       this._subWpPlanAt = now;
-      const geo = this._geo();
       const target = this.subWp[this.subWp.length - 1];
-      const chain = this._planSubLegs(me, target);
+      // PLAN FROM WHERE THE BODY IS, NOT FROM WHERE THE FRAME SAYS IT WAS.
+      //
+      // `me` here is the frame position (world.position), which lags a square behind the
+      // live one. `_planSubLegs` drops only its own start square, so planning from the
+      // stale square yields a chain whose FIRST waypoint is the square we are standing on
+      // — and that is a fixed point: the mover reports `arrived` immediately, `onSub`
+      // fires, we advance, we re-plan from the same stale square, and the head lands on
+      // our feet again. JayB sat on (13,49) in the Sweet Grass Prairies through 760
+      // arrivals with the leg still aiming (20,2), because the aim WAS his own square.
+      // Use the same source `onSub` compares against, so the two cannot disagree.
+      const here = this.session?.client?.self ?? me;
+      const chain = this._planSubLegs({ col: here.col, row: here.row }, target);
       if (chain.chain.length) this.subWp = chain.chain;
     }
+    this._dropReachedSubWp();
+  }
+
+  // A CHAIN MUST NEVER BEGIN WHERE WE ALREADY STAND. Any leading waypoint on the body's
+  // own square is not a destination, it is a no-op the mover answers with `arrived` --
+  // and an aim that is satisfied the instant it is set advances nothing. This is the
+  // invariant, enforced wherever the chain is (re)built, rather than a fix at one call
+  // site: the same fixed point is reachable from `_replanSubLegs` too.
+  _dropReachedSubWp() {
+    if (!this.subWp || !this.subWp.length) return;
+    const here = this.session?.client?.self;
+    if (!here || !Number.isFinite(here.col) || !Number.isFinite(here.row)) return;
+    let dropped = 0;
+    while (this.subWp.length
+           && this.subWp[0].col === here.col && this.subWp[0].row === here.row) {
+      this.subWp.shift();
+      dropped++;
+    }
+    if (dropped && process.env.M59_ROUTE_DEBUG === '1')
+      console.error(`[routedbg] dropped ${dropped} sub-waypoint(s) already occupied at (${here.col},${here.row})`);
   }
 
   /**

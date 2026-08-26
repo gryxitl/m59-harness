@@ -416,5 +416,67 @@ console.log('\noscillation breaker: real progress forgives earlier verdicts');
      `sawVerdict=${sawVerdict} sawMovingAfter=${sawMovingAfter}`);
 }
 
+console.log('\nsub-waypoint chain: an aim is never the square we already stand on');
+{
+  // THE FIXED POINT THAT PINNED JAYB. The frame position (world.position) lags the live
+  // one by a square. `_planSubLegs` drops only its own start, so re-planning from the
+  // STALE square returns a chain whose head is the square the body actually occupies.
+  // The mover answers that aim with `arrived` on the same tick, `onSub` fires, we
+  // advance, we re-plan from the same stale square — and the head lands on our feet
+  // again. Observed live: 760 arrivals at (13,49) with the leg still aiming (20,2).
+  const { router, session } = rig({ col: 13, row: 49 });
+  router.to(20);
+  // The body is at (13,49); the frame still says (13,50), one square behind.
+  session.client.self.col = 13; session.client.self.row = 49;
+  router._planSubLegs = (from, target) => ({
+    // A planner that drops only its own start square: from (13,50) the chain still
+    // opens with (13,49) — exactly the real BFS's behaviour.
+    chain: [{ col: 13, row: 49 }, { col: 14, row: 48 }, { col: target.col, row: target.row }],
+    complete: true,
+  });
+  router.subWp = [{ col: 13, row: 49 }, { col: 14, row: 48 }, { col: 20, row: 2 }];
+  router._subWpPlanAt = -1e9;           // force the re-plan branch
+  router._advanceSubLeg({ col: 13, row: 50 });   // the STALE frame position
+  const head = router.subWp[0] ?? null;
+  ok('the re-planned chain does not begin on the occupied square',
+     !head || head.col !== 13 || head.row !== 49,
+     `head=(${head?.col},${head?.row}) chain=${JSON.stringify(router.subWp)}`);
+  ok('and the chain still leads somewhere', router.subWp.length >= 1,
+     `chain=${JSON.stringify(router.subWp)}`);
+}
+
+console.log('\nsub-waypoint chain: repeated advances make progress rather than a fixed point');
+{
+  const { router, session } = rig({ col: 13, row: 49 });
+  router.to(20);
+  session.client.self.col = 13; session.client.self.row = 49;
+  // The pathological planner again: always re-opens with the caller's next square.
+  router._planSubLegs = (from, target) => ({
+    chain: [{ col: 13, row: 49 }, { col: 14, row: 48 }, { col: target.col, row: target.row }],
+    complete: true,
+  });
+  router.subWp = [{ col: 13, row: 49 }, { col: 14, row: 48 }, { col: 20, row: 2 }];
+  const heads = [];
+  for (let i = 0; i < 6; i++) {
+    router._subWpPlanAt = -1e9;
+    router._advanceSubLeg({ col: 13, row: 50 });
+    heads.push(router.subWp[0] ? `${router.subWp[0].col},${router.subWp[0].row}` : '-');
+  }
+  const pinned = heads.every(h => h === '13,49');
+  ok('the head is not pinned on the body across repeated advances', !pinned,
+     `heads=${heads.join(' -> ')}`);
+}
+
+console.log('\nsub-waypoint chain: a fresh plan is trimmed too');
+{
+  const { router, session } = rig({ col: 8, row: 5 });
+  session.client.self.col = 8; session.client.self.row = 5;
+  router.subWp = [{ col: 8, row: 5 }, { col: 8, row: 5 }, { col: 9, row: 5 }];
+  router._dropReachedSubWp();
+  ok('leading occupied waypoints are dropped, however many',
+     router.subWp.length === 1 && router.subWp[0].col === 9,
+     `chain=${JSON.stringify(router.subWp)}`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
