@@ -12,6 +12,7 @@
 // holds the current phase and produces one action per tick.
 // The decider queries it when the _fight goal is active.
 
+import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadSpawns } from './m59-spawns.mjs';
@@ -20,6 +21,19 @@ import { zapStatus, shouldCastZap, findZapSpell, equippedWeapon } from './m59-za
 import './m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
 
 const SPAWNS_FILE = join(dirname(fileURLToPath(import.meta.url)), '..', 'compendium', 'data', 'spawns.json');
+const MERCHANTS_FILE = join(dirname(fileURLToPath(import.meta.url)), '..', 'substrate', 'm59-merchants.json');
+
+// Everyone the merchant index knows about — shopkeepers, bankers, innkeepers. Read once.
+let _merchants = null;
+function merchantIndex() {
+  if (_merchants) return _merchants;
+  try {
+    const raw = JSON.parse(readFileSync(MERCHANTS_FILE, 'utf8'));
+    const list = Array.isArray(raw) ? raw : (raw.merchants ?? Object.values(raw));
+    _merchants = list.filter(m => m && typeof m === 'object');
+  } catch { _merchants = []; }
+  return _merchants;
+}
 
 // A name reduced to its words, sorted, so a class name and a display name for the same
 // creature land on the same key. See _creatureNames.
@@ -784,26 +798,11 @@ export class CombatController {
 
   // Every creature name the compendium knows, cached for the life of the controller. The
   // spawns file is the same source m59-decide.mjs uses to tell a mob from a barrel.
-  _creatureNames() {
-    if (this._creatures) return this._creatures;
-    this._creatures = new Set();
-    try {
-      // The same source and loader m59-decide.mjs uses, so the two agree about what a mob is.
-      // THE COMPENDIUM STORES CLASS NAMES, THE WIRE SENDS DISPLAY NAMES.
-      //
-      // `SpiderBaby` against "baby spider", `GiantRat` against "giant rat". A plain
-      // lowercase compare matches only where the two happen to coincide — `Centipede` does,
-      // which is exactly why this looked like it worked. Lee's two assigned quarries, baby
-      // spider and giant rat, both failed it.
-      //
-      // So both sides are reduced to a SORTED SET OF WORDS: camel case is split, spaces and
-      // punctuation are separators, and the result is compared order-independently.
-      // SpiderBaby -> baby|spider, "baby spider" -> baby|spider.
-      const spawns = loadSpawns(SPAWNS_FILE);
-      for (const name of Object.keys(spawns?.byMonster ?? {})) this._creatures.add(creatureKey(name));
-    } catch { /* no compendium: the set stays empty, and the scan refuses rather than guessing */ }
-    return this._creatures;
-  }
+  _creatureNames() { return preyNames(); }
+
+
+
+
 
   // Is this object us? By id when we know it, and by name always — see the caller.
   _isSelf(o, c) {
@@ -882,4 +881,34 @@ export class CombatController {
       targetId: this.targetId,
     };
   }
+}
+
+// THE PREY LIST, IN ONE PLACE.
+//
+// m59-decide.mjs used to build its own copy from loadSpawns and therefore had its own bugs:
+// it matched class names against display names (so "giant rat" never matched GiantRat) and it
+// had no idea the compendium's monster list is full of shopkeepers. One set, one set of rules.
+let _prey = null;
+export function preyNames() {
+  if (_prey) return _prey;
+  _prey = new Set();
+  try {
+    const spawns = loadSpawns(SPAWNS_FILE);
+    for (const name of Object.keys(spawns?.byMonster ?? {})) _prey.add(creatureKey(name));
+    // AND THE COMPENDIUM'S "MONSTERS" INCLUDE EVERY SHOPKEEPER IN THE WORLD.
+    //
+    // byMonster lists spawnable CLASSES, not prey: BarloqueApothecary, JasperBanker,
+    // CornothGrocer, Izzio — 34 of them are merchants, bankers, innkeepers and tailors. Keying
+    // names properly (so "giant rat" finally matched GiantRat) therefore also made every
+    // merchant a valid target, and JayB killed Izzio, one of the eight NPCs on the
+    // trusted-buyer allowlist — the people we SELL to.
+    //
+    // The merchant index is subtracted. It is the same file the sell errand routes by, so the
+    // two can never disagree about who is a shop.
+    for (const m of merchantIndex()) {
+      _prey.delete(creatureKey(m.cls ?? ''));
+      _prey.delete(creatureKey(m.name ?? ''));
+    }
+  } catch { /* no compendium: an empty set refuses rather than guessing */ }
+  return _prey;
 }

@@ -155,7 +155,7 @@ const UNLIT_PORTAL_MS = Number(process.env.M59_UNLIT_PORTAL_MS || 12000);
 
 const SELL_ROOM = Number(process.env.M59_SELL_ROOM || 374);   // Quintor, Jasper Blacksmith
 const BANK_ROOM = Number(process.env.M59_BANK_ROOM || 376);   // Yevitan, Jasper Banker
-import { creatureKey } from './m59-combat.mjs';
+import { creatureKey, preyNames } from './m59-combat.mjs';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -947,28 +947,13 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           // Build a set of known creature names from the
           // compendium (spawns data). An object whose name
           // matches a compendium creature is a mob.
-          let creatureNames = new Set();
-          try {
-            // CLASS NAMES IN, DISPLAY NAMES ON THE WIRE — key both the same way.
-            //
-            // The compendium stores `GiantRat` and `SpiderBaby`; the server sends "giant rat"
-            // and "baby spider". A plain toLowerCase compare only matches where the two
-            // coincide, which is why this set answered TRUE for mummy and centipede and FALSE
-            // for giant rat, baby spider and fungus beast. An object that fails the test is
-            // not a mob, so the tick keeper could not target a giant rat at all: JayB stood in
-            // room 535 with SIX of them in the room, every one attackable, and has_target
-            // false. He farmed mummies for days for the same reason — Mummy is its own display
-            // name.
-            //
-            // creatureKey reduces both sides to a sorted set of words, so SpiderBaby and
-            // "baby spider" land on the same key.
-            const spawns = loadSpawns(SPAWNS_FILE);
-            if (spawns?.byMonster) {
-              for (const name of Object.keys(spawns.byMonster)) {
-                creatureNames.add(creatureKey(name));
-              }
-            }
-          } catch { /* compendium unavailable */ }
+          // ONE PREY LIST, SHARED WITH THE COMBAT CONTROLLER.
+          //
+          // This built its own set from loadSpawns and so carried its own bugs: it compared
+          // the compendium's CLASS names against the wire's DISPLAY names (so "giant rat"
+          // never matched GiantRat), and it had no idea byMonster is full of shopkeepers.
+          // preyNames() keys both sides the same way and subtracts the merchant index.
+          const creatureNames = preyNames();
 
           // Reset blacklist when the room changes or
           // after 60s (mobs may have moved).
