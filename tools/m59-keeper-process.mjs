@@ -447,6 +447,19 @@ const server = createServer(async (req, res) => {
         sent_per_sec: p ? +(p.sentRate()).toFixed(2) : null,
         prod_by_kind: p ? p.prodByKindRate() : {},
         queue_depth: p ? p.depth : null,
+        // WHAT THE BACKLOG IS MADE OF, not just how deep it is. 313 deep at 1/s is five
+        // minutes of stale packets, and which KIND they are decides whether that is merely
+        // slow or actively harmful — a stale `move` is an absolute position, so sending it
+        // late drags the body back to where it was.
+        queued_by_kind: (() => {
+          if (!p?.q) return null;
+          const by = {};
+          for (const j of p.q) by[j.kind] = (by[j.kind] ?? 0) + 1;
+          return by;
+        })(),
+        oldest_queued_ms: p?.q?.length ? Date.now() - (p.q[0].queuedAt ?? Date.now()) : 0,
+        coalesced: p?.coalesced ?? 0,
+        shed: p?.shed ?? 0,
         min_gap_ms: p ? p.minGapMs : null,
         note: 'server drops packets when sent_per_sec > 5 (INCOMING_PACKET_THROTTLE). prod > sent means a backlog.',
       });

@@ -397,7 +397,16 @@ export class Actuator {
 
   // -- posture. Sitting down IS the behaviour when recovering; it is not a stall.
   rest()  { const c = this.session.client; return this._send('rest',  () => c.rest()); }
-  stand() { const c = this.session.client; return this._send('stand', () => c.stand()); }
+  stand() {
+    // M59_STAND_TRACE=1 prints who asked, once. A stand cancels a rest timer outright
+    // (player.kod StopResting deletes it), so "who is standing this character up" is a
+    // question worth being able to answer without reading every call site.
+    if (process.env.M59_STAND_TRACE === '1' && !Actuator._standTraced) {
+      Actuator._standTraced = true;
+      console.error('[stand-trace] ' + (new Error('stand').stack ?? '').split('\n').slice(1, 7).join(' | '));
+    }
+    const c = this.session.client; return this._send('stand', () => c.stand());
+  }
 
   // -- objects
   use(id)        { const c = this.session.client; return this._send('use',  () => c.use(id)); }
