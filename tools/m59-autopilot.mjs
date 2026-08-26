@@ -1048,6 +1048,13 @@ export function applyFightAboveVigor(policy, value) {
   return policy;
 }
 
+// How long after a food trip before another is worth making, and the same for a selling
+// trip. Declared here rather than inside bankRun() so `_bankRunShouldGo` shares the one
+// definition — two copies of a cooldown is how two callers come to disagree about whether
+// a character went to town recently.
+const FOOD_TRIP_COOLDOWN_MS = 300_000;
+const SELL_TRIP_COOLDOWN_MS = 600_000;
+
 export class Autopilot {
   constructor(session, { mode = 'survive', policy = {} } = {}) {
     this.s = session;
@@ -13551,6 +13558,114 @@ export class Autopilot {
     return true;
   }
 
+  // ── Bank trip decomposition ────────────────────────────────────────
+  //
+  // The seam between bankRun() and the question it opens with: are we going to town at
+  // all? This landed once (97d2e39) and was lost in a later rewrite of this file, leaving
+  // m59-bankrun-test.mjs asserting against a method that no longer existed.
+  //
+  // Restored against the CURRENT logic rather than the original, which has since grown a
+  // supply trip and a weight-based full-pack test. It is synchronous and reads whatever
+  // inventory the client already holds: bankRun() refreshes that first, because reading
+  // c.inventory straight after submitting the request reads the PREVIOUS snapshot — the
+  // family of bugs this file keeps re-learning.
+  _bankRunShouldGo() {
+    const above = this.policy.bankAbove;
+    const none = { go: false, reason: null, carried: 0,
+                   packFull: false, starving: false, brokeWithGoods: false };
+    if (!above) return { ...none, reason: 'disabled' };   // 0 or null turns the trips off
+
+    const c = this.s.need();
+    const carried = (c.inventory || [])
+      .filter(o => /shilling/i.test(c.rsc.get(o.nameRsc) || ''))
+      .reduce((t, o) => t + (o.amount || 1), 0);
+
+    const sellCall = this.checkIfShouldSell();
+    const supplyShort = sellCall.sell && sellCall.trigger === 'supply';
+    const packFull = !!(sellCall.sell && sellCall.trigger !== 'broke' && !supplyShort);
+
+    const reag = this.reagentCount();
+    const canCook = reag.elderberry >= 2 && reag.herbs >= 2;
+    const spendable = carried - (this.policy.hungryFloor ?? 100);
+    const triedRecently = Date.now() - (this.foodTripAt ?? 0) < FOOD_TRIP_COOLDOWN_MS;
+    const canFetch = (this.s.bankKnown?.()?.balance ?? 0) >= 200;
+    const starving = !!(purchaseEnabled(this.policy, 'food')
+                        && !this.larder(c).length && !canCook
+                        && (spendable >= 60 || canFetch) && !triedRecently);
+
+    const soldRecently = Date.now() - (this.sellTripAt ?? 0) < SELL_TRIP_COOLDOWN_MS;
+    const brokeWithGoods = !!(sellCall.trigger === 'broke' && !soldRecently && !starving);
+
+    const go = carried > above || packFull || starving || brokeWithGoods;
+    const reason = !go ? null
+      : (starving && !packFull && carried <= above ? 'starving'
+      : ((packFull || brokeWithGoods) && carried <= above ? 'pack_full_or_broke'
+      : 'carrying_enough'));
+
+    return { go, reason, carried, packFull, starving, brokeWithGoods };
+  }
+
+  /**
+   * The town destinations worth considering, nearest first.
+   *
+   * Which shop or bank depends on WHY we are going: a starving character with money in
+   * hand wants the bread shop, a full pack wants a market, and everything else wants a
+   * bank. `townDestinations` owns that choice; this adds the routing and the ordering.
+   */
+  _bankRunRankDestinations(ctx = {}) {
+    const s = this.s;
+    const destinations = townDestinations({
+      needsCashFirst: !!ctx.needsCashFirst,
+      supplyTrip: !!ctx.supplyTrip,
+      starving: !!ctx.starving,
+      packFull: !!ctx.packFull,
+      brokeWithGoods: !!ctx.brokeWithGoods,
+      richEnoughToBank: (ctx.carried ?? 0) > (this.policy.bankAbove ?? 0),
+    });
+    return destinations
+      .map(b => { const r = s.world?.route?.(b.room);
+                  return { ...b, hops: r?.found ? r.hops.length : Infinity }; })
+      .sort((x, y) => x.hops - y.hops);
+  }
+
+  /**
+   * Everything worth doing while we are standing in town, in the order that makes each
+   * step affordable: contribute, sell, tithe, bank, withdraw, then buy.
+   *
+   * Every leg swallows its own failure — a trip that got as far as town should do as much
+   * of its business as it can, not abandon the rest because the guild chest was full.
+   */
+  async _bankRunDoTownBusiness() {
+    await this.contributeGuildWants().catch(error =>
+      this.note('could not contribute to the guild chests', { why: error.message }));
+    const sale = await this.sellInTown().catch(() => null);
+    await this.guildTitheFromSale(sale).catch(error =>
+      this.note('could not pay guild tithe', { why: error.message }));
+    await this.bankSurplus().catch(() => {});
+    await this.withdrawForFood().catch(() => {});
+    await this.restockInTown().catch(() => {});
+    // AND THE WHOLE POINT OF THE MONEY IS FOOD, SO GO AND GET SOME.
+    //
+    // restockInTown buys where the trip ENDED, and the two destinations sell nothing
+    // edible: Roq deals in everything but stocks nothing, and a bank is a bank. So the
+    // sell leg ran, the buy leg did not, and the fleet got rich and hungry at the same
+    // time — 67,669 shillings banked with twenty of twenty-one characters under 100
+    // vigor, which is the resting cap doing all the work.
+    //
+    // Roq is in Barloque and so is the bread: 103 The Bhrama & Falcon is a short hop,
+    // and it is the one shelf carrying cheese, meat pie, bread and apples together.
+    await this.buyFoodInTown().catch(() => {});
+    // One more hop, for the ingredients rather than the meal. Cheaper per vigor point than
+    // bread and it is what keeps the character fed in the FIELD, where no shop is.
+    await this.buyReagentsInTown().catch(() => {});
+    // Own food and reagent floors are filled first. Whatever remains above the walking
+    // reserve now buys the room's shared cargo, so helping the fleet cannot strand the
+    // courier that is carrying it.
+    await this.buyFarmDeliveryCargo().catch(() => {});
+    await this.vaultRunIfPassing().catch(() => {});
+    this.lastTownServiceAt = Date.now();
+  }
+
   async bankRun() {
     const above = this.policy.bankAbove;
     if (!above) return false;                       // 0 or null turns the trips off
@@ -13664,7 +13779,6 @@ export class Autopilot {
     // seconds. Selling is what fixes a poor character, and the pack-full door already
     // takes it to a market to do that.
     const spendable = carried - (this.policy.hungryFloor ?? 100);
-    const FOOD_TRIP_COOLDOWN_MS = 300_000;
     const triedRecently = Date.now() - (this.foodTripAt ?? 0) < FOOD_TRIP_COOLDOWN_MS;
     // A BALANCE IS ALSO MONEY, PROVIDED SOMETHING GOES AND FETCHES IT.
     //
@@ -13717,7 +13831,6 @@ export class Autopilot {
     // become money on arrival and the condition clears itself. The cooldown is here anyway,
     // because a character that reaches Roq and sells nothing (everything protected, or the
     // walk failed) must not turn round and set off again on the next pass.
-    const SELL_TRIP_COOLDOWN_MS = 600_000;
     const soldRecently = Date.now() - (this.sellTripAt ?? 0) < SELL_TRIP_COOLDOWN_MS;
     // What a replacement piece of armour costs at the dearest counter the router might
     // pick, which is the bill this trip exists to make payable.
@@ -13790,12 +13903,8 @@ export class Autopilot {
     // A full pack goes to the market, money goes to the bank, an empty larder to the bread
     // shop — and a broke character with goods goes to the market too, for the same reason
     // the full pack does: Roq is the one who pays, and a banker takes and gives nothing.
-    const destinations = townDestinations({ needsCashFirst, supplyTrip, starving, packFull,
-                                            brokeWithGoods, richEnoughToBank: carried > above });
-    const options = destinations
-      .map(b => { const r = s.world?.route?.(b.room);
-                  return { ...b, hops: r?.found ? r.hops.length : Infinity }; })
-      .sort((x, y) => x.hops - y.hops);
+    const options = this._bankRunRankDestinations({ needsCashFirst, supplyTrip, starving,
+                                                    packFull, brokeWithGoods, carried });
     const target = options[0];
     if (!Number.isFinite(target.hops)) {
       if (!this.warnedNoBank) {
@@ -13877,34 +13986,7 @@ export class Autopilot {
     // the first line of a town trip cannot be un-sold into a chest in the last. The keep
     // test below is the belt to this braces, for the sell paths that do not come through
     // here.
-    await this.contributeGuildWants().catch(error =>
-      this.note('could not contribute to the guild chests', { why: error.message }));
-    const sale = await this.sellInTown().catch(() => null);
-    await this.guildTitheFromSale(sale).catch(error =>
-      this.note('could not pay guild tithe', { why: error.message }));
-    await this.bankSurplus().catch(() => {});
-    await this.withdrawForFood().catch(() => {});
-    await this.restockInTown().catch(() => {});
-    // AND THE WHOLE POINT OF THE MONEY IS FOOD, SO GO AND GET SOME.
-    //
-    // restockInTown buys where the trip ENDED, and the two destinations sell nothing
-    // edible: Roq deals in everything but stocks nothing, and a bank is a bank. So the
-    // sell leg ran, the buy leg did not, and the fleet got rich and hungry at the same
-    // time — 67,669 shillings banked with twenty of twenty-one characters under 100
-    // vigor, which is the resting cap doing all the work.
-    //
-    // Roq is in Barloque and so is the bread: 103 The Bhrama & Falcon is a short hop,
-    // and it is the one shelf carrying cheese, meat pie, bread and apples together.
-    await this.buyFoodInTown().catch(() => {});
-    // One more hop, for the ingredients rather than the meal. Cheaper per vigor point than
-    // bread and it is what keeps the character fed in the FIELD, where no shop is.
-    await this.buyReagentsInTown().catch(() => {});
-    // Own food and reagent floors are filled first. Whatever remains above the walking
-    // reserve now buys the room's shared cargo, so helping the fleet cannot strand the
-    // courier that is carrying it.
-    await this.buyFarmDeliveryCargo().catch(() => {});
-    await this.vaultRunIfPassing().catch(() => {});
-    this.lastTownServiceAt = Date.now();
+    await this._bankRunDoTownBusiness();
     this.progress('banked the takings');
     return true;
   }
@@ -15438,6 +15520,77 @@ export class Autopilot {
     return preferAssignedRoom(rooms, mine === room?.num ? null : mine, 8);
   }
 
+  // ── Roam decomposition ─────────────────────────────────────────────
+  //
+  // The seam between roam() and its internal decisions, so each one can be tested
+  // without a world. This landed once (d7c7c54) and was lost in a later rewrite of this
+  // file, which left m59-roam-test.mjs asserting against methods that no longer existed —
+  // eleven failures that said "is not a function" rather than anything about roaming.
+  // Restored here AND called from roam() below: a helper the caller does not use is not a
+  // seam, it is dead code that happens to satisfy a test.
+
+  /** Should we go back to the hunting ground? */
+  _roamShouldGoHome(room) {
+    return this.homeRoom != null && room?.num !== this.homeRoom;
+  }
+
+  /** Have we roamed as far as we are allowed to? */
+  _roamHitLimit() {
+    return this.roamedRooms >= this.policy.roamLimit;
+  }
+
+  // CAN I GET BACK? That is the whole test, and it is local — no global notion of
+  // "sealed" is needed, and none of the ones tried worked: Marion reaches its own crypt,
+  // and the crypt has a spawn table, so every reachability-to-anything test declared the
+  // pocket healthy right up until twenty-three characters were in it. Asking instead
+  // whether the DESTINATION can route back HERE catches a one-way door exactly, because
+  // that is what a one-way door is.
+  _roamIsEscapable(to, from) {
+    const map = this.s.world?.map;
+    if (!map || from == null) return true;
+    if (to === from) return true;
+    if (!findPath(map, to, from).found) return false;
+    const goals = this.preyRooms(this.s.world?.room).map(r => r.room);
+    if (!goals.length) return true;
+    return goals.includes(to) || goals.some(g => findPath(map, to, g).found);
+  }
+
+  // AND DO NOT WALK INTO A ROOM THAT WILL KILL YOU. Escapability is only half of it.
+  // Room 2602, "Affirmation of the Forsaken", is one door off a quiet Marion crypt and its
+  // generator is thrashers — level 150, cap fifteen, a hundred percent of the table. None
+  // of that is visible from inside the room or from its name; it is in the spawn table,
+  // which we already have.
+  _roamIsTooDangerous(to) {
+    const spawns = loadSpawns(SPAWN_FILE);
+    const ceiling = this.threatCeiling();
+    if (!spawns || ceiling == null) return null;
+    const worst = (roomThreats(spawns, to) || [])[0];
+    return worst && (worst.level ?? 0) > ceiling ? worst : null;
+  }
+
+  /** Split exits into the ones worth taking and the ones refused for being lethal. */
+  _roamFilterExits(all) {
+    const from = this.s.world?.room?.num;
+    const dangerous = [];
+    const exits = all.filter(e => {
+      const d = this._roamIsTooDangerous(e.to);
+      if (d) {
+        dangerous.push(`${e.to_name} (${e.to}): ${d.creature} is level ${d.level}`);
+        return false;
+      }
+      return this._roamIsEscapable(e.to, from);
+    });
+    return { exits, dangerous };
+  }
+
+  /** The best exit to take: somewhere new if there is one, else the nearest. */
+  _roamPickExit(exits) {
+    const fresh = exits.filter(e => !this.visited.has(e.to));
+    const picks = (fresh.length ? fresh : exits);
+    if (!picks.length) return null;
+    return picks.sort((a, b) => (a.steps_away ?? 999) - (b.steps_away ?? 999))[0];
+  }
+
   async roam(room) {
     const s = this.s;
     // Getting out is its own move when there is a crowd standing on us. Doing it here
@@ -15451,7 +15604,7 @@ export class Autopilot {
     // town square, and spent twenty minutes there alternating between "nothing to
     // hunt" and "the guardian angel will not let me leave". If we know somewhere
     // that produced a kill, that is where to be.
-    if (this.homeRoom != null && room?.num !== this.homeRoom) {
+    if (this._roamShouldGoHome(room)) {
       this.note('heading back to where the hunting was', { from: room?.name, to_room: this.homeRoom });
       const back = await this.travel(this.homeRoom, { maxHops: 8 }).catch(e => ({ arrived: false, reason: e.message }));
       this.emptyPasses = 0;
@@ -15514,7 +15667,7 @@ export class Autopilot {
     }
 
     if (this.roamedFrom === null) { this.roamedFrom = room?.num ?? null; this.roamedRooms = 0; }
-    if (this.roamedRooms >= this.policy.roamLimit) {
+    if (this._roamHitLimit()) {
       this.note('roamed far enough', { rooms: this.roamedRooms, limit: this.policy.roamLimit,
                                        hint: 'raise roamLimit, or move the character yourself' });
       this.emptyPasses = 0;
@@ -15532,8 +15685,6 @@ export class Autopilot {
     // from the inside it looks exactly like a room with nothing to hunt in it.
     //
     // The graph already knows. Ask it before stepping through, not after.
-    const map = s.world?.map;
-    const goals = this.preyRooms(room).map(r => r.room);
     // CAN I GET BACK? That is the whole test, and it is local — no global notion of
     // "sealed" is needed, and none of the ones I tried worked: Marion reaches its own
     // crypt, and the crypt has a spawn table, so every reachability-to-anything test
@@ -15541,13 +15692,6 @@ export class Autopilot {
     //
     // Asking instead whether the DESTINATION can route back HERE catches a one-way
     // door exactly, because that is what a one-way door is.
-    const escapable = (to) => {
-      if (!map || room?.num == null) return true;
-      if (to === room.num) return true;
-      if (!findPath(map, to, room.num).found) return false;
-      if (!goals.length) return true;
-      return goals.includes(to) || goals.some(g => findPath(map, to, g).found);
-    };
     // AND DO NOT WALK INTO A ROOM THAT WILL KILL YOU.
     //
     // Escapability is only half of it. Room 2602, "Affirmation of the Forsaken",
@@ -15559,22 +15703,9 @@ export class Autopilot {
     // None of this is visible from inside the room, and none of it is in the room's
     // name. It is in the spawn table, which we already have, so there is no excuse
     // for stepping through the door to find out.
-    const spawns = loadSpawns(SPAWN_FILE);
-    const level = s.client?.vitals?.()?.health?.max ?? 0;
     const ceiling = this.threatCeiling();
-    const tooDangerous = (to) => {
-      if (!spawns || ceiling == null) return null;
-      const worst = (roomThreats(spawns, to) || [])[0];
-      return worst && (worst.level ?? 0) > ceiling ? worst : null;
-    };
-
     const all = (s.world?.exits() || []).filter(e => e.to != null && e.reachable !== false);
-    const dangerous = [];
-    const exits = all.filter(e => {
-      const d = tooDangerous(e.to);
-      if (d) { dangerous.push(`${e.to_name} (${e.to}): ${d.creature} is level ${d.level}`); return false; }
-      return escapable(e.to);
-    });
+    const { exits, dangerous } = this._roamFilterExits(all);
     if (dangerous.length)
       this.note('refused to roam somewhere lethal', { rejected: dangerous, my_ceiling: ceiling });
     if (all.length && !exits.length) {
@@ -15587,9 +15718,8 @@ export class Autopilot {
       return;
     }
     if (!exits.length) { this.note('nowhere to roam to', { room: room?.name }); this.emptyPasses = 0; return; }
-    const fresh = exits.filter(e => !this.visited.has(e.to));
-    const pick = (fresh.length ? fresh : exits)
-      .sort((a, b) => (a.steps_away ?? 999) - (b.steps_away ?? 999))[0];
+    const pick = this._roamPickExit(exits);
+    if (!pick) { this.note('nowhere to roam to', { room: room?.name }); this.emptyPasses = 0; return; }
 
     const r = await s.leaveVia(pick);
     this.emptyPasses = 0;
