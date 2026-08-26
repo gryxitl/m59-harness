@@ -180,7 +180,18 @@ async function join() {
       session._router = router;
       INTENTS.travel = routeIntent(router);
 
-      const plannerDecide = makeDecider({ session, goals: DEFAULT_GOALS,
+      // THE DECIDER TAKES A POLICY AND NOBODY WAS GIVING IT ONE.
+      //
+      // makeDecider declares `policy = {}` as a default parameter, and this call omitted it —
+      // so every policy read inside the tick decider saw an empty object, for the life of the
+      // keeper. `policy?.threatBand` (the one field it reads directly) was always undefined,
+      // and so was `policy?.assignedRoom`, which is why Lee kept routing to 557 for
+      // centipedes with baby spiders ordered in 575 and an assignment sitting in his roster.
+      //
+      // This is the same shape as the loadout gap and the recordKill gap: the tick keeper is
+      // its own implementation, and what the survive keeper wires up by hand simply is not
+      // wired here until somebody notices.
+      const plannerDecide = makeDecider({ session, policy, goals: DEFAULT_GOALS,
         onDecision: (d) => {
           // Log decisions that change, not every tick.
           const line = `${d.goal ?? 'idle'}${d.action ? ' -> ' + d.action : ''}${d.what ? ' (' + d.what + ')' : ''}${d.why ? ' — ' + d.why : ''}`;
