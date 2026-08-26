@@ -3088,6 +3088,36 @@ export class Autopilot {
     const armed = this.armedForSure();
     // A null reading is "no such bar", not "empty" — blocking on one would be the
     // retirement this is careful about everywhere else.
+    // AN UNREADABLE VITAL MUST NOT PIN A CHARACTER IN THE WRONG ROOM.
+    //
+    // `hp ?? 0` reads an unknown health bar as EMPTY — deliberately, because sending a
+    // character out to fight on a number nobody has read is the dangerous direction. But
+    // vitals are entirely unreadable for a while after a broker restart, and a character
+    // sitting in a sanctuary that is not its assignment then waits out the whole
+    // RECOVER_MAX_MS escape hatch before it does anything at all.
+    //
+    // So when NOTHING can be read, the room decides. Being somewhere we are not supposed to
+    // be is a reason to move; being already home, or having no assignment, is not — there
+    // waiting for real numbers costs nothing, which is what makes this safe rather than a
+    // hole in the same guard.
+    const vitalsUnknown = hp == null && mp == null && vig == null;
+    // Number(null) is 0, NOT NaN — so a character with NO assignment would read as
+    // "assigned to room 0", be in some other room, and walk out blind. Reject the absent
+    // value before converting it.
+    const assignedRaw = this.policy?.assignedRoom;
+    const assignedRoom = assignedRaw == null ? NaN : Number(assignedRaw);
+    const here = this.s.world?.room?.num;
+    if (vitalsUnknown && Number.isFinite(assignedRoom) && here != null && here !== assignedRoom) {
+      this.sanctuaryHoldSince = null;
+      this.sanctuaryHoldNoted = false;
+      this.note('leaving safety on an unreadable health bar', {
+        room: this.s.world?.room?.name ?? null, going_to, assigned_room: assignedRoom,
+        why: 'no vital could be read — after a rejoin that is the normal state — and this ' +
+             'is not the room this character is meant to be in, so waiting here achieves ' +
+             'nothing that leaving does not' });
+      return true;
+    }
+
     const whole = (hp ?? 0) >= 0.95 && (mp ?? 1) >= 0.95 && (vig ?? 1) >= REST_VIGOR_CAP;
     if (armed && whole) {
       this.sanctuaryHoldSince = null;
