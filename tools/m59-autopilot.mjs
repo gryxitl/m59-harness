@@ -2637,6 +2637,74 @@ export class Autopilot {
   // a journey. A failure still discredits the square permanently either way: a blow that
   // got through is a bad square however we came to be standing on it. The tag is so the
   // travel-only rejections can be told apart afterwards without reconstructing anything.
+  // ── Safe spot decomposition ────────────────────────────────────────
+  //
+  // The seam between takeSafeSpot() and its decisions. This landed once (ea140e4) and was
+  // lost in a later rewrite of this file, which is why m59-takesafespot-test.mjs reported
+  // eight "is not a function" failures rather than anything about safe spots.
+
+  /**
+   * Has this room already been judged to have no usable wall?
+   *
+   * Only while FIGHTING. Wandering into a wall-less room to look around is research, not
+   * survival, and the cached refusal is about the survival case.
+   *
+   * @returns {string|null} the recorded reason, or null if this room is not known bad
+   */
+  _takeSafeSpotCheckNoWall(quarry, source = 'fight') {
+    const room = this.s.world?.room;
+    if (!room) return null;
+    return (source === 'fight' ? this.noWallRooms?.get(room.num) : null) ?? null;
+  }
+
+  /**
+   * Are ALL the defensible squares here ones we have actually tried and found barren?
+   *
+   * Equality, not a ratio: `barrenSpots` is only entered after repeated pulls, each given a
+   * distance-sized follow window, so this means every currently eligible square has failed
+   * that experiment rather than merely looking unpromising.
+   */
+  _takeSafeSpotAllBarren(spotStats = {}) {
+    return (spotStats.eligible ?? 0) > 0 &&
+           spotStats.empirically_barren === spotStats.eligible;
+  }
+
+  /**
+   * Look for a defensible square, widening the sharing cap until one is found.
+   *
+   * A wall with somebody already on it still beats standing in the open, so rather than
+   * refusing when every wall is taken, the search retries with a higher cap until it
+   * reaches `policy.maxBotsPerSafeSpot`. With no cap configured it runs once, unshared.
+   *
+   * `stats` is written into rather than returned fresh: the caller reads it afterwards to
+   * decide whether the room is empirically barren, and a second object would diverge.
+   */
+  _takeSafeSpotSearch(geo, me, room, opts = {}) {
+    const { quarryReach, strictQuarryReach, los, quarry, barren, stats } = opts;
+    const spotStats = stats ?? {};
+    const within = Math.max(geo?.rows ?? 0, geo?.cols ?? 0) || 64;
+
+    const configuredShareCap = Number.isFinite(this.policy.maxBotsPerSafeSpot) &&
+      this.policy.maxBotsPerSafeSpot > 0
+      ? Math.max(1, Math.floor(this.policy.maxBotsPerSafeSpot)) : null;
+
+    let spot = null, shareCap = configuredShareCap == null ? Infinity : 1;
+    for (; configuredShareCap == null || shareCap <= configuredShareCap; shareCap++) {
+      for (const k of Object.keys(spotStats)) delete spotStats[k];   // stats describe the LAST attempt
+      spot = this.searchSafeSpot(geo, me, room, {
+        within, quarryReach, strictQuarryReach, los, quarry, barren,
+        stats: spotStats, shareCap });
+      if (spot) break;
+      if (configuredShareCap == null) break;
+    }
+    if (spot && Number.isFinite(shareCap) && shareCap > 1)
+      this.note('sharing a wall rather than standing in the open', {
+        with: spotOccupancy(this.s.name, room.num, spot.col, spot.row), at: { col: spot.col, row: spot.row },
+        why: `every wall in this room already had ${shareCap - 1} on it, and two to a wall ` +
+             'beats one on a wall and one in the open' });
+    return { spot: spot ?? null, shareCap, spotStats };
+  }
+
   async takeSafeSpot(why, quarry = null, { source = 'fight', islandCrossings = 0 } = {}) {
     const s = this.s, c = s.client;
     const room = s.world?.room, geo = s.world?.geometry, me = c?.self;
@@ -2645,7 +2713,7 @@ export class Autopilot {
     // room is research, not survival. `noWallRooms` feeds the already-bounded choice
     // below between a safe open fight and relocating; it does not block the strategic
     // goal and is cleared with the keeper process.
-    const roomWallDecision = source === 'fight' ? this.noWallRooms?.get(room.num) : null;
+    const roomWallDecision = this._takeSafeSpotCheckNoWall(quarry, source);
     if (roomWallDecision)
       return { took: false, unreachable_terrain: true, why: roomWallDecision };
 
@@ -2707,7 +2775,6 @@ export class Autopilot {
     // instead of a wall. Searching wide changes what is CONSIDERED, not what is chosen.
     //
     // Bounded by the room's own dimensions, so this is one pass over the floor.
-    const within = Math.max(geo.rows ?? 0, geo.cols ?? 0) || 64;
     const spotStats = {};
     // FILL EVERY WALL ONCE BEFORE ANY WALL TAKES A SECOND.
     //
@@ -2720,25 +2787,10 @@ export class Autopilot {
     // Cheap because the expensive part is per-candidate pathfinding inside
     // nearestSafeSpot, and a re-run only happens when the first pass rejected everything
     // — which in an uncrowded room never occurs.
-    const configuredShareCap = Number.isFinite(this.policy.maxBotsPerSafeSpot) &&
-      this.policy.maxBotsPerSafeSpot > 0
-      ? Math.max(1, Math.floor(this.policy.maxBotsPerSafeSpot)) : null;
     // With spreading off there is one unbounded search. With it on, retain the existing
     // fair fill: try one per wall, then two, up to the configured maximum.
-    let spot = null, shareCap = configuredShareCap == null ? Infinity : 1;
-    for (; configuredShareCap == null || shareCap <= configuredShareCap; shareCap++) {
-      for (const k of Object.keys(spotStats)) delete spotStats[k];   // stats describe the LAST attempt
-      spot = this.searchSafeSpot(geo, me, room, {
-        within, quarryReach, strictQuarryReach, los, quarry, barren,
-        stats: spotStats, shareCap });
-      if (spot) break;
-      if (configuredShareCap == null) break;
-    }
-    if (spot && Number.isFinite(shareCap) && shareCap > 1)
-      this.note('sharing a wall rather than standing in the open', {
-        with: spotOccupancy(this.s.name, room.num, spot.col, spot.row), at: { col: spot.col, row: spot.row },
-        why: `every wall in this room already had ${shareCap - 1} on it, and two to a wall ` +
-             'beats one on a wall and one in the open' });
+    const { spot, shareCap } = this._takeSafeSpotSearch(geo, me, room,
+      { quarryReach, strictQuarryReach, los, quarry, barren, stats: spotStats });
     if (!spot) {
       // ONLY EMPIRICAL FAILURES EARN THE CATEGORICAL TERRAIN VERDICT.
       //
@@ -2748,8 +2800,7 @@ export class Autopilot {
       // prediction made before standing on one. A square enters `barrenSpots` only after
       // repeated pulls, each allowed a distance-sized follow window. Equality here means
       // every currently eligible square has actually failed that experiment.
-      const allEmpiricallyBarren = spotStats.eligible > 0 &&
-        spotStats.empirically_barren === spotStats.eligible;
+      const allEmpiricallyBarren = this._takeSafeSpotAllBarren(spotStats);
       if (allEmpiricallyBarren) {
         this.note('every defensible square here is out of the fight\'s reach', {
           considered: spotStats.eligible, unreachable: spotStats.empirically_barren,
