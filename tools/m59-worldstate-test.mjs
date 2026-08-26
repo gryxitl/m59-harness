@@ -193,5 +193,61 @@ console.log('\na producer that throws is "cannot tell", never a crash and never 
      s.armed === SYMBOLS.armed.whenUnknown);
 }
 
+console.log('\noutnumbered does not ask a flag that monsters never set');
+{
+  // OF.ENEMY IS "ENEMY PLAYER" (include/proto.h:405) -- a guild-war relationship the client
+  // uses for the colour of a dot on the automap. No monster carries it. This rule was gated
+  // on it, so "two or more aggroed creatures" could not become true however many things were
+  // hitting the character, and the multi-attacker flee never fired once. JayB was killed by
+  // a spider while the postmortem recorded "engaged by 0".
+  // Ids well clear of selfId (1), or the "creature" IS us.
+  const spiders = [
+    { id: 101, name: 'baby spider', col: 6, row: 5, flags: 0 },   // no flags: as the wire has it
+    { id: 102, name: 'baby spider', col: 4, row: 5, flags: 0 },
+  ];
+  const mk = (objects, trail) => {
+    const c = fakeClient({ hp: 12, hpMax: 20, col: 5, row: 5,
+                           room: { num: 535, name: 'Woods', objects } });
+    return evaluate({ client: c, session: { _hpTrail: trail }, policy: {} });
+  };
+
+  // Two of them adjacent, health falling: this is the case the rule exists for.
+  const gang = mk(spiders, [20, 16, 14, 12]);
+  ok('two creatures in reach while health falls IS outnumbered', gang.outnumbered === true,
+     JSON.stringify({ outnumbered: gang.outnumbered, under_attack: gang.under_attack }));
+
+  // The same two, health steady: a room with things standing about is not an ambush.
+  const idle = mk(spiders, [20, 20, 20, 20]);
+  ok('the same two with health steady is NOT outnumbered', idle.outnumbered === false,
+     String(idle.outnumbered));
+
+  // One attacker, health falling: under attack, but not outnumbered.
+  const solo = mk([spiders[0]], [20, 16, 14, 12]);
+  ok('one attacker is under_attack but not outnumbered',
+     solo.under_attack === true && solo.outnumbered === false,
+     JSON.stringify({ under_attack: solo.under_attack, outnumbered: solo.outnumbered }));
+
+  // AND THE FLAG MUST NOT BE WHAT DECIDES IT. Same geometry, same falling health, flags
+  // left at zero exactly as the server sends them -- the rule still has to see the gang.
+  ok('the verdict does not depend on any object flag',
+     gang.outnumbered === true && spiders.every(o => o.flags === 0));
+}
+
+console.log('\ntwo samples are evidence: the first hits must not read as safety');
+{
+  const mk = trail => evaluate({ client: fakeClient({ hp: 16, hpMax: 20, col: 5, row: 5 }),
+                                 session: { _hpTrail: trail }, policy: {} });
+  // THE EXACT TRAIL JAYB DIED BEHIND. The trail records health only when it CHANGES, so
+  // his first hit gave a trail of length two -- and a rule wanting three said "not under
+  // attack". He rested through it. It first read true at 12, too late to walk out on.
+  ok('20 -> 16 is already under attack', mk([20, 16]).under_attack === true);
+  ok('and so is the fuller trail', mk([20, 16, 12]).under_attack === true);
+  // The other direction must stay quiet: healing is not an attack, and one sample says
+  // nothing at all.
+  ok('a single sample is not evidence of anything', mk([20]).under_attack === false);
+  ok('health going UP is not an attack', mk([10, 14]).under_attack === false);
+  ok('and a flat trail is not an attack', mk([20, 20, 20]).under_attack === false);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

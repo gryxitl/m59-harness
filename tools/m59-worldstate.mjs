@@ -206,6 +206,11 @@ export const SYMBOLS = {
   // It stops paying at max health 25. Advancement needs monster_level > base_max_health and the
   // only thing Raza generates is the level-25 mummy, so from 25 onward a character can farm the
   // whole zone for ever and gain nothing — which is exactly what JayB was doing.
+  // IS HEALTH GOING DOWN? The one signal that is always true when something is hitting us,
+  // whatever the wire says about it. Net loss over the window rather than any single dip, so
+  // a rest tick or a heal does not mask an attack and one unlucky sample does not invent one.
+  // Shared by `under_attack` and `outnumbered` so the two can never disagree about it.
+  // (Defined as a module function below the table; hoisted, so the order here is free.)
   // MORE THAN ONE THING IS ON US.
   //
   // A character trades blows with one creature and wins or loses on arithmetic. Two or more
@@ -236,25 +241,37 @@ export const SYMBOLS = {
     produce: ({ client, session }) => {
       const v = client?.vitals?.()?.health?.value;
       if (v == null) return null;
-      const t = session?._hpTrail;
-      if (!Array.isArray(t) || t.length < 3) return false;
-      const window = t.slice(-4);
-      return window[0] - window[window.length - 1] >= 2;
+      return healthFalling(session);
     },
   },
 
+  // OF.ENEMY IS "ENEMY PLAYER", AND A SPIDER IS NOT A PLAYER.
+  //
+  //     include/proto.h:405   #define OF_ENEMY   0x02000000   // Enemy player
+  //
+  // It is a guild-war relationship, which the client uses for nothing but the colour of a
+  // dot on the minimap (clientd3d/map.c:452). No monster has ever carried it, so this rule
+  // — "two or more AGGROED creatures" — could not become true no matter what was happening
+  // in the room, and the multi-attacker flee has never fired once since it was written.
+  //
+  // The note on `under_attack` above had already found the flags were untrustworthy and
+  // reached for the health bar instead; this rule was left behind on the flag. So use the
+  // two signals that are real: how many prey-class creatures are within striking distance,
+  // and whether health is actually going down. Proximity alone would call a room of six
+  // idle rats an ambush; damage alone cannot tell one attacker from three. Together they
+  // mean what the rule always said it meant.
   outnumbered: {
-    describe: 'two or more aggroed creatures are within striking distance',
+    describe: 'two or more creatures are within striking distance while health is falling',
     whenUnknown: false,
     why_unknown: 'a wrong true throws away a winnable fight; a wrong false only costs what it already cost',
-    produce: ({ client }) => {
+    produce: ({ client, session }) => {
       const objs = client?.room?.objects;
       const me = client?.self;
       if (!(objs instanceof Map) || me?.col == null) return null;
+      if (!healthFalling(session)) return false;
       let n = 0;
       for (const o of objs.values()) {
         if (o.is_self || o.col == null) continue;
-        if (!(o.flags & 0x02000000)) continue;                     // OF.ENEMY
         const nm = String(client?.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
         if (!preyNames().has(creatureKey(nm))) continue;
         if (Math.hypot(o.col - me.col, o.row - me.row) > OUTNUMBERED_RANGE) continue;
@@ -714,4 +731,23 @@ export function validate(action) {
 // Every action in a set, checked at once -- what a conformance test calls.
 export function validateAll(actions = []) {
   return actions.flatMap(a => validate(a));
+}
+
+
+// See the note beside `under_attack`. Kept as one function because two copies of a
+// threshold is how two rules end up disagreeing about whether a character is being hit.
+function healthFalling(session, samples = 4, drop = 2) {
+  const t = session?._hpTrail;
+  // TWO SAMPLES ARE EVIDENCE. This wanted three, and the trail only records health when it
+  // CHANGES, so the first two hits could never say anything: JayB went 20 -> 16 with a
+  // trail of length 2, `under_attack` answered false, and the ladder let him SIT DOWN AND
+  // REST while a spider hit him. It first read true at 12, by which point fleeing meant
+  // standing up and walking out at 60% health. He died at 3.
+  //
+  // A drop of `drop` between two consecutive distinct readings is not ambiguous — nothing
+  // else in this game takes health away — and reacting one sample earlier is the whole
+  // difference between leaving with health to spend on the walk and leaving without.
+  if (!Array.isArray(t) || t.length < 2) return false;
+  const window = t.slice(-samples);
+  return window[0] - window[window.length - 1] >= drop;
 }

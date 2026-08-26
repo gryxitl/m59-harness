@@ -910,7 +910,11 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             if (!preyNames().has(creatureKey(nm))) continue;
             if (Math.hypot(o.col - me.col, o.row - me.row) > 5) continue;
             near++;
-            if (o.flags & 0x02000000) { aggro++; names.push(nm); }   // OF.ENEMY
+            // NOT OF.ENEMY -- that is "Enemy player" (include/proto.h:405), a guild-war
+            // relationship no monster carries. Every monster death this fleet has recorded
+            // says "engaged by 0" because of it, including the ones where three things were
+            // demonstrably chewing on the character. Count what is close enough to swing.
+            if (Math.hypot(o.col - me.col, o.row - me.row) <= 3) { aggro++; names.push(nm); }
           }
         }
         session._preDeath = {
@@ -1832,7 +1836,18 @@ export const DEFAULT_GOALS = [
   // Rest when hurt, but only when there's no target in
   // the room. If a target is in reach, the flee_hurt or
   // _fight goal handles it.
-  { goal: 'healthy',  when: ws => ws.hurt === true && ws.has_target !== true },
+  // AND NEVER SIT DOWN WHILE SOMETHING IS HITTING YOU.
+  //
+  // Resting was gated on "hurt, and no target" -- neither of which is a statement about
+  // being attacked. JayB was travelling, had dropped his target, and rested at 16 of 20
+  // while a spider worked on him. Sitting is strictly worse than standing under fire: the
+  // regeneration is negligible against incoming damage and everything else has to stand up
+  // first, which is a tick spent at the exact moment there are none to spare.
+  //
+  // The flee rungs above catch this once `under_attack` is true; this makes sure that
+  // between them there is no state where the answer is "sit down and take it".
+  { goal: 'healthy',  when: ws => ws.hurt === true && ws.has_target !== true
+                                  && ws.under_attack !== true },
   // Rest when vigor is low. Vigor IS health regeneration —
   // keeping it high keeps HP topping up. Rest below 60 to
   // maintain a buffer, but this is lower priority than

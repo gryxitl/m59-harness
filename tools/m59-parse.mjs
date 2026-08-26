@@ -56,6 +56,20 @@ export const OF = {
   APPLYABLE:     0x00001000,
   SAFETY:        0x00002000,   // only meaningful on ourselves
   PLAYER_MASK:   0x0001C000,
+  // THESE THREE ARE ABOUT PLAYERS, AND ONLY PLAYERS.
+  //
+  //     include/proto.h:405-407
+  //       #define OF_ENEMY      0x02000000   // Enemy player
+  //       #define OF_FRIEND     0x04000000   // Friendly player
+  //       #define OF_GUILDMATE  0x08000000   // Guildmate player
+  //
+  // They carry a guild-war relationship, and the client reads them for exactly one thing:
+  // the colour of a dot on the automap (clientd3d/map.c:436-461). A monster never sets any
+  // of them. Do NOT reach for ENEMY to ask "is this thing hostile to me" — that question
+  // has no flag on the wire, and asking it this way is always answered no. `under_attack`
+  // and `outnumbered` in m59-worldstate.mjs use the health bar instead, which is the signal
+  // that is true whatever the flags say. JayB was killed by a spider while the postmortem
+  // recorded "engaged by 0".
   ENEMY:         0x02000000,
   FRIEND:        0x04000000,
   GUILDMATE:     0x08000000,
