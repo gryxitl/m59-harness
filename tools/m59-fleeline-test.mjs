@@ -136,8 +136,21 @@ console.log('what the threshold is still allowed to do');
   // watchdog interrupts a long blind walk so the ladder gets to decide with fresh numbers.
   ok('a fight still disengages at the same fraction', /disengageAt: safe\.fleeAt/.test(src));
   ok('a wall still outranks a journey below it', /inRealTrouble = wouldPlayDead/.test(src));
+  // ASSERT THE CODE, NOT THE PROSE, AND IN THE FILE THAT OWNS IT.
+  //
+  // This grepped m59-autopilot.mjs for the sentence "pulled the character out of a blind
+  // walk". The guard was extracted into m59-watchdog.mjs (743ce84, so the GOAP keeper could
+  // share it) and the comment was reworded on the way, so the assertion failed while the
+  // behaviour was entirely intact. Its two siblings above match CODE — `disengageAt:
+  // safe.fleeAt` and `inRealTrouble = wouldPlayDead` — which is why they survived the move
+  // and this did not.
+  //
+  // What must not regress is that the watchdog's rescue is still gated on the flee line:
+  // it takes a character back from a stalled driver only when it is below the fraction this
+  // keeper would flee at.
+  const watchdogSrc = readFileSync(join(HERE, 'm59-watchdog.mjs'), 'utf8');
   ok('the watchdog still interrupts a blind walk below it',
-     /pulled the character out of a blind walk/.test(src));
+     /frac\s*<\s*host\.safety\(\)\.fleeAt/.test(watchdogSrc));
   // And the travel guard's own flee rung was ALREADY players-only — it tests `worthEnding`,
   // which under the default `travel_flee_from: 'players'` is the strangers list. The two
   // ladders now agree, which is the point.

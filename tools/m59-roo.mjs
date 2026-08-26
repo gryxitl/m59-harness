@@ -2218,7 +2218,7 @@ export class RoomGeometry {
   // purpose: a step is refused by the wall BETWEEN two squares, and blaming the square
   // removes a perfectly good place to stand that other neighbours can still reach.
   neighbors(row, col, { fine = true, collision = false, blockedEdges = null,
-                        allowInto = null, fineWiden = false } = {}) {
+                        allowInto = null, allowOutOf = null, fineWiden = false } = {}) {
     const out = [];
     // WHICH MAP GETS TO SAY A STEP IS IMPOSSIBLE — and it must not be both.
     //
@@ -2276,7 +2276,25 @@ export class RoomGeometry {
     // caller — they simply don't pass fineWiden, and behave exactly as before.
     const fineFallback = !authoritative && fineWiden && (this.walls?.length > 0);
     const coarseDirs = fineFallback ? new Set(this.openDirections(row, col, { fine }).map(d => `${d.dr},${d.dc}`)) : null;
-    const dirs = authoritative || fineFallback ? DIRS : this.openDirections(row, col, { fine });
+    // THE COARSE GRID MUST NOT VETO THE SQUARE WE ARE STANDING ON.
+    //
+    // `openDirections` is the SERVER'S coarse grid, and on a square it calls unwalkable it
+    // offers NOTHING — so a body standing there gets no first step, the search expands one
+    // node, and the answer is "no route" for a room it could walk across. A body can be on
+    // such a square perfectly legitimately: a hidden cell (fine-open, coarse-closed), a
+    // respawn point, a ledge, a blink landing.
+    //
+    // It is a trap the planner builds rather than one the room has, and it is asymmetric in
+    // the worst way: `allowInto` already lets a route be planned INTO such a square, so the
+    // planner would walk a character somewhere it then insisted there was no way out of.
+    // finePathProtocol has had an origin escape for this (the origin-trap note in
+    // m59-navgeom.mjs); this is the same escape for path().
+    //
+    // Only the DIRECTIONS are widened. Every edge is still validated by `moverStepLands`,
+    // so this can turn "no route" into a route the mover will walk, and never the reverse.
+    const trappedOrigin = allowOutOf && row === allowOutOf.row && col === allowOutOf.col;
+    const dirs = authoritative || fineFallback || trappedOrigin
+      ? DIRS : this.openDirections(row, col, { fine });
     for (const d of dirs) {
       const r = row + d.dr, c = col + d.dc;
       if (!this.inBounds(r, c)) continue;          // leaving the room is a separate act
@@ -2587,6 +2605,11 @@ export class RoomGeometry {
     }
     threatCost = threatCost ?? this.threatField(threats);
     const clearanceCost = this.clearanceField({ weight: clearance });
+    // Is the body starting somewhere the model will not certify? Then the first edge out
+    // gets the lenient treatment — see the note beside `isOrigin` in neighbors().
+    const originTrapped = collision && this.walls?.length > 0
+      && this.walkable && this.walkable(fromRow, fromCol) === false
+      && this.fineWalkable && this.fineWalkable(fromRow, fromCol) === true;
     if (!this.inBounds(fromRow, fromCol)) return { found: false, reason: 'start is outside the room grid' };
     if (!this.inBounds(toRow, toCol)) return { found: false, reason: 'goal is outside the room grid' };
     if (!this.standable(toRow, toCol)) {
@@ -2703,7 +2726,11 @@ export class RoomGeometry {
       }
       for (const n of this.neighbors(cur.r, cur.c,
              { fine, collision, blockedEdges,
-               allowInto: goalExempt ? { row: toRow, col: toCol } : null })) {
+               allowInto: goalExempt ? { row: toRow, col: toCol } : null,
+               // Only ever the square the search STARTED on, and only when the model will
+               // not certify it. Everywhere else the strict predicate still applies, so the
+               // route stays one the mover can walk from its second step onward.
+               allowOutOf: originTrapped ? { row: fromRow, col: fromCol } : null })) {
         const nk = key(n.row, n.col);
         if (closed.has(nk)) continue;
         // Never the GOAL, only the way there: if the destination itself is occupied we
