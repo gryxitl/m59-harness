@@ -318,5 +318,51 @@ console.log('\ncontroller mover: resting is silence, because a move packet delet
   ok('standing up resumes the physics', stepped > 0, `stepped=${stepped}`);
 }
 
+console.log('\ncontroller mover: holding is for running AHEAD, never for falling behind');
+{
+  // The lead guard used a symmetric hypot, so it fired just as readily when the belief was
+  // BEHIND the server -- and then holding is exactly wrong: the belief needs to catch up,
+  // and freezing it replicates a stale position, which drags the body backwards.
+  //
+  // Measured in the Deep Forest of Farol: "belief (4,4) vs server (8,6) -- lead 4.5", held.
+  // 1,999 of 2,568 ticks spent held while `moving` advanced 7 per twenty-second window.
+  const mk = (belief, server, dest) => {
+    const session = {
+      agent: 't-test',
+      client: { state: 'game', self: { ...server }, room: { id: 1, num: 556 } },
+      world: { geometry: { collisionReady: true, rows: 55, cols: 63,
+                           walkable: () => true, fineWalkable: () => true,
+                           traceFineMoveClient: (a, b2, x, y) => ({ available: true, x, y }) } },
+    };
+    const cm = new ControllerMover(session, { to() {}, tick: () => ({ state: 'moving' }), cancel() {} });
+    cm.ctl = stubCtl({ ...belief }, 'moving');
+    cm.to(dest.col, dest.row);
+    cm._room = 1; cm._plannedFor = `${dest.col},${dest.row}`;
+    return cm;
+  };
+
+  // BEHIND: the server is closer to the destination than the belief is. Its word is better.
+  const behind = mk({ col: 4, row: 4 }, { col: 8, row: 6 }, { col: 30, row: 2 });
+  const heldBehind = behind._leadExceeded(behind.session.client);
+  ok('a belief BEHIND the server is not held', heldBehind === false);
+  ok('it adopts the server square instead',
+     behind.ctl.adopted.some(([c, r]) => c === 8 && r === 6),
+     JSON.stringify(behind.ctl.adopted));
+  ok('and drops the plan drawn from the stale place', behind._plannedFor === null);
+
+  // AHEAD: the belief is closer to the destination. This is what the guard is for.
+  const ahead = mk({ col: 20, row: 4 }, { col: 8, row: 6 }, { col: 30, row: 2 });
+  ok('a belief AHEAD of the server is still held',
+     ahead._leadExceeded(ahead.session.client) === true);
+  ok('and it is not adopted away', (ahead.ctl.adopted ?? []).length === 0,
+     JSON.stringify(ahead.ctl.adopted));
+
+  // Within tolerance: neither, whichever side it is on.
+  const close = mk({ col: 9, row: 6 }, { col: 8, row: 6 }, { col: 30, row: 2 });
+  ok('a small disagreement is neither held nor adopted',
+     close._leadExceeded(close.session.client) === false
+     && (close.ctl.adopted ?? []).length === 0);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -266,8 +266,45 @@ export class ControllerMover {
     if (!here || !Number.isFinite(here.col) || !Number.isFinite(here.row)) return false;
     const b = this.ctl.square?.();
     if (!b || !Number.isFinite(b.col)) return false;
-    if (Math.hypot(b.col - here.col, b.row - here.row) <= MAX_LEAD_SQUARES) return false;
+    const lead = Math.hypot(b.col - here.col, b.row - here.row);
+    if (lead <= MAX_LEAD_SQUARES) return false;
+
+    // A DISTANCE CANNOT TELL AHEAD FROM BEHIND, AND ONLY ONE OF THEM IS WORTH HOLDING FOR.
+    //
+    // This guard exists to stop the belief RUNNING AHEAD of the server: integrating past
+    // what the echo can explain only builds a correction paid back as a visible snap. But
+    // the test was a symmetric hypot, so it fired just as readily when the belief was
+    // BEHIND — and then holding is precisely wrong. The belief needs to catch up, and
+    // freezing it means replicating a stale position, which drags the body backwards.
+    //
+    // Measured live in the Deep Forest of Farol: "belief (4,4) vs server (8,6) — lead 4.5",
+    // the belief four squares behind, held. 1,999 of 2,568 ticks (78%) were spent held
+    // while `moving` advanced 7 per twenty-second window. That is the stutter — five
+    // squares, twenty-four seconds of nothing, four more squares.
+    //
+    // The destination gives the direction the distance lacks: if adopting the server's
+    // square would put us CLOSER to where we are going, the server is ahead and its word is
+    // simply better than ours. Take it and re-plan. Only when we are the ones out in front
+    // is waiting the right answer.
+    const d = this.dest;
+    if (d) {
+      const dBelief = Math.hypot(d.col - b.col, d.row - b.row);
+      const dServer = Math.hypot(d.col - here.col, d.row - here.row);
+      if (dServer < dBelief) {
+        this.stats.behindAdopted = (this.stats.behindAdopted || 0) + 1;
+        if (this.stats.behindAdopted <= 5)
+          console.error(`[ctlmover] ${this._agent} belief (${b.col},${b.row}) is ${lead.toFixed(1)}`
+            + ` BEHIND the server (${here.col},${here.row}) — adopting it rather than waiting for it`);
+        try { this.ctl.serverMovedPlayer(here.col, here.row); } catch { /* best effort */ }
+        this._plannedFor = null;
+        return false;              // not a hold: the body may move again this very tick
+      }
+    }
+
     this.stats.held = (this.stats.held || 0) + 1;
+    if (this.stats.held <= 5)
+      console.error(`[ctlmover] ${this._agent} HOLD: belief (${b.col},${b.row}) vs server`
+        + ` (${here.col},${here.row}) — lead ${lead.toFixed(1)} > ${MAX_LEAD_SQUARES}`);
     try { this.ctl.replicate(c, true); } catch { /* best effort */ }
     return true;
   }
