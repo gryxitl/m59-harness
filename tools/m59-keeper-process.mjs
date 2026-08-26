@@ -703,10 +703,42 @@ const server = createServer(async (req, res) => {
       const me = c?.self;
       const geo = session?.world?.geometry;
       if (!me) return json({ error: 'no self' });
+      const F = 64, H = 32; // KOD_FINENESS, half — needed by both the travel and combat legs
+      // THE TRAVEL LEG, ALONGSIDE THE COMBAT ONE.
+      //
+      // This endpoint only ever showed the path to the current QUARRY, so everything a
+      // character does between fights — the part that has gone wrong most often — was
+      // invisible in the viewer. The travel destination lives on the mover (ControllerMover
+      // keeps `dest`) and the router's current leg keeps the staging square it is walking to.
+      // Both are useful: the leg says where the next step is aimed, the room says why.
+      let travel = null;
+      try {
+        const mover = session._mover;
+        const leg = session._router?.leg ?? null;
+        const aim = leg?.standOn ?? (mover?.dest ?? null);
+        if (aim && Number.isFinite(aim.col) && Number.isFinite(aim.row)) {
+          let tpath = [];
+          if (geo?.finePathProtocol) {
+            const ax = aim.col * F + H, ay = aim.row * F + H;
+            const sx2 = me.col * F + H, sy2 = me.row * F + H;
+            const p2 = geo.finePathProtocol(sx2, sy2, ax, ay, { step: 8, margin: 12 * F, maxNodes: 4000 });
+            if (p2.found) tpath = (p2.waypoints ?? []).map(w => ({
+              x: Math.round((w.x - H) / F) - 1, z: Math.round((w.y - H) / F) - 1,
+            }));
+          }
+          travel = {
+            path: tpath,
+            to: { x: aim.col - 1, z: aim.row - 1 },
+            next_room: leg?.next ?? null,
+            kind: leg?.kind ?? null,
+            found: tpath.length > 0,
+          };
+        }
+      } catch { /* the overlay is diagnostic; never let it break the poll */ }
+
       const tid = session._tickDecide?.state?.()?.targetId ?? null;
       const t = tid != null ? c?.room?.objects?.get?.(tid) : null;
-      if (!t || t.col == null) return json({ path: [], direct: null });
-      const F = 64, H = 32; // KOD_FINENESS, half
+      if (!t || t.col == null) return json({ path: [], direct: null, travel, self: { x: me.col - 1, z: me.row - 1 } });
       const sx = me.col * F + H, sy = me.row * F + H;
       const tx = t.col * F + H, ty = t.row * F + H;
       // The fine path (waypoints in protocol coords -> viewer col/row).
@@ -736,7 +768,7 @@ const server = createServer(async (req, res) => {
           };
         } catch (e) { direct = { blocked: false, error: e.message }; }
       }
-      json({ path, direct, self: { x: me.col - 1, z: me.row - 1 }, target: { x: t.col - 1, z: t.row - 1 } });
+      json({ path, direct, travel, self: { x: me.col - 1, z: me.row - 1 }, target: { x: t.col - 1, z: t.row - 1 } });
       return;
     }
     if (req.method === 'GET' && path === '/probe') {

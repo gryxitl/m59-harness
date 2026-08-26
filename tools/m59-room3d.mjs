@@ -77,6 +77,15 @@ export function renderRoom3D(name, rv, hero) {
   #hud .stats .vigor { color:#6a6; }
   #err { display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
     color:#f88; font:13px system-ui; text-align:center; max-width:85vw; white-space:pre-wrap; z-index:20; }
+  #diag { position:fixed; right:10px; top:10px; z-index:30; font:12px system-ui; }
+  #diag button { background:rgba(20,20,24,.85); color:#ddd; border:1px solid #444; border-radius:6px;
+                 padding:5px 9px; cursor:pointer; }
+  #diag button:hover { border-color:#777; }
+  #diagPanel { margin-top:6px; background:rgba(20,20,24,.94); border:1px solid #444; border-radius:6px;
+               padding:8px 10px; min-width:190px; }
+  #diagPanel label { display:block; padding:3px 0; color:#ccc; cursor:pointer; white-space:nowrap; }
+  #diagPanel .hint { margin-top:6px; padding-top:6px; border-top:1px solid #333; color:#888;
+                     font-size:11px; white-space:normal; max-width:190px; }
 </style>
 </head>
 <body>
@@ -94,6 +103,17 @@ export function renderRoom3D(name, rv, hero) {
     <span class="vigor">VIG ${vigor.value}/${vigMax}</span>
     ${hiddenCount ? `<span style="color:#ffcc33" title="Asymmetric safe cells: we can stand here, monsters (NSEW grid) cannot">&#9670; ${hiddenCount} hidden</span>` : ''}
     ${(rv.safe_spots?.length ?? 0) ? `<span style="color:#ffd700" title="Computed safe spots: walls that block enemy line-of-sight">&#9679; ${rv.safe_spots.length} safe</span>` : ''}
+  </div>
+</div>
+<div id="diag">
+  <button id="diagToggle" title="Diagnostic overlays">&#9881; overlays</button>
+  <div id="diagPanel" hidden>
+    <label><input type="checkbox" data-diag="combat"> <b style="color:#33ff66">&#9473;</b> combat path</label>
+    <label><input type="checkbox" data-diag="travel"> <b style="color:#ffaa22">&#9473;</b> travel path</label>
+    <label><input type="checkbox" data-diag="direct"> <b style="color:#ff3333">&#9473;</b> direct raycast</label>
+    <label><input type="checkbox" data-diag="safespots"> <b style="color:#00ff88">&#9632;</b> safe spots</label>
+    <label><input type="checkbox" data-diag="waypoints"> &#8226; waypoint dots</label>
+    <div class="hint">a ring with no line means the destination is known and unreachable</div>
   </div>
 </div>
 <div id="err"></div>
@@ -124,16 +144,31 @@ const HIDDEN = ${hiddenJson};
 const SAFE_SPOTS = ${safeSpotsJson};
 let roomName = ${JSON.stringify(roomName)};
 
-// Debug path overlay state: the fine path (green) + the direct raycast (red if blocked).
+// WHICH DIAGNOSTIC OVERLAYS ARE ON. Persisted, because the whole point of a toggle is that
+// it survives the reload you do after changing something.
+const DIAG_DEFAULTS = { combat: true, travel: true, direct: true, safespots: true, waypoints: true };
+let DIAG = (function () {
+  try { return Object.assign({}, DIAG_DEFAULTS, JSON.parse(localStorage.getItem('m59diag') || '{}')); }
+  catch (e) { return Object.assign({}, DIAG_DEFAULTS); }
+})();
+function saveDiag() { try { localStorage.setItem('m59diag', JSON.stringify(DIAG)); } catch (e) {} }
+
+// Debug path overlay state: the combat path (green), the TRAVEL path (amber) and the direct
+// raycast (red if blocked).
 let pathGroup = null;
 let pathLine = null, pathDots = null, directLine = null, directX = null;
+let travelLine = null, travelDots = null, travelGoal = null;
+let lastPath3d = null;          // so a toggle can redraw immediately
+let safeSpotGroup = null;       // set where the safe-spot tiles are built
+function applySafeSpotVisibility() { if (safeSpotGroup) safeSpotGroup.visible = !!DIAG.safespots; }
 function setPath3d(p) {
   if (pathGroup) { scene.remove(pathGroup); pathGroup.traverse(n => { n.geometry?.dispose?.(); n.material?.dispose?.(); }); pathGroup = null; }
   pathLine = pathDots = directLine = directX = null;
+  travelLine = travelDots = travelGoal = null;
   if (!p) return;
   pathGroup = new THREE.Group();
   // The fine path: a green line through the waypoints (self -> ... -> target).
-  if (Array.isArray(p.path) && p.path.length) {
+  if (DIAG.combat && Array.isArray(p.path) && p.path.length) {
     const pts = p.path.map(w => new THREE.Vector3(w.x + 0.5, 0.15 + heightAt(w.x, w.z), w.z + 0.5));
     if (pts.length >= 2) {
       const g = new THREE.BufferGeometry().setFromPoints(pts);
@@ -141,14 +176,56 @@ function setPath3d(p) {
       pathGroup.add(pathLine);
     }
     // Waypoint dots.
+    if (DIAG.waypoints) {
     const dotPts = pts.map(pt => [pt.x, pt.y, pt.z]).flat();
     const dg = new THREE.BufferGeometry();
     dg.setAttribute('position', new THREE.Float32BufferAttribute(dotPts, 3));
     pathDots = new THREE.Points(dg, new THREE.PointsMaterial({ color: 0x66ffaa, size: 0.5 }));
     pathGroup.add(pathDots);
+    }
+  }
+
+  // THE TRAVEL LEG, IN AMBER. Everything a character does between fights used to be invisible
+  // here: the overlay only ever drew the path to the current quarry, so a character walking
+  // across the world — the part that goes wrong most often — showed nothing at all. Amber
+  // rather than green so the two are never confused at a glance.
+  if (DIAG.travel && p.travel) {
+    const tv = p.travel;
+    if (Array.isArray(tv.path) && tv.path.length >= 2) {
+      const tp = tv.path.map(w => new THREE.Vector3(w.x + 0.5, 0.18 + heightAt(w.x, w.z), w.z + 0.5));
+      const tg = new THREE.BufferGeometry().setFromPoints(tp);
+      travelLine = new THREE.Line(tg, new THREE.LineBasicMaterial({ color: 0xffaa22, linewidth: 3 }));
+      pathGroup.add(travelLine);
+      if (DIAG.waypoints) {
+        const dg2 = new THREE.BufferGeometry();
+        dg2.setAttribute('position', new THREE.Float32BufferAttribute(tp.map(q => [q.x, q.y, q.z]).flat(), 3));
+        travelDots = new THREE.Points(dg2, new THREE.PointsMaterial({ color: 0xffcc66, size: 0.45 }));
+        pathGroup.add(travelDots);
+      }
+    }
+    // The destination, drawn WHETHER OR NOT a path was found — a marker with no line is
+    // exactly the picture of a character that knows where it is going and cannot get there,
+    // which is the failure this overlay exists to show.
+    if (tv.to && Number.isFinite(tv.to.x)) {
+      const bx = tv.to.x + 0.5, bz = tv.to.z + 0.5, by = 0.05 + heightAt(tv.to.x, tv.to.z);
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(0.30, 0.48, 20),
+        new THREE.MeshBasicMaterial({ color: tv.found ? 0xffaa22 : 0xff5522,
+                                      side: THREE.DoubleSide, transparent: true, opacity: 0.9 }));
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.set(bx, by + 0.02, bz);
+      travelGoal = ring;
+      pathGroup.add(ring);
+      const post = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.045, 0.045, 1.6, 6),
+        new THREE.MeshBasicMaterial({ color: tv.found ? 0xffaa22 : 0xff5522,
+                                      transparent: true, opacity: 0.55 }));
+      post.position.set(bx, by + 0.8, bz);
+      pathGroup.add(post);
+    }
   }
   // The direct raycast: a red line self->target, with an X at the block point if blocked.
-  if (p.direct && p.self && p.target) {
+  if (DIAG.direct && p.direct && p.self && p.target) {
     const s = new THREE.Vector3(p.self.x + 0.5, 0.2 + heightAt(p.self.x, p.self.z), p.self.z + 0.5);
     const e = new THREE.Vector3(p.target.x + 0.5, 0.2 + heightAt(p.target.x, p.target.z), p.target.z + 0.5);
     if (p.direct.blocked) {
@@ -174,6 +251,25 @@ function setPath3d(p) {
   }
   scene.add(pathGroup);
 }
+
+// The overlay switches. Re-rendering on change is enough: setPath3d runs on every poll and
+// the safe-spot layer is rebuilt from the last payload we saw.
+(function wireDiag() {
+  const btn = document.getElementById('diagToggle');
+  const panel = document.getElementById('diagPanel');
+  if (!btn || !panel) return;
+  btn.addEventListener('click', () => { panel.hidden = !panel.hidden; });
+  panel.querySelectorAll('input[data-diag]').forEach(cb => {
+    const k = cb.getAttribute('data-diag');
+    cb.checked = !!DIAG[k];
+    cb.addEventListener('change', () => {
+      DIAG[k] = cb.checked;
+      saveDiag();
+      if (lastPath3d) setPath3d(lastPath3d);
+      if (k === 'safespots') applySafeSpotVisibility();
+    });
+  });
+})();
 
 const canvas = document.getElementById('c');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -274,6 +370,8 @@ if (Array.isArray(HIDDEN) && HIDDEN.length) {
 // Computed safe spots: bright green floor tiles. These are positions where the
 // character can fight with reduced enemy line-of-sight (back against a wall/corner).
 if (Array.isArray(SAFE_SPOTS) && SAFE_SPOTS.length) {
+  // In their own group so the overlay switch can hide them without a reload.
+  safeSpotGroup = new THREE.Group();
   for (const s of SAFE_SPOTS) {
     if (s.x < 0 || s.z < 0 || s.x >= COLS || s.z >= ROWS) continue;
     const h = hAt(s.x, s.z);
@@ -283,8 +381,10 @@ if (Array.isArray(SAFE_SPOTS) && SAFE_SPOTS.length) {
     const tile = new THREE.Mesh(g, m);
     tile.rotation.x = -Math.PI / 2;
     tile.position.set(s.x + 0.5, y, s.z + 0.5);
-    scene.add(tile);
+    safeSpotGroup.add(tile);
   }
+  scene.add(safeSpotGroup);
+  applySafeSpotVisibility();
 }
 
 // Keep a thin reference plane at y=0 for rooms with no height data.
@@ -563,7 +663,8 @@ async function pollData() {
     }
     // Update the debug path overlay (fine path + direct raycast) on EVERY poll —
     // the path can replan even when the entity set is unchanged.
-    setPath3d(d.path3d || null);
+    lastPath3d = d.path3d || null;
+    setPath3d(lastPath3d);
     // Update vitals
     if (d.vitals) {
       const v = d.vitals;
