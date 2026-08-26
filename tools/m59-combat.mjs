@@ -83,6 +83,10 @@ const PULL_RANGE = 12;
 // kills, neither side losing health. A swing refused for range costs the whole second of
 // cooldown it was paced against, so a boundary swing is not a cheap miss — it is the round.
 const MELEE_REACH = 2;
+// PUNCHING IS SHORTER THAN SWINGING. Bare hands reach one square, not two, so an unarmed
+// character that closes to melee range stands a square short and swings at air for ever.
+const PUNCH_REACH = 1;
+const WEAPONISH = /\b(mace|sword|axe|hammer|dagger|club|staff|halberd|spear|flail|scimitar|rapier|bow)\b/i;
 // CAST_REACH: how close a caster needs to be to cast a bolt at a mob.
 // Bolt spells (zap, fire bolt) travel several squares, so casters can
 // engage from farther out than melee.
@@ -390,7 +394,8 @@ export class CombatController {
     const hpLow = hpPct <= RETREAT_HP_PCT;
     // Attack mode: casters (no weapon, has attack spell) use a bolt at
     // CAST_REACH; everyone else uses a melee swing at MELEE_REACH.
-    const reach = this._attackSpell() ? CAST_REACH : MELEE_REACH;
+    const reach = this._attackSpell() ? CAST_REACH
+                : (this._armed(c) ? MELEE_REACH : PUNCH_REACH);
     const tGeo = frame?.geometry ?? this.session?.world?.geometry;
 
     // When the target's square is fine-unwalkable (mummy on a ledge, in a
@@ -592,7 +597,8 @@ export class CombatController {
   _doFight(frame, act, target, dist, isAggroed, pathDist) {
     const me = frame?.position ?? this.session?.client?.self;
     const client = this.session?.client;
-    const reach = this._attackSpell() ? CAST_REACH : MELEE_REACH;
+    const reach = this._attackSpell() ? CAST_REACH
+                : (this._armed(client) ? MELEE_REACH : PUNCH_REACH);
     // Use pathDist (A* tile count) if available, else fall back to Manhattan.
     const effDist = pathDist ?? dist;
     if (effDist > reach) {
@@ -803,6 +809,16 @@ export class CombatController {
 
 
 
+
+  // Are we holding a weapon? The server's own use list, so it cannot disagree with the
+  // character's actual hands — and it decides whether we reach two squares or one.
+  _armed(c) {
+    try {
+      const eq = c?.equipment?.();
+      if (!eq || eq.known === false) return true;   // unknown: assume armed, the safer error
+      return (eq.equipped ?? []).some(o => WEAPONISH.test(String(o.name ?? '')));
+    } catch { return true; }
+  }
 
   // Is this object us? By id when we know it, and by name always — see the caller.
   _isSelf(o, c) {

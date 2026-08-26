@@ -450,6 +450,34 @@ export const SYMBOLS = {
   // the tick keeper had no way to shed. JayB was carrying SEVENTEEN maces against a policy of
   // two, and 1,020 shillings against a bank floor of 500, in a pack of 26 entries against a
   // maxCarry of 14. A pack that cannot receive cannot loot.
+  // CAN WE ACTUALLY GET ARMED, or is being unarmed simply the situation?
+  //
+  // The `armed` goal outranks `_fight`, which is right when a weapon is obtainable — a
+  // character with a mace in the pack should wield it before swinging. It is a TRAP when it
+  // is not: Lee died, death drops everything, and he woke with an empty pack and an empty
+  // purse. `armed` fired for ever, planned a purchase he could not afford, and never fell
+  // through to fighting — so he could not earn the money that would end the loop.
+  //
+  // Fists are a real option here. The hunt band is explicitly halved when unarmed
+  // (floor(level/4) against floor(level/2)) and skills.sellAll says as much: "you will fight
+  // with your fists". So `armed` should only outrank fighting while it can be satisfied.
+  can_arm: {
+    describe: 'there is a wieldable weapon in the pack, or money to buy one',
+    whenUnknown: true,
+    why_unknown: 'if we cannot tell, try to arm — the cost of a wasted trip is smaller than the cost of punching everything',
+    produce: ({ client }) => {
+      const inv = client?.inventory;
+      if (!Array.isArray(inv)) return null;
+      let purse = 0;
+      for (const o of inv) {
+        const name = String(client?.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
+        if (/shilling/i.test(name)) { purse += (o.amount || 1); continue; }
+        if (WEAPON_RE.test(name)) return true;      // something to wield already
+      }
+      return purse > 0;                              // no weapon, but something to spend
+    },
+  },
+
   over_weapons: {
     describe: 'the pack holds more weapons than the loadout allows',
     whenUnknown: false,

@@ -1795,7 +1795,9 @@ export const DEFAULT_GOALS = [
   // The failure mode this ordering used to protect against — equip refused for ever, so the
   // character never fights — is handled where it belongs: `equip` returns a refusal when
   // every weapon is broken, and `armed` then plans `buy` instead of retrying.
-  { goal: 'armed',    when: ws => ws.armed === false },
+  // Only while it is achievable — see `can_arm`. An unarmed, penniless character must be
+  // allowed to fight with its fists, because that is the only way it ever earns a weapon.
+  { goal: 'armed',    when: ws => ws.armed === false && ws.can_arm !== false },
   // GRADUATE OUT OF RAZA — below survival and below being armed, above all work.
   //
   // BELOW SURVIVAL because this repository owns mortality on a one-second clock and a
