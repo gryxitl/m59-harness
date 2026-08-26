@@ -2890,5 +2890,50 @@ console.log('AN EDGE THE MOVER CANNOT WALK IS REMEMBERED PAST THE WALK THAT FOUN
      (memory3.get(50)?.size ?? 0) === 0, JSON.stringify([...(memory3.get(50) ?? [])]));
 }
 
+// ---------------------------------------------------------------------------------------
+// navPath's squeeze: a clearance margin that seals a pocket is a detour, not a dead end.
+console.log('\nnavPath: a sealed pocket is a detour, not a dead end');
+{
+  const { navPath, freeSpace, cellOfClient, labelAt } =
+    await import('./m59-navgrid.mjs');
+  const geo = (() => {
+    try {
+      const map = JSON.parse(readFileSync(new URL('../substrate/m59-map.json', import.meta.url), 'utf8'));
+      return RoomGeometry.fromJSON(map.rooms['557'].roo);
+    } catch { return null; }
+  })();
+  if (!geo?.collisionReady) {
+    skipped += 3;
+    console.log('  skip navPath squeeze — room 557 geometry unavailable');
+  } else {
+    const P = (col, row) => ({ x: (col - 0.5) * 1024, y: (row - 0.5) * 1024 });
+    const grid = freeSpace(geo);
+    const squeezedCells = wps => wps.filter(w => {
+      const [i, j] = cellOfClient(w.x, w.y);
+      return !grid.free[j * grid.W + i];
+    }).length;
+
+    // (19,48) sits in an 89-cell splinter; the staging square (20,2) is in the
+    // 14,383-cell main body. Pure free space has no route between them, and the pocket
+    // stays sealed even at half the player radius — so this is not a near miss.
+    const sealed = navPath(geo, P(19, 48), P(20, 2), { squeeze: 0 });
+    ok('the clearance margin really does seal the pocket (squeeze off)',
+       sealed.found === false, sealed.reason ?? '');
+
+    const threaded = navPath(geo, P(19, 48), P(20, 2));
+    ok('and the squeeze threads it rather than refusing',
+       threaded.found === true && threaded.waypoints.length > 0,
+       threaded.reason ?? `${threaded.waypoints?.length} wp`);
+
+    // THE PROPERTY THAT KEEPS IT HONEST. A route that has open space available must not
+    // spend any of its budget on the margin -- otherwise every plan starts cutting
+    // corners through walls the model only half-believes in.
+    const open = navPath(geo, P(29, 40), P(20, 2));
+    ok('a route with open space available squeezes nowhere',
+       open.found === true && squeezedCells(open.waypoints) === 0,
+       `${squeezedCells(open.waypoints ?? [])} squeezed of ${open.waypoints?.length}`);
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed${skipped ? `, ${skipped} skipped` : ''}`);
 process.exitCode = fail ? 1 : 0;
