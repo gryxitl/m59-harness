@@ -494,7 +494,16 @@ async function readAbilitiesOnce(s, { why = 'read', kinds = 'both' } = {}) {
 // reports its CURRENT position on an interval and keeps no backlog at all.
 //
 // Intermediate positions are history, and history is not worth sending late.
-const COALESCE_KINDS = new Set(['rest', 'stand', 'move']);
+//
+// `cast` is here because URGENT MUST NOT MEAN UNBOUNDED. Attacks and casts jump the queue
+// and are never shed, which is right for a swing that has to land inside a 1s cooldown —
+// but it made them the one kind that could grow for ever. Lee, entombed in the Deep Forest
+// of Farol, asked to blink on every tick: 1,791 casts queued, the oldest THREE MINUTES old,
+// production 9.67/s against 1/s sent. A blink takes about ten seconds to cast, so all but
+// the last of those were superseded before they were sent, and the ones that did go out
+// interrupted each other. The newest cast is the current intent — an older queued one is a
+// decision the keeper has already moved on from.
+const COALESCE_KINDS = new Set(['rest', 'stand', 'move', 'cast']);
 // The backstop depth. Far above any legitimate burst; low enough that the tail of the
 // queue is still packets from this minute rather than this morning.
 const MAX_QUEUE_DEPTH = Number(process.env.M59_PACER_MAX_QUEUE || 300);

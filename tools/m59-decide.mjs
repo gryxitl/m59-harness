@@ -218,6 +218,11 @@ const REST_REPEAT_MS = Number(process.env.M59_REST_REPEAT_MS || 3000);
 // change, which is the one signal that actually means safety.
 const FLEE_COMMIT_MS = Number(process.env.M59_FLEE_COMMIT_MS || 8000);
 
+// How long a blink is given to resolve before it is asked for again. blink.kod's cast takes
+// roughly ten seconds; a little past that so the reply has arrived rather than the request
+// racing it. See the unwedge goal.
+const BLINK_CAST_MS = Number(process.env.M59_BLINK_CAST_MS || 12000);
+
 export const INTENTS = {
   rest:  (f, act, ctx) => {
     // Resting recovers HP and vigor. At an inn it's fast;
@@ -1540,6 +1545,25 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
         note(active.goal, false);
         return;
       }
+      // A BLINK TAKES ABOUT TEN SECONDS. ASKING TEN TIMES A SECOND IS NOT ASKING HARDER.
+      //
+      // This re-issued the cast on every tick. Casts are urgent in the pacer — they jump the
+      // queue and are never shed — so they were the one kind that could grow without bound:
+      // Lee, entombed in the Deep Forest of Farol, had 1,791 blinks queued with the oldest
+      // THREE MINUTES old, produced at 9.67/s against 1/s sent. Every one of them was
+      // superseded before it was sent, and the few that went out interrupted each other, so
+      // the character never actually blinked and never got out.
+      //
+      // Wait for the cast to have had its chance before asking again. The keeper is not idle
+      // meanwhile: it is entombed, so standing still IS the correct behaviour.
+      const sinceCast = now() - (session._blinkCastAt ?? 0);
+      if (sinceCast < BLINK_CAST_MS) {
+        onDecision?.({ ticks, goal: 'unwedge', action: null, sent: false,
+          what: `blinking out (cast in flight, ${Math.round((BLINK_CAST_MS - sinceCast) / 1000)}s)` });
+        note(active.goal, true);
+        return;
+      }
+      session._blinkCastAt = now();
       const r = intend('cast blink', frame, act, { client, session, ws, policy });
       note(active.goal, r.sent);
       onDecision?.({ ticks, goal: 'unwedge', action: 'cast blink', sent: r.sent,

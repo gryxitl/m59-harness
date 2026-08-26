@@ -298,6 +298,18 @@ console.log('\npacer: a flood of distinct packets is shed rather than queued for
   ok('a shed packet resolves its caller rather than hanging it', settled === 'settled', settled);
 }
 
+console.log('\npacer: urgent does not mean unbounded');
+{
+  const { Pacer } = await import('./m59-game.mjs');
+  const p = new Pacer(1);
+  // Casts jump the queue and are never shed, which is right for a swing inside a 1s
+  // cooldown -- and it made them the one kind that could grow for ever. Lee, entombed and
+  // asking to blink every tick, had 1,791 casts queued with the oldest THREE MINUTES old.
+  // A blink takes ~10s, so all but the last were superseded before they were ever sent.
+  for (let i = 0; i < 500; i++) p.submit('cast', () => true);
+  ok('queued casts do not accumulate', p.depth <= 2, `depth=${p.depth}`);
+}
+
 console.log('\npacer: urgent packets are never shed');
 {
   const { Pacer } = await import('./m59-game.mjs');
