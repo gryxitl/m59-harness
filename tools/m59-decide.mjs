@@ -1438,6 +1438,22 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       return;
     }
 
+    // 2a0. ENTOMBED: blink, the only thing that moves a body out of geometry.
+    if (active?.goal === 'unwedge') {
+      const spell = knownSpells(client).find(sp => /^blink$/i.test(String(sp.name)));
+      if (!spell) {
+        onDecision?.({ ticks, goal: 'unwedge', action: null,
+          why: 'entombed and does not know blink — needs an operator, or a logoff' });
+        note(active.goal, false);
+        return;
+      }
+      const r = intend('cast blink', frame, act, { client, session, ws, policy });
+      note(active.goal, r.sent);
+      onDecision?.({ ticks, goal: 'unwedge', action: 'cast blink', sent: r.sent,
+        what: 'entombed — blinking out', why: r.why ?? null });
+      return;
+    }
+
     // 2a1. GRADUATE OUT OF RAZA. Same shape as the Underworld escape above: a directional
     // decision the planner has no transition for, and the only way out of the zone.
     if (active?.goal === 'leave_raza') {
@@ -1735,6 +1751,10 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
 // precondition cannot, which is the one rule docs/HANDOFF.md says must not be broken.
 export const DEFAULT_GOALS = [
   { goal: '!in_underworld', when: ws => ws.in_underworld === true },
+  // ENTOMBED: BLINK OUT. Above everything except being dead, because a character that cannot
+  // take a step cannot flee, fight, rest or travel — every other goal below is a plan that
+  // needs one legal direction, and there are none. See `entombed`.
+  { goal: 'unwedge', when: ws => ws.entombed === true },
   // FLEE first: if an out-of-band mob is IN REACH (actually threatening us), run before
   // anything else. The old condition fired on ANY out-of-band target (has_target &&
   // !target_in_band), which made the character FLEE from a passive mummy just because it

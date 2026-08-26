@@ -264,6 +264,40 @@ export const SYMBOLS = {
     },
   },
 
+  // ENTOMBED: THE BODY CANNOT MOVE IN ANY DIRECTION.
+  //
+  // Not "blocked toward the target" — blocked EVERYWHERE. A character that has ended up inside
+  // geometry has no leaf, no floor, and no legal step, and nothing in the walking model can
+  // help it: sliding, side-steps, escape fans and raw moves all need one direction to work.
+  //
+  // Measured on JayB at (30,47) in the Deep Forest of Farol: leaf NULL, floor null, zero of
+  // eight directions passable, for hours, while the dashboard read "travel moving -> 535". A
+  // blink relocated him to (50,7) — leaf present, floor 2048, eight of eight directions — and
+  // that is the only thing that worked.
+  //
+  // Deliberately expensive and deliberately rare: eight short traces, and only ever consulted
+  // by the goal that casts blink.
+  entombed: {
+    describe: 'the body cannot take a legal step in any of the eight directions',
+    whenUnknown: false,
+    why_unknown: 'never claim a character is entombed on an unreadable position — blink is one-way and costs mana',
+    produce: ({ client, session }) => {
+      const geo = session?.world?.geometry;
+      const me = client?.self;
+      if (!geo?.traceFineMoveClient || !me || me.col == null) return null;
+      const x = (me.col - 0.5) * 1024, y = (me.row - 0.5) * 1024;
+      const STEP = 256;
+      for (const [dx, dy] of [[STEP,0],[-STEP,0],[0,STEP],[0,-STEP],
+                              [181,181],[-181,-181],[181,-181],[-181,181]]) {
+        try {
+          const t = geo.traceFineMoveClient(x, y, x + dx, y + dy, { slide: true });
+          if (t?.moved && Math.hypot((t.x ?? x) - x, (t.y ?? y) - y) >= 32) return false;
+        } catch { /* a throwing direction is not a passable one */ }
+      }
+      return true;
+    },
+  },
+
   in_raza: {
     describe: 'inside the newbie zone (rooms 1011-1018)',
     whenUnknown: false,
