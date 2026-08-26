@@ -53,7 +53,7 @@ const HANDBACK_TICKS = 12;
 // Consecutive blocked ticks before the belief is abandoned in favour of the server's
 // square. Well above an ordinary bump into a wall (which clears on the next heading) and
 // far below the thousands a genuinely unreasonable belief racks up. See tick().
-const BLOCKED_RESYNC_TICKS = 20;
+const BLOCKED_RESYNC_TICKS = 8;
 
 // MOVE_OFF_ROOM_INTERVAL in clientd3d/move.c. One request a second while pressed against a
 // boundary; the client rate-limits identically.
@@ -442,38 +442,6 @@ export class ControllerMover {
     const before = this.ctl.square();
     const r = this.ctl.step(dt, { geo, client: c });
 
-    // THE SERVER KNOWS WHERE THE BODY IS; THE BELIEF ONLY KNOWS WHERE IT STEERED IT.
-    //
-    // A belief that lands on a square the collision model refuses to leave is a dead end
-    // the controller cannot reason its way out of: every one of the eight traces refuses,
-    // so it re-plans, re-blocks, and never sends a packet. JayB sat in Brownestone Inn
-    // with ctlBlocked=3255 and ctl sent=0, the belief on (5,6) -- not standable, no legal
-    // step in any direction -- while the SERVER had him one square north on (5,5), which
-    // is fine. The divergence check does not fire because one square is nothing; it is the
-    // blockage, not the distance, that makes the belief worth abandoning.
-    //
-    // `stranded` does not cover this: it asks whether there is FLOOR, and (5,6) has floor
-    // and simply is not standable. So when the controller is blocked this persistently,
-    // adopt the server's square before concluding anything about the geometry -- it is
-    // ground truth for where the body IS, and the plan is rebuilt from there.
-    if ((r.state === 'blocked' || r.state === 'no-path') && c?.self) {
-      if (++this._blockedRun >= BLOCKED_RESYNC_TICKS) {
-        const b = this.ctl.square();
-        const sv = c.self;
-        if (Number.isFinite(sv.col) && (sv.col !== b.col || sv.row !== b.row)) {
-          this._blockedRun = 0;
-          this.stats.blockedResyncs = (this.stats.blockedResyncs || 0) + 1;
-          if (this.stats.blockedResyncs <= 5)
-            console.error(`[ctlmover] ${this._agent} blocked ${BLOCKED_RESYNC_TICKS} ticks at believed`
-              + ` (${b.col},${b.row}); the server says (${sv.col},${sv.row}) — adopting it`);
-          try { this.ctl.serverMovedPlayer(sv.col, sv.row); } catch { /* best effort */ }
-          this._plannedFor = null;         // the plan was made from somewhere we are not
-          return { state: 'moving', to: this.dest, resynced: true };
-        }
-      }
-    } else if (r.state !== 'blocked' && r.state !== 'no-path') {
-      this._blockedRun = 0;
-    }
     if (r.state === 'blocked' || r.state === 'no-path') this.stats.blockedTicks++;
     else if (r.state === 'moving') this.stats.moving++;
     this._summarise(r.state);
@@ -493,6 +461,43 @@ export class ControllerMover {
     const moved = after.col !== before.col || after.row !== before.row;
     if (moved) { this._noProgress = 0; this._handedBack = false; }
     else this._noProgress++;
+
+    // THE SERVER KNOWS WHERE THE BODY IS; THE BELIEF ONLY KNOWS WHERE IT STEERED IT.
+    //
+    // The controller owns its position and there is deliberately no correction loop (the
+    // long note above argues why). That leaves one failure it cannot reason its way out
+    // of: a believed position wedged against geometry it cannot leave. It re-plans,
+    // re-slides, and sends almost nothing.
+    //
+    // KEYED ON PROGRESS, NOT ON THE WORD 'blocked'. The first version of this asked
+    // whether the step came back blocked, and it never once fired: a body pressed against
+    // a wall SLIDES, the slide is sub-square motion, and sub-square motion reports
+    // `moving`. Watched on JayB in Brownestone Inn — slid=5489, ctlBlocked=5483, blocked=0
+    // and ctl sent=6, the belief pinned on (5,4) while the server had him on (6,4). This
+    // is the same trap the stall detector fell into: a two-square shuffle resets anything
+    // that asks for stillness, so ask whether the BODY got anywhere instead.
+    //
+    // The square itself is usually fine — (5,4) has five of eight directions open. It is
+    // the FINE position inside it that is jammed, which is why adopting is the cure:
+    // serverMovedPlayer re-centres the coordinates on the square the server named.
+    //
+    // Placed before the hand-back below, and BLOCKED_RESYNC_TICKS is deliberately under
+    // HANDBACK_TICKS: recovering our own position is cheaper than surrendering the
+    // destination, so it gets the first attempt.
+    if (!moved && this._noProgress >= BLOCKED_RESYNC_TICKS && c?.self) {
+      const sv = c.self;
+      if (Number.isFinite(sv.col) && Number.isFinite(sv.row)
+          && (sv.col !== after.col || sv.row !== after.row)) {
+        this._noProgress = 0;
+        this.stats.blockedResyncs = (this.stats.blockedResyncs || 0) + 1;
+        if (this.stats.blockedResyncs <= 5)
+          console.error(`[ctlmover] ${this._agent} no square progress in ${BLOCKED_RESYNC_TICKS} ticks`
+            + ` at believed (${after.col},${after.row}); the server says (${sv.col},${sv.row}) — adopting it`);
+        try { this.ctl.serverMovedPlayer(sv.col, sv.row); } catch { /* best effort */ }
+        this._plannedFor = null;        // the plan was made from somewhere we are not
+        return { state: 'moving', to: this.dest, resynced: true };
+      }
+    }
 
     // Once the controller has failed to move the body for HANDBACK_TICKS, this destination
     // belongs to the legacy mover. Cleared by any real movement, or by a new destination.

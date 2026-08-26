@@ -26,7 +26,14 @@ function stubCtl(believed, stepState = 'blocked') {
     stats: {},
     adopted: [],
     square: () => ({ ...believed }),
-    step: () => ({ state: stepState }),
+    step() {
+      // A 'moving' step that ADVANCES: this is what real progress looks like, and it is
+      // the case that must never lose its position to the resync.
+      if (stepState === 'advancing') { believed = { col: believed.col + 1, row: believed.row }; return { state: 'moving' }; }
+      // A 'sliding' step reports moving and gets nowhere -- sub-square motion against a
+      // wall. This is the shape that fooled the first version of the guard.
+      return { state: stepState === 'sliding' ? 'moving' : stepState };
+    },
     serverMovedPlayer(col, row) { this.adopted.push([col, row]); believed = { col, row }; return true; },
     replicate() {},
     clear() {},
@@ -89,18 +96,36 @@ console.log('\ncontroller mover: agreement is not a reason to resync');
      cm.ctl.adopted.length === 0, JSON.stringify(cm.ctl.adopted));
 }
 
-console.log('\ncontroller mover: an ordinary bump is not a stranded belief');
+console.log('\ncontroller mover: a body that is getting somewhere keeps its own position');
 {
-  // A body that is moving does not get its belief taken away. The counter must clear on
-  // progress, or the first wall anyone brushes past costs them their position.
+  // Progress is the thing that earns the belief. The counter must clear on real movement,
+  // or the first wall anyone brushes past costs them their position.
   const { cm } = rig({ believed: { col: 5, row: 6 }, server: { col: 5, row: 5 },
-                       stepState: 'moving' });
+                       stepState: 'advancing' });
   for (let i = 0; i < 60; i++) {
     cm._lastTickAt = Date.now() - 100;
     cm.tick({ col: 5, row: 5, x: 4608, y: 4608 });
   }
-  ok('a moving body keeps its own position', cm.ctl.adopted.length === 0,
+  ok('an advancing body keeps its own position', cm.ctl.adopted.length === 0,
      JSON.stringify(cm.ctl.adopted));
+}
+
+console.log('\ncontroller mover: SLIDING is not progress, however much it reports moving');
+{
+  // THE CASE THE FIRST VERSION OF THIS GUARD MISSED ENTIRELY. A body pressed against a
+  // wall slides; the slide is sub-square motion; sub-square motion reports `moving`. So a
+  // guard that asked whether the step came back `blocked` never fired once, while JayB sat
+  // in Brownestone Inn with slid=5489 and ctl sent=6.
+  const { cm } = rig({ believed: { col: 5, row: 4 }, server: { col: 6, row: 4 },
+                       stepState: 'sliding' });
+  let resynced = false;
+  for (let i = 0; i < 60 && !resynced; i++) {
+    cm._lastTickAt = Date.now() - 100;
+    const r = cm.tick({ col: 6, row: 4, x: 5632, y: 3584 });
+    if (r?.resynced) resynced = true;
+  }
+  ok('a sliding body with no square progress adopts the server square', resynced,
+     `adopted=${JSON.stringify(cm.ctl.adopted)}`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
