@@ -1414,11 +1414,6 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
 // precondition cannot, which is the one rule docs/HANDOFF.md says must not be broken.
 export const DEFAULT_GOALS = [
   { goal: '!in_underworld', when: ws => ws.in_underworld === true },
-  // GRADUATE OUT OF RAZA. Second only to being dead, because everything below it is work the
-  // zone cannot pay for: from max health 25 the only creature Raza generates is a level-25
-  // mummy and advancement needs monster_level > base_max_health, so a character left here
-  // farms for ever and gains nothing. JayB did precisely that.
-  { goal: 'leave_raza', when: ws => ws.in_raza === true && ws.raza_outgrown === true },
   // FLEE first: if an out-of-band mob is IN REACH (actually threatening us), run before
   // anything else. The old condition fired on ANY out-of-band target (has_target &&
   // !target_in_band), which made the character FLEE from a passive mummy just because it
@@ -1457,6 +1452,19 @@ export const DEFAULT_GOALS = [
   // character never fights — is handled where it belongs: `equip` returns a refusal when
   // every weapon is broken, and `armed` then plans `buy` instead of retrying.
   { goal: 'armed',    when: ws => ws.armed === false },
+  // GRADUATE OUT OF RAZA — below survival and below being armed, above all work.
+  //
+  // BELOW SURVIVAL because this repository owns mortality on a one-second clock and a
+  // character at 1 HP must run, not walk to a museum. Placing it second, above flee_danger
+  // and flee_hurt, was my mistake and would have got somebody killed.
+  //
+  // BELOW `armed` because the trip is ONE-WAY and the smith is inside Raza (1013). Leaving
+  // unarmed strands a character in the world with no weapon and no way back.
+  //
+  // ABOVE `_fight` and `hunt` because everything they can earn here is nothing: from max
+  // health 25 the only creature Raza generates is a level-25 mummy, and advancement needs
+  // monster_level > base_max_health. JayB farmed it for days.
+  { goal: 'leave_raza', when: ws => ws.in_raza === true && ws.raza_outgrown === true },
   { goal: '_fight',   when: ws => ws.has_target === true && ws.target_in_band === true
                                  && ws.critical !== true
                                  && (ws.hurt === true || ws.vigor_floor !== false)

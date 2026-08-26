@@ -201,8 +201,12 @@ export const SYMBOLS = {
     describe: 'inside the newbie zone (rooms 1011-1018)',
     whenUnknown: false,
     why_unknown: 'an unreadable room must not send anybody through a one-way portal',
-    produce: ({ client }) => {
-      const n = Number(client?.room?.num ?? client?.room?.id);
+    // THE MAP NUMBER, NOT THE OBJECT ID. `client.room.id` is the room OBJECT's id (1511 for
+    // The Sweet Grass Prairies, whose map number is 557), so comparing it against 1011-1018
+    // silently answers about the wrong rooms — and whenUnknown:false then reads as "not in
+    // Raza" for a character standing in it. The session's world carries the resolved number.
+    produce: ({ client, session }) => {
+      const n = Number(session?.world?.room?.num ?? client?.room?.num);
       return Number.isFinite(n) ? (n >= 1011 && n <= 1018) : null;
     },
   },
