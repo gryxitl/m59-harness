@@ -112,7 +112,9 @@ export class ControllerMover {
       if (this.stats.offMapCrossings <= 3)
         console.error(`[ctlmover] ${this._agent} (${col},${row}) is off the map — a boundary crossing`);
       this.dest = { col, row };
-      this.crossing = { col, row };        // handled by _requestOffRoom, not by walking
+      // The room it is a crossing OUT OF. An off-room request is a request to leave one
+      // specific room, so it is finished the moment we are in a different one.
+      this.crossing = { col, row, room: this.session?.client?.room?.id ?? null };
       this.active = false;                 // the controller is not steering this one
       try { this.fallback?.to?.(col, row); } catch { /* fallback, not a dependency */ }
       return;
@@ -291,6 +293,30 @@ export class ControllerMover {
       // read the client here. Passing the not-yet-declared binding silently did nothing —
       // _requestOffRoom takes `(x, c)` and bailed on the undefined client, which is why three
       // off-map crossings were noticed and zero requests were ever sent.
+      // A CROSSING IS SPENT THE MOMENT THE ROOM CHANGES, AND KEEPING IT SENDS YOU ON.
+      //
+      // The off-room request names coordinates OUTSIDE the room, and which edge that is
+      // depends entirely on which room you are standing in. Nothing cleared `crossing` on
+      // arrival — only a new on-map destination did — so the tick after landing re-sent the
+      // old room's out-of-bounds square, and the server read it against the NEW room's
+      // bounds and obligingly fired whichever exit it fell past.
+      //
+      // That is how JayB left West Merchant Way through Ilerian Woods by its south edge,
+      // arrived in the Forest of Farol at its north-west corner (row 4, col 6), and was in
+      // Faronath seconds later at (row 4, col 34) -- which is precisely where Farol's own
+      // south exit lands you (c6.kod: [LEAVE_SOUTH, RID_C7, 4, 34]). He did not walk the
+      // forty-five rows between those two edges; he was passed straight through on a
+      // request meant for a room he had already left. Two rooms per crossing, silently,
+      // and the exit tables were blamed for it first.
+      const roomNow = this.session?.client?.room?.id ?? null;
+      if (this.crossing.room != null && roomNow != null && roomNow !== this.crossing.room) {
+        this.stats.crossingsCompleted = (this.stats.crossingsCompleted || 0) + 1;
+        console.error(`[ctlmover] ${this._agent} crossing into room ${roomNow} completed`
+          + ` — dropping the off-room request for room ${this.crossing.room}`);
+        this.crossing = null;
+        this._offRoomAt = 0;
+        return this._delegate(posOverride, 'crossing completed');
+      }
       this._requestOffRoom(this.session?.client);
       return this._delegate(posOverride, 'boundary crossing');
     }

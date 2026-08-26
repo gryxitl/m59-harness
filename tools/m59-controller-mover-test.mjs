@@ -48,7 +48,8 @@ function rig({ believed, server, stepState = 'blocked' }) {
   const session = {
     agent: 't-test',
     client: { state: 'game', self: { ...server }, room: { id: 1, num: 106 } },
-    world: { geometry: { collisionReady: true, walkable: () => true, fineWalkable: () => true } },
+    world: { geometry: { collisionReady: true, walkable: () => true, fineWalkable: () => true,
+                         rows: 57, cols: 52 } },   // room 535's real size, so off-map is off-map
   };
   const fallback = { to() {}, tick: () => ({ state: 'moving' }), cancel() {} };
   const cm = new ControllerMover(session, fallback);
@@ -145,6 +146,42 @@ console.log('\ncontroller mover: a relocation is adopted, not undone');
      String(cm._plannedFor));
   ok('a relocation to nowhere is refused rather than believed',
      cm.relocated(undefined, 13) === false);
+}
+
+console.log('\ncontroller mover: a crossing is spent the moment the room changes');
+{
+  // AN OFF-ROOM REQUEST NAMES A SQUARE OUTSIDE THE ROOM, and which edge that is depends on
+  // which room you are standing in. Re-sending one after arriving asks the NEW room to
+  // throw you out of whichever edge those coordinates fall past -- so one crossing becomes
+  // two, and the second one is not a route anybody planned.
+  //
+  // JayB left Ilerian Woods by its south edge, landed in the Forest of Farol at (row 4,
+  // col 6), and was in Faronath moments later at (row 4, col 34) -- exactly where Farol's
+  // own south exit lands you, forty-five rows from where he arrived. The exit tables were
+  // suspected first; they were right, and c5.kod/c6.kod both check out.
+  const { cm, session } = rig({ believed: { col: 24, row: 57 }, server: { col: 24, row: 57 } });
+  const sent = [];
+  session.client.moveTo = (x, y, speed) => sent.push({ x, y, speed });
+  session.client.room = { id: 1365, num: 535 };
+  cm.to(24, 58);                       // off the south edge: a crossing, not a destination
+  ok('an off-map destination is recorded as a crossing', !!cm.crossing,
+     JSON.stringify(cm.crossing));
+  ok('and it remembers which room it is leaving', cm.crossing?.room === 1365,
+     String(cm.crossing?.room));
+
+  cm.tick({ col: 24, row: 57 });
+  const afterFirst = sent.length;
+  ok('while still in the room, the request goes out', afterFirst >= 1, `sent=${afterFirst}`);
+
+  // The server performs the transition: we are now in a DIFFERENT room.
+  session.client.room = { id: 1366, num: 536 };
+  session.client.self = { col: 6, row: 4 };
+  cm._offRoomAt = 0;                   // the rate limit must not be what saves us
+  cm.tick({ col: 6, row: 4 });
+  ok('once the room has changed the crossing is dropped', cm.crossing === null,
+     JSON.stringify(cm.crossing));
+  ok('and no further off-room request is sent into the new room',
+     sent.length === afterFirst, `sent=${sent.length} was=${afterFirst}`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
