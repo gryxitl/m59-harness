@@ -156,6 +156,7 @@ const UNLIT_PORTAL_MS = Number(process.env.M59_UNLIT_PORTAL_MS || 12000);
 const SELL_ROOM = Number(process.env.M59_SELL_ROOM || 374);   // Quintor, Jasper Blacksmith
 const BANK_ROOM = Number(process.env.M59_BANK_ROOM || 376);   // Yevitan, Jasper Banker
 import { creatureKey, preyNames } from './m59-combat.mjs';
+import { recordEvent } from './m59-ledger.mjs';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -809,6 +810,85 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     const ws = evaluate({ client, session, policy, agent: session.name });
     // Expose the raw vigor value for the vigor_low goal.
     ws._vigor = client?.vitals?.()?.vigor?.value ?? null;
+
+    // ── DEATH WATCH ──────────────────────────────────────────────────────────────────
+    //
+    // The only death record a tick-keeper character produced was the ledger's fallback,
+    // written by a SAMPLER that noticed the room had become the Underworld between two polls:
+    // `{was_in, level, note:"inferred from sampling"}`. When, roughly where, and max health —
+    // nothing about what killed us. Every one of today's three deaths looks like that, and a
+    // death-and-revive between samples is missed entirely, so even the count is a floor.
+    //
+    // The postmortem that carries killer, HP trail and company lives in m59-autopilot.mjs and
+    // this keeper never runs it. So keep a rolling snapshot of the last moment we were ALIVE —
+    // by the time the Underworld is observable the room that killed us is gone — and write it
+    // down on the transition.
+    try {
+      const inUw = ws.in_underworld === true;
+      if (!inUw) {
+        const v = client?.vitals?.()?.health;
+        const hp = v?.value ?? null, maxHp = v?.max ?? null;
+        const trail = session._hpTrail ?? (session._hpTrail = []);
+        if (hp != null && (trail.length === 0 || trail[trail.length - 1] !== hp)) {
+          trail.push(hp);
+          if (trail.length > 12) trail.shift();
+        }
+        // WHO WAS ON US. Creatures only — the prey list already excludes shopkeepers — and
+        // counted twice over: everything close enough to matter, and the subset the server
+        // has flagged ENEMY, which is the difference between "a crowded room" and "a gang".
+        const objs = client?.room?.objects;
+        const me = frame?.position ?? client?.self;
+        let near = 0, aggro = 0; const names = [];
+        if (objs instanceof Map && me?.col != null) {
+          for (const o of objs.values()) {
+            if (o.is_self || o.col == null) continue;
+            const nm = String(client?.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
+            if (!preyNames().has(creatureKey(nm))) continue;
+            if (Math.hypot(o.col - me.col, o.row - me.row) > 5) continue;
+            near++;
+            if (o.flags & 0x02000000) { aggro++; names.push(nm); }   // OF.ENEMY
+          }
+        }
+        session._preDeath = {
+          at: now(), hp, max: maxHp, hp_trail: trail.slice(-8),
+          room: frame?.room?.name ?? null, room_num: session.world?.room?.num ?? null,
+          // The world state carries only the id; resolve it while the room still exists.
+          target: (() => {
+            const id = ws._targetId;
+            if (id == null || !(objs instanceof Map)) return null;
+            const o = objs.get(id);
+            return o ? String(client?.rsc?.get?.(o.nameRsc) ?? o.name ?? id) : null;
+          })(),
+          engaged_by: aggro, creatures_within_5: near,
+          attackers: [...new Set(names)].slice(0, 6),
+          in_safe_spot: !!session._holdingSafeSpot,
+          vigor: ws._vigor ?? null,
+        };
+        session._deathWritten = false;
+      } else if (!session._deathWritten) {
+        session._deathWritten = true;
+        session._hpTrail = [];
+        const d = session._preDeath ?? {};
+        const who = client?.me?.name ?? session.credentials?.character ?? session.name;
+        if (who) {
+          recordEvent(who, 'died', {
+            agent: session.name, observed: true, keeper: 'tick',
+            died_in: d.room ?? null, room_num: d.room_num ?? null,
+            level: d.max ?? null, hp_trail: d.hp_trail ?? null,
+            last_target: d.target ?? null,
+            engaged_by: d.engaged_by ?? null,
+            creatures_within_5: d.creatures_within_5 ?? null,
+            attackers: d.attackers?.length ? d.attackers : undefined,
+            in_safe_spot: d.in_safe_spot ?? null,
+            vigor: d.vigor ?? null,
+            note: 'observed by the tick keeper at the moment of death',
+          });
+          console.error(`[death] ${who} died in ${d.room ?? '?'} — engaged by ${d.engaged_by ?? '?'}`
+            + ` (${d.creatures_within_5 ?? '?'} within 5), hp trail ${JSON.stringify(d.hp_trail ?? [])}`
+            + `, last target ${d.target ?? '?'}`);
+        }
+      }
+    } catch (e) { /* a record must never break the play it records */ }
 
     // CLEAR THE BUY-ROUTE FLAG ONCE ARMED. The `armed` goal set _buyingRoute while
     // routing to the smith to buy a weapon. Once the character is armed (the buy
