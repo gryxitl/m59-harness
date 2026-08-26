@@ -62,12 +62,19 @@ export const RUN_CLIENT_PER_MS = (CLIENT_PER_SQUARE / 2) / 100;
 export const MOVE_INTERVAL_MS = 1000;
 export const MOVE_THRESHOLD_CLIENT = CLIENT_PER_SQUARE / 4;
 
-// HOW FAR THE BODY COULD POSSIBLY HAVE WALKED, plus a square of slack. A server position
-// further away than this is not our own echo arriving late — it is the server having MOVED us
-// (a blink, a portal, a death), which is the one case clientd3d/move.c accepts a position for
-// the player outside a room change. Anything inside it is the echo of our own last report and
-// is ignored, exactly as the real client ignores it.
-export const TELEPORT_SLACK_CLIENT = CLIENT_PER_SQUARE;
+// WHAT COUNTS AS THE SERVER HAVING MOVED US, and why it is a big number.
+//
+// BP_MOVE is our own last report echoed back, and it lags: the round trip plus however long
+// the server took to walk the body there, measured at a ~1.2s median on this fleet. At walk
+// speed that echo is legitimately 3 squares behind and at run speed 6, so any threshold near
+// the per-tick walk budget fires on ordinary latency — the first attempt used one and snapped
+// 483 times in 3,895 ticks, which is the correction loop this was meant to delete, wearing a
+// different name.
+//
+// A real relocation is not subtle. A blink crosses a room, a portal changes the world, a death
+// moves you to the Underworld. Ten squares separates the two cleanly and cheaply, without
+// reintroducing a ring of past beliefs to diff against.
+export const TELEPORT_SQUARES = 10;
 
 export class CharacterController {
   constructor(session, { run = false } = {}) {

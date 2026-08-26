@@ -27,8 +27,7 @@
 // FALLING BACK IS NOT OPTIONAL. Rooms without collision geometry exist, and a character whose
 // mover has no opinion must not stand still. Anything this cannot answer goes to the mover the
 // router built, which is kept and delegated to rather than discarded.
-import { CharacterController, RUN_CLIENT_PER_MS, TELEPORT_SLACK_CLIENT,
-         CLIENT_PER_SQUARE } from './m59-controller.mjs';
+import { CharacterController, TELEPORT_SQUARES, CLIENT_PER_SQUARE } from './m59-controller.mjs';
 
 // How many consecutive ticks the controller may report no progress before we tell the keeper
 // `stuck` and let it blink. The legacy mover waited 30s; three seconds is long enough to be a
@@ -226,9 +225,7 @@ export class ControllerMover {
       const believed = this.ctl.square();
       const gap = Math.hypot((me.col - believed.col) * CLIENT_PER_SQUARE,
                              (me.row - believed.row) * CLIENT_PER_SQUARE);
-      const couldHaveWalked = RUN_CLIENT_PER_MS * Math.max(0, now - (this._lastSeenAt ?? now))
-                            + TELEPORT_SLACK_CLIENT;
-      if (gap > couldHaveWalked) {
+      if (gap > TELEPORT_SQUARES * CLIENT_PER_SQUARE) {
         this.ctl.serverMovedPlayer(me.col, me.row);
         this._plannedFor = null;
         this.stats.teleports = (this.stats.teleports || 0) + 1;
