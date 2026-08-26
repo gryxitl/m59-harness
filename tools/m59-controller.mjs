@@ -232,6 +232,8 @@ export class CharacterController {
       Math.round(NUM_STEPS_PER_SECOND * dt / 1000)));
     const beforeX = this.x, beforeY = this.y;
     const startSq = this.square();
+    // Are we standing somewhere the room calls solid? Then we are escaping, not travelling.
+    const escaping = geo.walkable ? geo.walkable(startSq.row, startSq.col) === false : false;
     let cx = this.x, cy = this.y, slid = false, blocked = false;
     for (let i = 0; i < subs; i++) {
       const tx = this.x + (aimX - this.x) * ((i + 1) / subs);
@@ -258,7 +260,17 @@ export class CharacterController {
       // plans were never the problem; the body was in rock.
       //
       // The origin square is exempt: a body already standing on one has to be able to leave.
-      if (geo.walkable) {
+      // ...UNLESS WE ARE ALREADY IN IT, IN WHICH CASE THIS IS THE WAY OUT.
+      //
+      // Exempting only the ORIGIN square was not enough. A body embedded in a rock REGION has
+      // rock on every side, so every sub-step was refused and it could never walk out: JayB
+      // sat on an unwalkable (30,47) with ctlBlocked=19789 against 17,938 ticks and slid=0 —
+      // more refusals than ticks, and not one slide. The guard that stops a character getting
+      // into rock became the thing that kept it there.
+      //
+      // So the check applies only while we are on legitimate ground. Standing in rock, any
+      // move is an improvement and the mover's own collision still decides what is possible.
+      if (geo.walkable && !escaping) {
         const sq = { col: Math.floor(nx / CLIENT_PER_SQUARE) + 1,
                      row: Math.floor(ny / CLIENT_PER_SQUARE) + 1 };
         if ((sq.col !== startSq.col || sq.row !== startSq.row) && !geo.walkable(sq.row, sq.col)) {

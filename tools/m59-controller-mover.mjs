@@ -262,6 +262,29 @@ export class ControllerMover {
     }
     this._lastSeenAt = now;
 
+    // A BODY IN ROCK IS AN ESCAPE, NOT A JOURNEY — CHECK BEFORE PLANNING.
+    //
+    // The rock hand-off below only fires when the PLAN fails, and the plan usually succeeds:
+    // navPath measures from the square's centre, which can be clear while the body itself is
+    // embedded. So the controller accepted a 194-waypoint route and then could not take the
+    // first step — JayB on an unwalkable (30,47) with ctlBlocked=19789 against 17,938 ticks,
+    // slid=0, sent=52. The fine tracer refuses too, so this is not a coarse-grid artifact and
+    // no amount of collide-and-slide gets him out.
+    //
+    // Escape fans and raw server-confirmed moves are the legacy mover's job. Hand it over the
+    // moment we notice, rather than after twelve ticks of grinding.
+    if (geo.walkable && geo.walkable(me.row, me.col) === false) {
+      this.stats.rockDelegations = (this.stats.rockDelegations || 0) + 1;
+      if (!this._warnedRock) {
+        this._warnedRock = true;
+        console.error(`[ctlmover] ${this._agent} is embedded at (${me.col},${me.row}) —`
+          + ` handing to the legacy mover to dig out`);
+      }
+      return this._delegate(posOverride, 'body is on an unwalkable square');
+    }
+    if (this._warnedRock && geo.walkable && geo.walkable(me.row, me.col) !== false)
+      this._warnedRock = false;      // back on real ground; the next embedding is news again
+
     // PLAN: once per destination, on the grid. Re-planning at tick rate is what held the
     // first live run to 1.14 squares/sec.
     const key = `${this.dest.col},${this.dest.row}`;
