@@ -207,6 +207,9 @@ export class ControllerMover {
       + ` at=(${this.ctl.square?.().col},${this.ctl.square?.().row})`
       + ` | ticks=${s.ticks} moving=${s.moving} arrived=${s.arrived} stuck=${s.stuck}`
       + ` noRoute=${s.noRoute} planFail=${s.planFail} blocked=${s.blockedTicks} delegated=${s.delegated}`
+      // The early returns, which the counters above cannot see and which are the difference
+      // between "not moving because it cannot" and "not moving because it is waiting".
+      + ` held=${s.held ?? 0} resync=${s.blockedResyncs ?? 0} rock=${s.rockDelegations ?? 0}`
       + ` | ctl sent=${c.sent ?? 0} slid=${c.slid ?? 0} ctlBlocked=${c.blocked ?? 0} reconciled=${c.reconciled ?? 0} drift=${Math.round(c.drift_max ?? 0)}`
       + ` roomResyncs=${s.roomResyncs ?? 0}`);
   }
@@ -227,6 +230,10 @@ export class ControllerMover {
   // answer belong to the decider's call, because `no-route` is how the keeper learns to
   // blacklist a quarry — swallowing it here would lose that signal.
   physicsTick() {
+    // A REST IS A TIMER THE SERVER DELETES ON ANY MOVEMENT, and the payoff is all at the
+    // end. Integrating and replicating through one is how a character rests for a minute
+    // and gains nothing. See the note in m59-decide.mjs where _restingQuiet is set.
+    if (this.session?._restingQuiet) return null;
     if (!this.active || !this.dest || !this.ctl.path) return null;
     const c = this.session?.client;
     if (!c || c.state !== 'game') return null;
@@ -267,6 +274,12 @@ export class ControllerMover {
 
   tick(posOverride) {
     this.stats.ticks++;
+    // Silent while resting, for the reason in physicsTick. Reported as a distinct state so
+    // a caller cannot read it as progress or as a stall.
+    if (this.session?._restingQuiet) {
+      this.stats.restQuiet = (this.stats.restQuiet || 0) + 1;
+      return { state: 'moving', to: this.dest, resting: true };
+    }
     // A crossing handed over in to() leaves us inactive with a destination still set: keep
     // feeding the legacy mover until the room changes or a new destination arrives.
     if (!this.active && this.dest) {

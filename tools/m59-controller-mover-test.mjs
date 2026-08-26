@@ -277,5 +277,46 @@ console.log('\ncontroller mover: "embedded" is judged by the model the mover enf
      `delegated=${embedded.delegated}`);
 }
 
+console.log('\ncontroller mover: resting is silence, because a move packet deletes the timer');
+{
+  // player.kod: StartResting creates a timer, StopResting DELETES it, and the payoff is all
+  // at the end -- the timer fires and vigor snaps to the rest threshold. GetRestTime at
+  // vigor 42 is ((200-42)^2)/6 + 1000 = 5160ms, so a rest interrupted at four seconds is
+  // worth exactly nothing. The controller replicates from the 10Hz loop whether or not
+  // anybody asked it to move, so it cancelled every rest before it could pay: JayB sat in
+  // the Deep Forest of Farol for sixty seconds with vigor pinned at 42.
+  const session = {
+    agent: 't-test', _restingQuiet: true,
+    client: { state: 'game', self: { col: 5, row: 5 }, room: { id: 1, num: 556 } },
+    world: { geometry: { collisionReady: true, rows: 55, cols: 63,
+                         walkable: () => true, fineWalkable: () => true,
+                         traceFineMoveClient: (a, b, x, y) => ({ available: true, x, y }) } },
+  };
+  let delegated = 0;
+  const fallback = { to() {}, tick: () => { delegated++; return { state: 'moving' }; }, cancel() {} };
+  const cm = new ControllerMover(session, fallback);
+  cm.ctl = stubCtl({ col: 5, row: 5 }, 'moving');
+  let stepped = 0;
+  const realStep = cm.ctl.step.bind(cm.ctl);
+  cm.ctl.step = (...a) => { stepped++; return realStep(...a); };
+  cm.to(30, 2);
+  cm._room = 1; cm._plannedFor = '30,2';
+
+  for (let i = 0; i < 20; i++) {
+    cm._lastTickAt = Date.now() - 100;
+    cm.physicsTick();
+    cm.tick({ col: 5, row: 5 });
+  }
+  ok('the physics does not integrate while resting', stepped === 0, `stepped=${stepped}`);
+  ok('and nothing is handed to the legacy mover either', delegated === 0, `delegated=${delegated}`);
+  ok('the silence is counted', (cm.stats.restQuiet ?? 0) > 0, String(cm.stats.restQuiet));
+
+  // And it is only silence WHILE resting -- the body must move again the moment it stands.
+  session._restingQuiet = false;
+  cm._lastTickAt = Date.now() - 100;
+  cm.physicsTick();
+  ok('standing up resumes the physics', stepped > 0, `stepped=${stepped}`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

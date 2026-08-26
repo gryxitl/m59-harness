@@ -1392,6 +1392,25 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     _resting = active?.goal === 'healthy' || active?.goal === 'vigor_low';
     _fighting = active?.goal === '_fight';
 
+    // RESTING IS A TIMER, AND A MOVE PACKET DELETES IT.
+    //
+    //   player.kod StartResting:  ptRest = CreateTimer(self,@RestTimer,GetRestTime())
+    //   player.kod GetRestTime:   iTime = ((200-piVigor)*(200-piVigor))/6 + 1000
+    //   player.kod StopResting:   DeleteTimer(ptRest); ptRest = $
+    //
+    // The payoff is all at the end -- the timer fires and vigor SNAPS to the rest threshold
+    // (80) -- so a rest interrupted at four seconds of a five-second wait is worth exactly
+    // nothing. `_resting` above has only ever suppressed stuck detection; nothing stopped
+    // the mover, and the controller replicates its position from the 10Hz loop whether or
+    // not anybody asked it to move. So every rest this fleet has ever taken outside an inn
+    // was cancelled by our own position reports before it could pay.
+    //
+    // Watched on JayB in the Deep Forest of Farol: sixty seconds of `vigor_low -> rest`
+    // with vigor pinned at 42, where one uninterrupted 5.2s rest would have set it to 80.
+    //
+    // So resting is now SILENCE. The mover reads this and sends nothing at all.
+    if (session) session._restingQuiet = _resting;
+
     // A FLEE IS A COMMITMENT, AND A HALF-FLEE IS WORSE THAN STANDING AND FIGHTING.
     //
     // The flee rungs read this instant: `under_attack` is a net loss over the last few
