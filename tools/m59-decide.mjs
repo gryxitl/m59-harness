@@ -150,6 +150,9 @@ import { trustedBuyer } from './m59-skills.mjs';
 // trustedBuyer(): Quintor the Jasper Blacksmith passes the allowlist, Yevitan the Jasper
 // Banker does NOT — he is on NEVER_SELL_TO, which is exactly the distinction that keeps a
 // pack from being handed to a banker for nothing.
+// How long to stand on an Underworld portal before deciding it is unlit and trying another.
+const UNLIT_PORTAL_MS = Number(process.env.M59_UNLIT_PORTAL_MS || 12000);
+
 const SELL_ROOM = Number(process.env.M59_SELL_ROOM || 374);   // Quintor, Jasper Blacksmith
 const BANK_ROOM = Number(process.env.M59_BANK_ROOM || 376);   // Yevitan, Jasper Banker
 import { creatureKey } from './m59-combat.mjs';
@@ -439,20 +442,44 @@ export const INTENTS = {
     // Find the nearest portal.
     const me = c.self;
     if (!me) return { sent: false, why: 'no position' };
-    let portal = null, bestDist = Infinity;
+    // ALL of them, nearest first — a dead one has to be replaceable.
+    const portals = [];
     if (objects instanceof Map) {
       for (const o of objects.values()) {
         const name = c.rsc?.get?.(o.nameRsc) ?? o.name ?? '';
-        if (/portal/i.test(name) && o.col != null) {
-          const d = Math.hypot(o.col - me.col, o.row - me.row);
-          if (d < bestDist) { bestDist = d; portal = o; }
-        }
+        if (/portal/i.test(name) && o.col != null) portals.push(o);
       }
     }
-    if (!portal) return { sent: false, why: 'no portal in room' };
-    // Walk toward the portal (one step per tick via the actuator).
+    portals.sort((a, b) => Math.hypot(a.col - me.col, a.row - me.row)
+                         - Math.hypot(b.col - me.col, b.row - me.row));
+    if (!portals.length) return { sent: false, why: 'no portal in room' };
+
+    // AN UNLIT PORTAL IS SILENT, SO STANDING ON ONE FOR EVER IS THE FAILURE MODE.
+    //
+    // One or two of the five Underworld portals are unlit at any moment and an unlit one gives
+    // no sign at all — you simply stand on it. This walked to the NEAREST portal and then kept
+    // walking to it, so a character that drew a dead one never left: JayB stood on (2,21) and
+    // Lee on (16,32), both exactly on their portal, for minutes, with the escape decision
+    // logged and the tick loop healthy.
+    //
+    // So: give a portal a fair trial, then try the next one. `_uwPortal` is the index we are
+    // committed to and `_uwSince` is when we committed; both reset the moment we are out.
+    const s = ctx.session;
+    const now = Date.now();
+    const onIt = (p) => Math.hypot(p.col - me.col, p.row - me.row) <= 1;
+    if (s._uwPortal == null || s._uwSince == null) { s._uwPortal = 0; s._uwSince = now; }
+    let portal = portals[s._uwPortal % portals.length];
+    // Only start the clock once we have actually reached it — a long walk is not a dead portal.
+    if (!onIt(portal)) s._uwSince = now;
+    else if (now - s._uwSince > UNLIT_PORTAL_MS) {
+      s._uwPortal = (s._uwPortal + 1) % portals.length;
+      s._uwSince = now;
+      portal = portals[s._uwPortal];
+      console.error(`[underworld] ${s.name}: portal looks unlit — trying the next one at (${portal.col},${portal.row})`);
+    }
     act.step(portal.col, portal.row);
-    return { sent: true, what: `escape: walk to portal at (${portal.col},${portal.row})` };
+    return { sent: true,
+             what: `escape: portal ${s._uwPortal + 1}/${portals.length} at (${portal.col},${portal.row})` };
   },
 };
 
