@@ -466,6 +466,27 @@ function castIntent(name, f, act, ctx) {
   return { sent: true, what: name };
 }
 
+// THE NEAREST EXIT, ACTUALLY MEASURED.
+//
+// Both flee branches took `exits[0]` under a comment that called it "nearest exit". Nothing
+// sorted them, so a character running for its life aimed at whichever exit the world happened
+// to list first — which can be across the room, and can be PAST the thing hitting it. At 27
+// max health and fleeBelow 0.4 the decision is made around 11 HP, where the walk you choose is
+// the whole of your survival.
+//
+// Sorted by the staging square when the exit has one, and an exit we cannot locate sorts last
+// rather than being dropped: an unmeasurable exit is still a way out.
+function nearestExit(exits, me) {
+  if (!Array.isArray(exits) || !exits.length) return null;
+  if (!me || me.col == null) return exits[0];
+  const d = (e) => {
+    const p = e?.stand_on ?? e?.standOn ?? null;
+    if (!p || !Number.isFinite(p.col) || !Number.isFinite(p.row)) return Infinity;
+    return Math.hypot(p.col - me.col, p.row - me.row);
+  };
+  return exits.slice().sort((a, b) => d(a) - d(b))[0];
+}
+
 export function intend(actionName, frame, act, ctx) {
   if (!actionName) return { sent: false, why: 'no action' };
   if (actionName.startsWith('cast ')) return castIntent(actionName, frame, act, ctx);
@@ -1283,11 +1304,11 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
         try {
           const exits = session.world?.exits?.() ?? [];
           if (exits.length > 0) {
-            const exit = exits[0]; // nearest exit
+            const exit = nearestExit(exits, frame?.position ?? client?.self);
             if (router.dest !== exit.to) {
               router.to(exit.to);
               onDecision?.({ ticks, goal: 'flee_danger', action: 'travel',
-                what: `flee to room ${exit.to} via ${exit.direction}`, sent: true });
+                what: `flee to room ${exit.to} via ${exit.direction ?? exit.kind ?? 'the nearest way out'}`, sent: true });
               return;
             }
           }
@@ -1311,11 +1332,11 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
         try {
           const exits = session.world?.exits?.() ?? [];
           if (exits.length > 0) {
-            const exit = exits[0];
-            if (router.dest !== exit.to) {
+            const exit = nearestExit(exits, frame?.position ?? client?.self);
+            if (exit && router.dest !== exit.to) {
               router.to(exit.to);
               onDecision?.({ ticks, goal: 'flee_hurt', action: 'travel',
-                what: `flee (hurt) to room ${exit.to} via ${exit.direction}`, sent: true });
+                what: `flee (hurt) to room ${exit.to} via ${exit.direction ?? exit.kind ?? 'the nearest way out'}`, sent: true });
               return;
             }
           }
@@ -1546,6 +1567,15 @@ export const DEFAULT_GOALS = [
   // only flee when the out-of-band threat is in reach (actually a danger). An out-of-band
   // target that is NOT in reach is handled by the hunt goal (route to a better target or
   // approach it), not by fleeing.
+  // CRITICAL: RUN, WHETHER OR NOT IT IS TOUCHING YOU RIGHT NOW.
+  //
+  // Both flee goals below require in_reach, and `_fight` already refuses at critical. So a
+  // character under criticalHp with the mob one step outside melee satisfied NOTHING: it would
+  // not fight, would not flee, and fell through to hunt — standing in the open at 30% health
+  // next to the thing that put it there, waiting to be hit again so that fleeing could become
+  // legal. `in_reach` is a fact about this instant and a chasing mob is in and out of it every
+  // second; below the critical line the answer is the same either way.
+  { goal: 'flee_danger', when: ws => ws.critical === true && ws.has_target === true },
   { goal: 'flee_danger', when: ws => ws.has_target === true && ws.target_in_band === false && ws.in_reach === true },
   // FLEE when hurt AND a target is actively in reach
   // (attacking you). If the target is in the room but
