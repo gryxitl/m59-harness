@@ -94,6 +94,20 @@ export const TELEPORT_SQUARES = 10;
 // and it must persist across two checks a second apart before we act on it.
 export const DIVERGENCE_SQUARES = 6;
 
+// HOW FAR THE BELIEF MAY RUN AHEAD OF THE SERVER BEFORE WE STOP INTEGRATING.
+//
+// The divergence floor above snaps the belief back when it has run away, and that is what the
+// operator saw as rubberbanding: the body walks to a boundary where its moves stop taking
+// effect, the belief keeps integrating, hits six squares, and is yanked back eight squares to
+// the server's word — over and over, never crossing.
+//
+// The cure is not a faster snap, it is not running ahead. The echo legitimately trails 3 to 6
+// squares at walking speed, so a lead inside that is prediction working as intended; beyond it
+// the server is plainly not following and integrating further only builds a bigger correction.
+// So we hold position and let the confirmations catch up, which reads as a brief stall rather
+// than a rubberband and leaves the belief close enough that no snap is ever needed.
+export const MAX_LEAD_SQUARES = 4;
+
 export class CharacterController {
   constructor(session, { run = false } = {}) {
     this.session = session;

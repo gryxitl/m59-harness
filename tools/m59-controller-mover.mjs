@@ -28,7 +28,7 @@
 // mover has no opinion must not stand still. Anything this cannot answer goes to the mover the
 // router built, which is kept and delegated to rather than discarded.
 import { CharacterController, TELEPORT_SQUARES, DIVERGENCE_SQUARES,
-         CLIENT_PER_SQUARE } from './m59-controller.mjs';
+         MAX_LEAD_SQUARES, CLIENT_PER_SQUARE } from './m59-controller.mjs';
 
 // How many consecutive ticks the controller may report no progress before we tell the keeper
 // `stuck` and let it blink. The legacy mover waited 30s; three seconds is long enough to be a
@@ -354,6 +354,19 @@ export class ControllerMover {
     }
 
     if (!dt) return { state: 'moving', to: this.dest };
+
+    // DO NOT RUN AHEAD OF THE SERVER. If the belief is already further ahead than the echo
+    // can explain, integrating more only builds a correction we will have to pay back as a
+    // rubberband. Hold, keep replicating, and let the confirmations arrive.
+    {
+      const b = this.ctl.square();
+      const lead = Math.hypot(b.col - me.col, b.row - me.row);
+      if (lead > MAX_LEAD_SQUARES) {
+        this.stats.held = (this.stats.held || 0) + 1;
+        try { this.ctl.replicate(c, true); } catch { /* best effort */ }
+        return { state: 'moving', to: this.dest, holding: true };
+      }
+    }
 
     const before = this.ctl.square();
     const r = this.ctl.step(dt, { geo, client: c });
