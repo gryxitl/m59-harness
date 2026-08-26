@@ -58,6 +58,9 @@ const WEAPON_RE = /\b(mace|sword|axe|hammer|dagger|club|staff|halberd|spear|flai
 
 // How close an aggroed creature has to be to count as being ON us. A little beyond melee,
 // because something one step outside reach this instant is inside it on the next.
+// blink.kod:41 viSpellExertion, and player.kod's HasVigor wants STRICTLY more than it.
+const BLINK_EXERTION = 20;
+
 const OUTNUMBERED_RANGE = 4;
 
 export const MELEE_REACH = 3;
@@ -277,6 +280,37 @@ export const SYMBOLS = {
       const room = client?.room?.id ?? client?.room?.num ?? null;
       if (session._fleeRoom != null && room != null && room !== session._fleeRoom) return false;
       return true;
+    },
+  },
+
+  // CAN WE ACTUALLY PAY FOR A BLINK? MANA IS ONLY HALF THE PRICE.
+  //
+  //   spell.kod:604   if (NOT Send(who,@HasVigor,#amount=viSpellExertion)) AND vbCheck_Exertion
+  //                   { MsgSendUser(spell_too_tired); return FALSE; }
+  //   player.kod:1354 HasVigor(amount): return piVigor > amount        (strictly greater)
+  //   blink.kod:41    viSpellExertion = 20
+  //
+  // And the refusal is a SENTENCE — "You are too tired to cast %s!" — spoken to the user,
+  // not an error on the wire. Nothing fails, mana does not move, and from outside it looks
+  // exactly like a cast that was sent and ignored.
+  //
+  // This exists because `unwedge` sits near the top of the goal ladder and outranks rest.
+  // An entombed character with mana but no vigor therefore asked for a blink it could never
+  // pay for, for ever, and could never rest to earn the vigor — Lee sat at (28,35) in the
+  // Deep Forest of Farol at 19/19 mana and vigor 4, genuinely entombed, doing exactly that.
+  // The same trap was found once before with mana at zero and fixed by adding `has_mana`;
+  // this is the other half of the same price.
+  //
+  // Unknown vigor answers TRUE: an unreadable vital must not be what keeps a body buried,
+  // and the cast throttle bounds what a wrong true costs to one refused packet every 12s.
+  can_pay_blink: {
+    describe: 'vigor is above blink\'s exertion cost, so the server will not refuse the cast',
+    whenUnknown: true,
+    why_unknown: 'an unreadable vigor must not be what keeps an entombed character buried',
+    produce: ({ client }) => {
+      const v = client?.vitals?.()?.vigor?.value;
+      if (v == null) return null;
+      return v > BLINK_EXERTION;
     },
   },
 

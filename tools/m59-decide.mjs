@@ -1954,7 +1954,14 @@ export const DEFAULT_GOALS = [
   // from, and this stranded Lee casting a spell he could not afford, 0 of 19 mana, once per
   // tick, for ever. A goal that outranks survival has to be achievable or it outranks the
   // thing that would make it achievable.
-  { goal: 'unwedge', when: ws => ws.entombed === true && ws.has_mana === true },
+  // AND IT HAS TO BE ABLE TO PAY THE WHOLE PRICE, NOT HALF OF IT. A goal that outranks
+  // survival must be ACHIEVABLE or it outranks it for ever — the note above says exactly
+  // that about mana, and vigor is the other half of a spell's cost (spell.kod:604). Lee sat
+  // entombed at 19/19 mana and vigor 4, asking for a blink the server refused with a
+  // sentence, unable to rest for the vigor because this rung outranks rest. See
+  // `can_pay_blink`.
+  { goal: 'unwedge', when: ws => ws.entombed === true && ws.has_mana === true
+                                 && ws.can_pay_blink !== false },
   // FLEE first: if an out-of-band mob is IN REACH (actually threatening us), run before
   // anything else. The old condition fired on ANY out-of-band target (has_target &&
   // !target_in_band), which made the character FLEE from a passive mummy just because it

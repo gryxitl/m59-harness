@@ -270,5 +270,34 @@ console.log('\na flee already under way survives the sample that would have canc
      mk({ _fleeUntil: soon, _fleeRoom: 999 }, 1).fleeing === false);
 }
 
+console.log('\nan entombed character must be able to pay the WHOLE price of the blink');
+{
+  // spell.kod:604 refuses a cast when HasVigor(viSpellExertion) is false, and player.kod's
+  // HasVigor wants STRICTLY more than the amount. blink.kod:41 puts that at 20. The refusal
+  // is a sentence — "You are too tired to cast %s!" — so nothing fails, mana does not move,
+  // and it looks exactly like a cast that was sent and ignored.
+  //
+  // Lee sat entombed at (28,35) in the Deep Forest of Farol with 19/19 mana and vigor 4,
+  // asking for that blink for ever. `unwedge` outranks rest, so he could never earn the
+  // vigor to pay for it: a goal above survival that is not achievable outranks survival
+  // for ever. Exactly the deadlock the has_mana gate was added for, one price short.
+  const mk = vigor => evaluate({ client: fakeClient({ hp: 20, hpMax: 20, vigor }), policy: {} });
+  ok('vigor 4 cannot pay for a blink', mk(4).can_pay_blink === false);
+  ok('vigor 20 cannot either — HasVigor is strictly greater', mk(20).can_pay_blink === false);
+  ok('vigor 21 can', mk(21).can_pay_blink === true);
+  ok('and the rest cap of 80 certainly can', mk(80).can_pay_blink === true);
+
+  // The goal must fall through when the price cannot be paid, or the character never rests.
+  const { DEFAULT_GOALS: G } = await import('./m59-decide.mjs');
+  const unwedge = G.find(g => g.goal === 'unwedge');
+  ok('unwedge fires when entombed and able to pay',
+     unwedge.when({ entombed: true, has_mana: true, can_pay_blink: true }) === true);
+  ok('and stands down when too tired, so rest can win',
+     unwedge.when({ entombed: true, has_mana: true, can_pay_blink: false }) === false);
+  // An unreadable vital must not be what keeps a body buried.
+  ok('unknown ability to pay still tries', 
+     unwedge.when({ entombed: true, has_mana: true, can_pay_blink: true }) === true);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
