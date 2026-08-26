@@ -245,5 +245,56 @@ console.log('\nposition recovery fires even when the self id is lost');
   loop.stop();
 }
 
+// ---------------------------------------------------------------------------------------
+// THE PACER'S QUEUE IS BOUNDED, AND A STATE PACKET DOES NOT ACCUMULATE.
+console.log('\npacer: a state request does not grow the queue');
+{
+  const { Pacer } = await import('./m59-game.mjs');
+  const p = new Pacer(1);          // 1 packet/sec, so nothing drains during the test
+  let ran = 0;
+  // Ten ticks' worth of `rest`, exactly as the decider used to submit it.
+  for (let i = 0; i < 200; i++) p.submit('rest', () => { ran++; return true; });
+  ok('a repeated state packet occupies one queue slot, not two hundred',
+     p.depth <= 2, `depth=${p.depth}`);
+  ok('and the coalescing is counted rather than silent',
+     (p.coalesced ?? 0) >= 198, `coalesced=${p.coalesced}`);
+}
+
+console.log('\npacer: a flood of distinct packets is shed rather than queued for ever');
+{
+  const { Pacer } = await import('./m59-game.mjs');
+  const p = new Pacer(1);
+  // `move` does not coalesce — each one is a different destination — so this is the case
+  // the depth cap exists for. A packet ten thousand deep would be sent hours late.
+  const promises = [];
+  for (let i = 0; i < 2000; i++) promises.push(p.submit('move', () => true));
+  ok('the queue is capped rather than unbounded', p.depth <= 400, `depth=${p.depth}`);
+  ok('and shedding is counted', (p.shed ?? 0) > 0, `shed=${p.shed}`);
+  // A DROPPED PACKET MUST NOT HANG ITS CALLER. This is the property that turns a flood
+  // into a lost move instead of a wedged keeper.
+  const settled = await Promise.race([
+    Promise.all(promises.slice(0, 50)).then(() => 'settled'),
+    sleep(2000).then(() => 'hung'),
+  ]);
+  ok('a shed packet resolves its caller rather than hanging it', settled === 'settled', settled);
+}
+
+console.log('\npacer: urgent packets are never shed');
+{
+  const { Pacer } = await import('./m59-game.mjs');
+  const p = new Pacer(1);
+  let sentAttacks = 0;
+  for (let i = 0; i < 40; i++) p.submit('attack', () => { sentAttacks++; return true; });
+  for (let i = 0; i < 2000; i++) p.submit('move', () => true);
+  const queuedAttacks = p.q.filter(j => j.kind === 'attack').length;
+  // `pump` dispatches the head of the queue straight away and then waits on the rate
+  // timer, so exactly one attack is legitimately in flight — out of the queue and not yet
+  // executed. What must never happen is an attack being SHED: two thousand moves arriving
+  // behind them must cost movement, never a swing. If urgency were not honoured here the
+  // loss would be wholesale, not off-by-one.
+  ok('a flood of movement sheds movement, never a swing',
+     queuedAttacks >= 39, `queued=${queuedAttacks} sent=${sentAttacks} shed=${p.shed}`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

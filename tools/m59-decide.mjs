@@ -207,11 +207,29 @@ import { CombatController } from './m59-combat.mjs';
 // An action with no entry is REFUSED BY NAME, never guessed at. A silent fallthrough
 // here would be a plan the tick believes it executed and did not, which is the failure
 // this whole design is arranged against.
+// How long a `rest` stands for before it is worth re-sending. Long enough that a resting
+// character sends one packet rather than six hundred a minute; short enough that a
+// character knocked out of its rest sits back down promptly.
+const REST_REPEAT_MS = Number(process.env.M59_REST_REPEAT_MS || 3000);
+
 export const INTENTS = {
   rest:  (f, act, ctx) => {
     // Resting recovers HP and vigor. At an inn it's fast;
     // outside an inn it's slower but still works. The GOAP
     // driver rests outside inns all the time. Always allow.
+    //
+    // ONCE IS ENOUGH, AND TEN TIMES A SECOND IS A FLOOD. Resting is a state the server
+    // holds: the second request does not rest harder. This ran every tick at 10Hz against
+    // a socket paced to 1/s, and the queue grew by nine jobs a second for as long as the
+    // character rested — 11,454 deep on JayB in Brownestone Inn, with every walk and
+    // stand submitted afterwards stuck behind it. The pacer now coalesces `rest` as a
+    // backstop; not submitting it is the actual fix, because a decision the tick did not
+    // need to make is cheaper than one the pacer has to throw away.
+    const s = ctx?.session;
+    const now = Date.now();
+    if (s && now - (s._lastRestAt ?? 0) < REST_REPEAT_MS)
+      return { sent: true, what: 'rest (already resting)' };
+    if (s) s._lastRestAt = now;
     return { sent: !!act.rest(),  what: 'rest' };
   },
   stand: (f, act) => ({ sent: !!act.stand(), what: 'stand' }),

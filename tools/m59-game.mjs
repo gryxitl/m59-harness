@@ -479,6 +479,13 @@ async function readAbilitiesOnce(s, { why = 'read', kinds = 'both' } = {}) {
 
 // ---------------------------------------------------------------- Pacer
 
+// Kinds where a queued request is fully superseded by the next one of the same kind.
+// Both are STATES the server holds, not events it counts. See Pacer.submit.
+const COALESCE_KINDS = new Set(['rest', 'stand']);
+// The backstop depth. Far above any legitimate burst; low enough that the tail of the
+// queue is still packets from this minute rather than this morning.
+const MAX_QUEUE_DEPTH = Number(process.env.M59_PACER_MAX_QUEUE || 300);
+
 class Pacer {
   constructor(rate = PACKETS_PER_SECOND) {
     this.minGapMs = 1000 / rate;
@@ -518,6 +525,28 @@ class Pacer {
     this.prodTimes.push(Date.now());
     if (!this.prodByKind.has(kind)) this.prodByKind.set(kind, []);
     this.prodByKind.get(kind).push(Date.now());
+
+    // A SECOND REQUEST FOR A STATE SAYS NOTHING THE FIRST DID NOT.
+    //
+    // Resting and standing are STATES, not events: sending `rest` twice does not rest
+    // twice. The tick decider asks once per tick at 10Hz and the pacer sends 1/s, so an
+    // unbounded FIFO grows by nine jobs a second for as long as a character is resting.
+    // Measured on JayB in Brownestone Inn: queue_depth 11,454, prod_by_kind.rest 10/s
+    // against sent 1/s. Everything submitted after that — walk, stand, rawmove — sat
+    // behind eleven thousand rest packets and never went out at all, which from outside
+    // looks exactly like a character that cannot move.
+    //
+    // Coalescing keeps the newest closure and reuses the queued slot, so the caller still
+    // gets a promise that resolves when the packet actually leaves.
+    if (COALESCE_KINDS.has(kind)) {
+      const pending = this.q.find(j => j.kind === kind);
+      if (pending) {
+        this.coalesced = (this.coalesced ?? 0) + 1;
+        pending.fn = fn;
+        return pending.promise;
+      }
+    }
+
     const job = { kind, fn, minGapForKind, resolve: null, reject: null, queuedAt: Date.now() };
     // PRIORITY: attack packets are time-critical (server cooldown = 1s). They jump
     // the queue ahead of move/turn/read packets so swings don't wait behind a backlog
@@ -532,11 +561,39 @@ class Pacer {
     } else {
       this.q.push(job);
     }
-    return new Promise((resolve, reject) => {
+    const promise = new Promise((resolve, reject) => {
       job.resolve = resolve;
       job.reject = reject;
-      this.pump();
     });
+    job.promise = promise;
+    this._shed();
+    this.pump();
+    return promise;
+  }
+
+  // A PACKET TEN THOUSAND DEEP WILL BE SENT THREE HOURS LATE, WHICH IS WORSE THAN NOT
+  // SENDING IT. Coalescing handles the kinds that repeat by nature; this is the backstop
+  // for the ones that do not, so no future flood can wedge the socket the way rest did.
+  // Urgent kinds are never shed — an attack or a cast is the thing we are queueing FOR.
+  // Shed jobs resolve rather than reject, because a caller awaiting a dropped packet
+  // should carry on, not take an exception for a decision the pacer made.
+  _shed() {
+    if (this.q.length <= MAX_QUEUE_DEPTH) return;
+    let dropped = 0;
+    while (this.q.length > MAX_QUEUE_DEPTH) {
+      const i = this.q.findIndex(j => j.kind !== 'attack' && j.kind !== 'cast');
+      if (i < 0) break;
+      const [j] = this.q.splice(i, 1);
+      try { j.resolve(null); } catch { /* the caller is gone; the drop still counts */ }
+      dropped++;
+    }
+    this.shed = (this.shed ?? 0) + dropped;
+    const now = Date.now();
+    if (dropped && now - (this._shedWarnedAt ?? 0) > 10000) {
+      this._shedWarnedAt = now;
+      console.error(`[pacer] queue over ${MAX_QUEUE_DEPTH}; shed ${dropped} (${this.shed} total).`
+        + ` Something is submitting faster than the socket can send.`);
+    }
   }
 
   // What the server sees: jobs that actually leave the socket, per second.

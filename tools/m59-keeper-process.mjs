@@ -165,16 +165,38 @@ async function join() {
       // the exit to the Mausoleum sat at (44,8) in the same region with a 58-waypoint grid
       // path to it. The controller walks that path in 6.4s with zero blocked ticks.
       session._mover = router.mover;
-      if (process.env.M59_TICK_CONTROLLER === '1') {
+      // WHICH MOVER IS DRIVING THIS CHARACTER IS ALWAYS ANSWERABLE FROM THE LOG.
+      //
+      // This was `env.M59_TICK_CONTROLLER === '1'`: off unless asked for, and SILENT when
+      // off — the banner simply did not print, which reads exactly like a log you have not
+      // scrolled far enough back in. An environment variable also cannot survive a restart,
+      // and that is precisely how it was lost: two restarts to pick up an unrelated change
+      // dropped JayB onto the legacy mover with nothing anywhere saying so. Twenty minutes
+      // of oscillation were diagnosed against the wrong mover, and he died in the Deep
+      // Forest of Farol before the missing banner was noticed.
+      //
+      // So: the controller is the default, opting OUT is explicit, and a line is printed
+      // either way. A silent default is the one thing this must never be again — the same
+      // failure as `purpose` missing from a schema, which switched every keeper's audit off
+      // for a year without a word.
+      session._moverKind = 'legacy';
+      const controllerOff = process.env.M59_TICK_CONTROLLER === '0';
+      if (controllerOff) {
+        console.error(`[keeper] ${agent} movement on the LEGACY MOVER`
+          + ` — M59_TICK_CONTROLLER=0 asked for it explicitly`);
+      } else {
         try {
           const { ControllerMover } = await import('./m59-controller-mover.mjs');
           const cm = new ControllerMover(session, router.mover);
           router.mover = cm;
           session._mover = cm;
+          session._moverKind = 'controller';
           console.error(`[keeper] ${agent} movement on the CHARACTER CONTROLLER — combat AND travel`
             + ` (planner=${process.env.M59_NAV_TRACE || 'on'})`);
         } catch (e) {
-          console.error(`[keeper] ${agent} controller mover unavailable (${e.message}); staying on the legacy mover`);
+          // A FAILED IMPORT IS NOT A CONFIGURATION CHOICE, so it does not get to be quiet.
+          console.error(`[keeper] ${agent} movement on the LEGACY MOVER — the controller FAILED to load`
+            + ` (${e.message}). This is a fault, not a setting.`);
         }
       }
       session._router = router;
@@ -313,6 +335,10 @@ function state() {
     vigor: v.vigor ? { value: v.vigor.value, max: v.vigor.max } : null,
     mana: v.mana ? { value: v.mana.value, max: v.mana.max } : null,
     gold: me?.gold ?? null,
+    // WHICH MOVER IS DRIVING, WITHOUT READING THE LOG. "controller" or "legacy" — the
+    // question that took a death to ask, because the only record of it was one startup
+    // line that did not print in the case that mattered.
+    mover: session._moverKind ?? 'unknown',
     // WHAT YOU ARE WEARING IS NOT A FLAG ON WHAT YOU CARRY. This filtered the pack on
     // flags & 0x04 and reported [] for a character who was demonstrably wielding a mace —
     // /probe, asking client.equipment(), said {known:true, equipped:["mace"]} at the same
