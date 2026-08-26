@@ -216,6 +216,7 @@ export class ControllerMover {
       // The early returns, which the counters above cannot see and which are the difference
       // between "not moving because it cannot" and "not moving because it is waiting".
       + ` held=${s.held ?? 0} resync=${s.blockedResyncs ?? 0} rock=${s.rockDelegations ?? 0}`
+      + ` stale=${s.staleAims ?? 0} restQuiet=${s.restQuiet ?? 0}`
       + ` | ctl sent=${c.sent ?? 0} slid=${c.slid ?? 0} ctlBlocked=${c.blocked ?? 0} reconciled=${c.reconciled ?? 0} drift=${Math.round(c.drift_max ?? 0)}`
       + ` roomResyncs=${s.roomResyncs ?? 0}`);
   }

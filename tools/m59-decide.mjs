@@ -1982,8 +1982,22 @@ export const DEFAULT_GOALS = [
   // health 25 the only creature Raza generates is a level-25 mummy, and advancement needs
   // monster_level > base_max_health. JayB farmed it for days.
   { goal: 'leave_raza', when: ws => ws.in_raza === true && ws.raza_outgrown === true },
+  // FINISHING A FIGHT AND STARTING ONE ARE DIFFERENT DECISIONS AT LOW HEALTH.
+  //
+  // `flee_hurt` needs the target IN REACH, on the reasoning that fleeing from something
+  // already adjacent is worse than hitting it. Fair — but it leaves the other half open: a
+  // character below the flee line whose target is NOT yet in reach fled from nothing and
+  // fell through to here, which walked it TOWARD the mob. JayB engaged a giant rat at 7 of
+  // 20 health, hp trail [7,8,6,7,6,5,2,3], and died on it.
+  //
+  // The note beside the critical rung above records exactly this shape being fixed for
+  // criticalHp and it was never carried down to fleeBelow. So: below the flee line, keep
+  // swinging at what is already on you (in_reach), but never CLOSE on something new. With
+  // no fight to finish the ladder falls through to rest, which is what a character at 35%
+  // health should be doing.
   { goal: '_fight',   when: ws => ws.has_target === true && ws.target_in_band === true
                                  && ws.critical !== true
+                                 && (ws.below_flee !== true || ws.in_reach === true)
                                  && (ws.hurt === true || ws.vigor_floor !== false)
                                  // Don't fight if the target is on a
                                  // different elevation (unreachable).

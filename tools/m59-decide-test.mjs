@@ -178,5 +178,24 @@ console.log('\na flee commits to ONE way out, or it reaches none of them');
      `destinations chosen: ${JSON.stringify(dests)}`);
 }
 
+console.log('\nbelow the flee line: finish a fight, never start one');
+{
+  const { DEFAULT_GOALS: G } = await import('./m59-decide.mjs');
+  const fight = G.find(g => g.goal === '_fight');
+  const base = { has_target: true, target_in_band: true, critical: false,
+                 hurt: true, vigor_floor: true, _targetElevated: false };
+  // JayB engaged a giant rat at 7 of 20 -- below the flee line (fleeBelow 0.5) but above
+  // critical (0.3). flee_hurt needs the target IN REACH and the rat was not adjacent yet,
+  // so nothing fled and _fight won: he walked TOWARD it. hp trail [7,8,6,7,6,5,2,3].
+  ok('hurt and below the flee line does NOT close on a distant target',
+     fight.when({ ...base, below_flee: true, in_reach: false }) === false);
+  ok('but it still swings at what is already on us',
+     fight.when({ ...base, below_flee: true, in_reach: true }) === true);
+  ok('and a healthy character closes normally',
+     fight.when({ ...base, below_flee: false, in_reach: false }) === true);
+  ok('critical still refuses outright, in reach or not',
+     fight.when({ ...base, critical: true, below_flee: true, in_reach: true }) === false);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
