@@ -278,6 +278,21 @@ export class CombatController {
         }
       }
       if (target) {
+        // A QUARRY THAT DIES IN A CROWDED ROOM IS REPLACED, NOT REPORTED.
+        //
+        // The kill recorder below fires when the target vanishes and nothing takes its place.
+        // With six giant rats in the room the world state hands over a fresh one on the very
+        // next tick, so targetId was overwritten and the death went unrecorded: JayB's max
+        // health rose 25 -> 26 — an advancement roll, which only happens on a KILL — with
+        // zero rows in the ledger.
+        //
+        // So before adopting a new quarry, check whether the OLD one is still in the room.
+        // Gone while we were engaged with it is the same evidence the survive keeper uses
+        // (m59-skills.mjs:2019).
+        if (this.targetId != null && this.targetId !== target.id) {
+          const old = objects instanceof Map ? objects.get(this.targetId) : null;
+          if (!old) this._recordKill(this.targetName, this.targetId, this.swings || null, frame);
+        }
         if (this.targetId !== target.id) this.swings = 0;   // a new quarry, a new count
         this.targetId = target.id;
         this.targetName = target.name ?? c.rsc?.get?.(target.nameRsc) ?? 'mob';
