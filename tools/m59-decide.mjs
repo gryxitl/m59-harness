@@ -442,16 +442,30 @@ export const INTENTS = {
     // Find the nearest portal.
     const me = c.self;
     if (!me) return { sent: false, why: 'no position' };
-    // ALL of them, nearest first — a dead one has to be replaceable.
+    // EVERY WAY OUT, AND THE RIP GOES FIRST.
+    //
+    // The Underworld holds five portals AND a "rip in space" — one of it, at (6,10) in the
+    // room read while both characters were stuck. The portals are the ones that go unlit; the
+    // rip is a way out that does not, so it is tried before any of them rather than being
+    // ignored, which it was: this matched /portal/ only.
+    //
+    // (Each portal also has a brazier beside it — (2,20) next to the portal at (2,21), (15,31)
+    // next to (16,32) — which is very likely the lit/unlit tell, and a better answer than
+    // waiting twelve seconds on each. Not used yet; noted because the pairing is exact.)
     const portals = [];
+    const rips = [];
     if (objects instanceof Map) {
       for (const o of objects.values()) {
-        const name = c.rsc?.get?.(o.nameRsc) ?? o.name ?? '';
-        if (/portal/i.test(name) && o.col != null) portals.push(o);
+        if (o.col == null) continue;
+        const name = String(c.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
+        if (/rip in space|\brip\b/i.test(name)) rips.push(o);
+        else if (/portal/i.test(name)) portals.push(o);
       }
     }
-    portals.sort((a, b) => Math.hypot(a.col - me.col, a.row - me.row)
-                         - Math.hypot(b.col - me.col, b.row - me.row));
+    const byNear = (a, b) => Math.hypot(a.col - me.col, a.row - me.row)
+                           - Math.hypot(b.col - me.col, b.row - me.row);
+    rips.sort(byNear); portals.sort(byNear);
+    portals.unshift(...rips);
     if (!portals.length) return { sent: false, why: 'no portal in room' };
 
     // AN UNLIT PORTAL IS SILENT, SO STANDING ON ONE FOR EVER IS THE FAILURE MODE.
@@ -475,11 +489,11 @@ export const INTENTS = {
       s._uwPortal = (s._uwPortal + 1) % portals.length;
       s._uwSince = now;
       portal = portals[s._uwPortal];
-      console.error(`[underworld] ${s.name}: portal looks unlit — trying the next one at (${portal.col},${portal.row})`);
+      console.error(`[underworld] ${s.name}: that way out looks dead — trying the next at (${portal.col},${portal.row})`);
     }
     act.step(portal.col, portal.row);
     return { sent: true,
-             what: `escape: portal ${s._uwPortal + 1}/${portals.length} at (${portal.col},${portal.row})` };
+             what: `escape: way out ${s._uwPortal + 1}/${portals.length} at (${portal.col},${portal.row})` };
   },
 };
 
