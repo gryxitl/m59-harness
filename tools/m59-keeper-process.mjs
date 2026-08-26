@@ -1161,6 +1161,14 @@ const server = createServer(async (req, res) => {
                   c.cast(spell.id, []);
                   const w = await c.waitFor({ since, kinds: ['moved'], timeoutMs: maxMs });
                   const moved = w.events.filter(e => e.kind === 'moved');
+                  // TELL THE CONTROLLER, OR IT WILL UNDO THIS. Movement is
+                  // client-authoritative: a controller still believing the old square keeps
+                  // replicating it and the server -- which validates nothing -- drags the
+                  // body straight back. Five blinks in room 535 each succeeded and each was
+                  // reverted onto (47,13) within the tick, fifteen mana for no distance.
+                  const last = moved[moved.length - 1];
+                  if (last && Number.isFinite(last.col))
+                    try { session._mover?.relocated?.(last.col, last.row); } catch { /* best effort */ }
                   result = { sent: true, spell: spellName, frozenMs: Date.now() - since,
                              relocated: moved.length > 0, timedOut: w.timedOut };
                 } finally { loop.thaw(); }

@@ -838,7 +838,17 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
                 try { c.cast(blink.id, []); } catch { unfreeze(); }
                 try {
                   c.waitFor?.({ since, kinds: ['moved'], timeoutMs: BLINK_MS })
-                    ?.then(() => unfreeze())?.catch(() => unfreeze());
+                    // THE CONTROLLER MUST HEAR ABOUT THIS OR IT WILL UNDO IT. Movement is
+                    // client-authoritative, so a mover still believing the pre-blink square
+                    // replicates it and the server drags the body back. That is how five
+                    // successful blinks in room 535 spent fifteen mana and moved nobody.
+                    ?.then((w) => {
+                      const mv = (w?.events ?? []).filter(e => e.kind === 'moved');
+                      const last = mv[mv.length - 1];
+                      if (last && Number.isFinite(last.col))
+                        try { session._mover?.relocated?.(last.col, last.row); } catch { /* best effort */ }
+                      unfreeze();
+                    })?.catch(() => unfreeze());
                 } catch { unfreeze(); }
                 setTimeout(unfreeze, BLINK_MS);  // backstop; freeze() also has its own deadline
               } else {

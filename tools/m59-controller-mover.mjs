@@ -157,6 +157,31 @@ export class ControllerMover {
     } catch (e) { /* the server answers by moving us, or not at all */ }
   }
 
+  // THE BODY WAS MOVED BY SOMETHING THAT IS NOT US. Blink, a portal, a death, a DM.
+  //
+  // Movement here is CLIENT-AUTHORITATIVE, so a controller that does not hear about a
+  // relocation does not merely hold a stale opinion — it actively undoes the relocation.
+  // It keeps replicating the position it still believes in, the server accepts that (it
+  // validates nothing), and the body is dragged straight back. Watched on JayB in room
+  // 535: the keeper cast blink five times against an `entombed` square, every cast
+  // succeeded and moved him, and the controller put him back on (47,13) each time. Fifteen
+  // mana spent to travel nowhere, and from outside it looked like blink was broken.
+  //
+  // So every deliberate relocation must land here. The plan goes with it: it was drawn
+  // from a place the body is no longer standing.
+  relocated(col, row) {
+    if (!Number.isFinite(col) || !Number.isFinite(row)) return false;
+    let ok = false;
+    try { ok = this.ctl.serverMovedPlayer(col, row); } catch { /* best effort */ }
+    this._plannedFor = null;
+    this._noProgress = 0;
+    this._handedBack = false;
+    this.stats.relocations = (this.stats.relocations || 0) + 1;
+    console.error(`[ctlmover] ${this._agent} relocated to (${col},${row}) by something that is not us`
+      + ` — adopting it and dropping the plan`);
+    return ok;
+  }
+
   maybeConfirm(...a) { return this.fallback?.maybeConfirm?.(...a); }
 
   cancel() {

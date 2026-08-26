@@ -128,5 +128,24 @@ console.log('\ncontroller mover: SLIDING is not progress, however much it report
      `adopted=${JSON.stringify(cm.ctl.adopted)}`);
 }
 
+console.log('\ncontroller mover: a relocation is adopted, not undone');
+{
+  // MOVEMENT HERE IS CLIENT-AUTHORITATIVE, which makes a stale belief ACTIVE rather than
+  // merely wrong: the controller keeps replicating the square it still believes in, the
+  // server validates nothing and accepts it, and the body is dragged back out of wherever
+  // it was moved to. JayB's keeper cast blink five times against an entombed square in
+  // room 535; every cast succeeded, and the controller returned him to (47,13) each time.
+  // Fifteen mana for no distance, and from outside it read as "blink does not work".
+  const { cm } = rig({ believed: { col: 47, row: 13 }, server: { col: 47, row: 13 } });
+  cm._plannedFor = '30,30';
+  const ok1 = cm.relocated(42, 13);
+  ok('a relocation is adopted', ok1 && cm.ctl.adopted.some(([c, r]) => c === 42 && r === 13),
+     JSON.stringify(cm.ctl.adopted));
+  ok('and the plan drawn from the old place is dropped', cm._plannedFor === null,
+     String(cm._plannedFor));
+  ok('a relocation to nowhere is refused rather than believed',
+     cm.relocated(undefined, 13) === false);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
