@@ -1754,7 +1754,16 @@ export const DEFAULT_GOALS = [
   // ENTOMBED: BLINK OUT. Above everything except being dead, because a character that cannot
   // take a step cannot flee, fight, rest or travel — every other goal below is a plan that
   // needs one legal direction, and there are none. See `entombed`.
-  { goal: 'unwedge', when: ws => ws.entombed === true },
+  // ...BUT ONLY IF WE CAN ACTUALLY CAST IT. Blink is the only way out and it costs mana, so a
+  // character that is entombed AND empty must be allowed to fall through to resting — which
+  // needs no legal step and is the only thing that refills the bar.
+  //
+  // This is the second time tonight a top-priority goal became a deadlock by being
+  // unconditional: `armed` stranded a penniless character walking to a smith it could not buy
+  // from, and this stranded Lee casting a spell he could not afford, 0 of 19 mana, once per
+  // tick, for ever. A goal that outranks survival has to be achievable or it outranks the
+  // thing that would make it achievable.
+  { goal: 'unwedge', when: ws => ws.entombed === true && ws.has_mana === true },
   // FLEE first: if an out-of-band mob is IN REACH (actually threatening us), run before
   // anything else. The old condition fired on ANY out-of-band target (has_target &&
   // !target_in_band), which made the character FLEE from a passive mummy just because it
