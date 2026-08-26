@@ -428,7 +428,31 @@ export class CombatController {
             { maxNodes: 4000 }
           );
           if (p.found) {
-            this._cachedPathDist = p.waypoints.length;
+            // WAYPOINTS ARE TURN POINTS, NOT SQUARES.
+            //
+            // This used p.waypoints.length as a distance. A straight walk has ONE waypoint
+            // however far it runs, so a target nine squares away in a clear line measured as
+            // 1 — inside MELEE_REACH — and the character stood still swinging at it for ever
+            // instead of closing. Watched on JayB at (14,23) against a baby spider at (15,14):
+            // dist 9.1, reach reporting waypoints:1, expanded:0, and nothing but
+            // `_fight -> swing` in the log.
+            //
+            // Measure the path's LENGTH instead: sum the segments and convert protocol units
+            // back to squares. Never shorter than the straight line, which is the property the
+            // reach test actually needs.
+            let len = 0;
+            let px = me.col * F + H, py = me.row * F + H;
+            for (const w of p.waypoints) {
+              const wx = w.x ?? w.col, wy = w.y ?? w.row;
+              if (!Number.isFinite(wx) || !Number.isFinite(wy)) continue;
+              len += Math.hypot(wx - px, wy - py);
+              px = wx; py = wy;
+            }
+            const inSquares = len / F;
+            // A degenerate path (no usable waypoints) must not read as "already here".
+            this._cachedPathDist = inSquares > 0
+              ? Math.max(inSquares, Math.hypot(target.col - me.col, target.row - me.row))
+              : Math.abs(target.col - me.col) + Math.abs(target.row - me.row);
           } else {
             this._cachedPathDist = 999; // no path: separate island or walled off
             if (this.session && this.targetId != null) {
