@@ -1434,13 +1434,16 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // danger conditions stop firing on their own. This does not make fleeing more likely;
     // it makes an already-taken decision survive the next sample.
     if (active?.goal === 'flee_danger' || active?.goal === 'flee_hurt') {
+      const wasFleeing = (session._fleeUntil ?? 0) > now();
       session._fleeUntil = now() + FLEE_COMMIT_MS;
       session._fleeRoom = client?.room?.id ?? client?.room?.num ?? null;
+      if (!wasFleeing) session._fleeExit = null;   // a NEW flee picks its own way out
     } else if (session?._fleeUntil) {
       const here = client?.room?.id ?? client?.room?.num ?? null;
       const left = session._fleeRoom != null && here != null && here !== session._fleeRoom;
       if (left || now() > session._fleeUntil) {
         session._fleeUntil = 0; session._fleeRoom = null;
+        session._fleeExit = null;      // the chosen way out belongs to the flee that chose it
       }
     }
 
@@ -1576,8 +1579,33 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
         try {
           const exits = session.world?.exits?.() ?? [];
           if (exits.length > 0) {
-            const exit = nearestExit(exits, frame?.position ?? client?.self);
-            if (router.dest !== exit.to) {
+            // COMMIT TO ONE WAY OUT. PICKING THE NEAREST EVERY TICK IS HOW YOU PICK NEITHER.
+            //
+            // `nearestExit` is measured from where we are standing, and every step toward
+            // one exit makes another the nearer one. So the choice flipped on alternate
+            // ticks and the character walked half a step each way, for ever:
+            //
+            //     flee_danger -> travel (flee to room 563 via north)
+            //     flee_danger -> travel (flee to room 554 via west)
+            //     flee_danger -> travel (flee to room 563 via north)
+            //     flee_danger -> travel (flee to room 554 via west)
+            //
+            // JayB died at the end of that, in East Merchant Way, hp trail
+            // [16,13,9,7,4,5,1,2] -- fifteen points of damage taken while standing between
+            // two doors. The goal-level commitment added earlier held `flee_danger` firmly
+            // and did nothing about this, because the goal was never what was flickering.
+            //
+            // The exit is chosen once per flee and kept: same latch, same lifetime, cleared
+            // by the same room change. A worse exit committed to beats the best exit
+            // reconsidered every hundred milliseconds.
+            let exit = null;
+            if (session._fleeExit != null)
+              exit = exits.find(e => e.to === session._fleeExit) ?? null;
+            if (!exit) {
+              exit = nearestExit(exits, frame?.position ?? client?.self);
+              session._fleeExit = exit?.to ?? null;
+            }
+            if (exit && router.dest !== exit.to) {
               router.to(exit.to);
               onDecision?.({ ticks, goal: 'flee_danger', action: 'travel',
                 what: `flee to room ${exit.to} via ${exit.direction ?? exit.kind ?? 'the nearest way out'}`, sent: true });
@@ -1604,7 +1632,16 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
         try {
           const exits = session.world?.exits?.() ?? [];
           if (exits.length > 0) {
-            const exit = nearestExit(exits, frame?.position ?? client?.self);
+            // Same latch as flee_danger, and for the same reason: re-measuring "nearest"
+            // from a body that is moving picks a different door every tick and reaches
+            // none of them. See the long note there.
+            let exit = null;
+            if (session._fleeExit != null)
+              exit = exits.find(e => e.to === session._fleeExit) ?? null;
+            if (!exit) {
+              exit = nearestExit(exits, frame?.position ?? client?.self);
+              session._fleeExit = exit?.to ?? null;
+            }
             if (exit && router.dest !== exit.to) {
               router.to(exit.to);
               onDecision?.({ ticks, goal: 'flee_hurt', action: 'travel',

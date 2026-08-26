@@ -141,5 +141,42 @@ console.log('\nend to end: a real TickLoop driving a real decider');
   ok('and kept sending while commands were in flight', sent.length >= loop.stats.ticks - 1);
 }
 
+console.log('\na flee commits to ONE way out, or it reaches none of them');
+{
+  // PICKING THE NEAREST EXIT EVERY TICK IS HOW YOU PICK NEITHER. nearestExit is measured
+  // from where the body is standing, so every step toward one door makes another the nearer
+  // one, and the choice flips on alternate ticks:
+  //
+  //     flee_danger -> travel (flee to room 563 via north)
+  //     flee_danger -> travel (flee to room 554 via west)
+  //     flee_danger -> travel (flee to room 563 via north)
+  //
+  // JayB died at the end of exactly that, in East Merchant Way, hp trail
+  // [16,13,9,7,4,5,1,2] -- fifteen points taken while standing between two doors. The
+  // goal-level flee commitment held `flee_danger` firmly and did nothing about it, because
+  // the goal was never what flickered.
+  const { session, client } = world({ hp: 6, maxHp: 20 });
+  session._hpTrail = [16, 13, 9, 7, 4];        // falling: under_attack is true
+  // Two exits, on opposite sides, so "nearest" flips as the body drifts between them.
+  session.world = { exits: () => [
+    { to: 563, direction: 'north', kind: 'edge', stand_on: { col: 5, row: 1 } },
+    { to: 554, direction: 'west',  kind: 'edge', stand_on: { col: 1, row: 5 } },
+  ] };
+  const dests = [];
+  session._router = { dest: null, to(n) { this.dest = n; dests.push(n); },
+                      tick: () => ({ state: 'moving' }) };
+  const decide = makeDecider({ session, goals: DEFAULT_GOALS });
+  const act = new Actuator(session);
+  for (let i = 0; i < 12; i++) {
+    // The body drifts a little each tick, which is what re-measuring "nearest" reacts to.
+    client.self.col = 5 - (i % 2);
+    client.self.row = 5 - ((i + 1) % 2);
+    decide({ in_game: true, position: client.self, objects: client.room.objects }, act, null);
+  }
+  const distinct = new Set(dests);
+  ok('the flee settles on a single destination', distinct.size <= 1,
+     `destinations chosen: ${JSON.stringify(dests)}`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
