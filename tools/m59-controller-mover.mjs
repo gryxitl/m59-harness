@@ -54,6 +54,10 @@ const HANDBACK_TICKS = 12;
 // square. Well above an ordinary bump into a wall (which clears on the next heading) and
 // far below the thousands a genuinely unreasonable belief racks up. See tick().
 const BLOCKED_RESYNC_TICKS = 8;
+// How long a destination steers the body without anybody renewing it. Both callers re-aim
+// every tick they actually want movement, so this is generous — it only ever catches an
+// aim that has been ABANDONED, never one still in use. See _aimIsStale.
+const AIM_STALE_MS = Number(process.env.M59_AIM_STALE_MS || 1000);
 
 // MOVE_OFF_ROOM_INTERVAL in clientd3d/move.c. One request a second while pressed against a
 // boundary; the client rate-limits identically.
@@ -124,6 +128,8 @@ export class ControllerMover {
     const isNew = !this.dest || this.dest.col !== col || this.dest.row !== row;
     this.dest = { col, row };
     this.active = true;
+    // WHOEVER IS STEERING MUST KEEP SAYING SO. See the note on AIM_STALE_MS.
+    this._aimedAt = Date.now();
     // The legacy mover has to keep tracking the aim even while we are steering, or a
     // delegated tick would resume against a stale destination.
     try { this.fallback?.to?.(col, row); } catch { /* it is a fallback, not a dependency */ }
@@ -229,11 +235,34 @@ export class ControllerMover {
   // This deliberately does NOT plan, and does NOT touch `active`. Planning and the no-route
   // answer belong to the decider's call, because `no-route` is how the keeper learns to
   // blacklist a quarry — swallowing it here would lose that signal.
+  // HAS ANYBODY ASKED FOR THIS DESTINATION LATELY?
+  //
+  // The mover keeps its last destination until somebody gives it another, and the
+  // controller integrates that destination from the 10Hz loop whether or not any decision
+  // asked it to. Two callers share this one mover — combat aims it at a quarry, travel aims
+  // it at a staging square — and neither has any idea the other exists. So a destination
+  // set by travel kept steering the body through an entire fight, and the movement target
+  // and the attack target pointed in different directions with nothing arbitrating.
+  //
+  // The rule that needs no arbitration: an aim is a claim on the body, and a claim has to
+  // be renewed. The router re-aims every tick it travels and combat re-aims every tick it
+  // walks, so anything still wanted is refreshed continuously; anything nobody has spoken
+  // for in AIM_STALE_MS is nobody's, and the body stands still rather than finishing
+  // somebody else's errand. Silence stops the body — it never redirects it.
+  _aimIsStale() {
+    if (!this.dest || !this._aimedAt) return false;
+    return Date.now() - this._aimedAt > AIM_STALE_MS;
+  }
+
   physicsTick() {
     // A REST IS A TIMER THE SERVER DELETES ON ANY MOVEMENT, and the payoff is all at the
     // end. Integrating and replicating through one is how a character rests for a minute
     // and gains nothing. See the note in m59-decide.mjs where _restingQuiet is set.
     if (this.session?._restingQuiet) return null;
+    if (this._aimIsStale()) {
+      this.stats.staleAims = (this.stats.staleAims || 0) + 1;
+      return null;
+    }
     if (!this.active || !this.dest || !this.ctl.path) return null;
     const c = this.session?.client;
     if (!c || c.state !== 'game') return null;

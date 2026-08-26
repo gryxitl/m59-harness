@@ -416,5 +416,56 @@ console.log('\ncontroller: wading slows the body down, exactly as the client doe
      `${c.x - x0} vs ${dry}`);
 }
 
+console.log('\ncontroller mover: an aim is a claim, and a claim has to be renewed');
+{
+  // TWO CALLERS SHARE ONE MOVER and neither knows the other exists: combat aims it at a
+  // quarry (m59-combat.mjs) and travel aims it at a staging square (m59-route.mjs). Nothing
+  // arbitrated, so whoever spoke last won -- and when combat stopped speaking to SWING, the
+  // travel destination kept steering. The body swung at a mob while walking away from it.
+  const mk = () => {
+    const session = {
+      agent: 't-test',
+      client: { state: 'game', self: { col: 5, row: 5 }, room: { id: 1, num: 556 } },
+      world: { geometry: { collisionReady: true, rows: 55, cols: 63,
+                           walkable: () => true, fineWalkable: () => true,
+                           depthIndexAtClient: () => 0,
+                           traceFineMoveClient: (a, b, x, y) => ({ available: true, x, y }) } },
+    };
+    const cm = new ControllerMover(session, { to() {}, tick: () => ({ state: 'moving' }), cancel() {} });
+    cm.ctl = stubCtl({ col: 5, row: 5 }, 'moving');
+    cm._room = 1;
+    return cm;
+  };
+
+  // Freshly aimed: the physics runs.
+  const fresh = mk();
+  fresh.to(30, 2);
+  fresh._plannedFor = '30,2';
+  fresh._lastTickAt = Date.now() - 100;
+  ok('a freshly renewed aim still steers', fresh.physicsTick() !== null);
+
+  // Nobody has renewed it for longer than the window: the body stands still. It must NOT
+  // pick a different destination -- silence stops the body, it never redirects it.
+  const stale = mk();
+  stale.to(30, 2);
+  stale._plannedFor = '30,2';
+  stale._aimedAt = Date.now() - 5000;
+  stale._lastTickAt = Date.now() - 100;
+  ok('an abandoned aim stops steering', stale.physicsTick() === null);
+  ok('and it is counted', (stale.stats.staleAims ?? 0) > 0, String(stale.stats.staleAims));
+  ok('the destination is not silently changed', stale.dest.col === 30 && stale.dest.row === 2,
+     JSON.stringify(stale.dest));
+
+  // Re-aiming with the SAME destination renews the claim without forcing a replan --
+  // which is what lets combat call to() every tick for free.
+  const renewed = mk();
+  renewed.to(30, 2);
+  renewed._plannedFor = '30,2';
+  renewed._aimedAt = Date.now() - 5000;
+  renewed.to(30, 2);
+  ok('renewing the same aim revives it', renewed._aimIsStale() === false);
+  ok('and does not force a replan', renewed._plannedFor === '30,2', String(renewed._plannedFor));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

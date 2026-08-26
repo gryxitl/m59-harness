@@ -564,6 +564,7 @@ export class CombatController {
                   return { kind: 'cast', what: `retreat: cast ${spell.name} at closing mob (${hpPct}%)` };
                 }
                 act.swing(this.targetId);
+                this._standStill();
                 return { kind: 'swing', what: `retreat: swing at closing mob (${hpPct}%)` };
               }
               return { kind: 'idle', what: `retreat: attack cooldown (${hpPct}%)` };
@@ -648,6 +649,7 @@ export class CombatController {
         console.error(`[swing-debug] t3 swing at ${Date.now()} sinceLast=${sinceLast}ms lastSwing=${this.lastSwing} now=${Date.now()} gap=${Date.now()-this.lastSwing}ms`);
       }
       const zapActive = zapStatus(client).active;
+      this._standStill();          // swinging is not walking — see _standStill
       return { kind: 'swing', what: `swing at ${this.targetName}${zapActive ? ' (zap active)' : ''}` };
     }
     // In reach but on cooldown. Check if the zap enchantment just lapsed and
@@ -756,15 +758,34 @@ export class CombatController {
    * (has pathfinding + blink fallback), otherwise falls back to
    * raw act.step() (one square per tick, no pathfinding).
    */
+  // STANDING TO FIGHT MEANS NOBODY IS STEERING, AND THE MOVER HAS TO BE TOLD.
+  //
+  // The mover keeps its last destination until somebody gives it another, and the
+  // controller integrates that destination from the 10Hz loop whether or not any decision
+  // this tick asked it to. So a character that walked toward a travel staging square, then
+  // closed on a quarry and started swinging, KEPT WALKING TO THE STAGING SQUARE — swinging
+  // at a mob while drifting away from it, with the movement target and the attack target
+  // pointing in different directions and nothing arbitrating between them.
+  //
+  // `_walkTo` is the only place combat ever aims the mover, so every combat outcome that
+  // is not a walk has to stand it down explicitly. Cheap and idempotent: if we were not
+  // steering, there is nothing to cancel.
+  _standStill() {
+    if (!this._walkDest) return;
+    this._walkDest = null;
+    try { this.session?._mover?.cancel?.(); } catch { /* best effort */ }
+  }
+
   _walkTo(act, dest, what, me) {
     const mover = this.session?._mover;
     if (mover) {
-      // Only set the destination if it changed (avoids
-      // replanning the A* path every tick).
-      if (!this._walkDest || this._walkDest.col !== dest.col || this._walkDest.row !== dest.row) {
-        this._walkDest = { col: dest.col, row: dest.row };
-        mover.to(dest.col, dest.row);
-      }
+      // AIM EVERY TICK WE WANT TO WALK. This used to skip the call when the destination
+      // had not changed, to avoid replanning — but the mover already does that check
+      // itself (`isNew` in to()), so the guard was redundant, and it meant combat went
+      // silent while still walking. An aim is a claim that has to be renewed: see
+      // _aimIsStale in m59-controller-mover.mjs. Renewing it is free.
+      this._walkDest = { col: dest.col, row: dest.row };
+      mover.to(dest.col, dest.row);
       const r = mover.tick(me ? { col: me.col, row: me.row, x: me.x, y: me.y } : undefined);
       if (r.state === 'arrived') {
         this._walkDest = null;
