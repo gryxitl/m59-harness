@@ -109,8 +109,13 @@ function rig({ col = 2, row = 2, destCol = 8, destRow = 2, geo } = {}) {
     walkTo: (col, row) => { sent.push([col * 64 + 32, row * 64 + 32]); return Promise.resolve({ arrived: true }); },
     world: { geometry: geo ?? wallGeometry() },
   };
-  const mover = new Mover(session);
-  return { mover, sent, session };
+  // A CONTROLLABLE CLOCK. The mover gates position reports to one per MOVE_INTERVAL_MS,
+  // and a loop of 200 ticks runs in about a millisecond — so with a real clock the first
+  // send goes out and the other 199 are throttled away, which reads as a pathfinding
+  // failure. `clock.tick(ms)` moves time the way the loop moves the character.
+  const clock = { t: 1_000_000, tick(ms = 1000) { this.t += ms; } };
+  const mover = new Mover(session, { now: () => clock.t });
+  return { mover, sent, session, clock };
 }
 
 // Advance the fake position to match the last sent move.
@@ -155,7 +160,7 @@ console.log('\nthe wall segment: route goes around it');
   // The wall is at x=4096 (between col 4 and 5), y=0 to y=4096.
   // A straight line crosses the wall. finePathProtocol should
   // return a path that goes around (north, y > 4096).
-  const { mover, sent, session } = rig();
+  const { mover, sent, session, clock } = rig();
   mover.to(8, 2);
 
   let states = [];
@@ -170,6 +175,7 @@ console.log('\nthe wall segment: route goes around it');
 
     // Track the path in client units.
     advance(session, sent);
+    clock.tick();                 // one second per tick, so the report gate opens
     const cx = (session.client.self.x - 64) * 16;
     const cy = (session.client.self.y - 64) * 16;
     path.push({ x: cx, y: cy });

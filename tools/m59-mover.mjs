@@ -76,8 +76,17 @@ const HALF = KOD_FINENESS / 2; // 32 protocol units = half a square
  *   mover.clear();               // stop
  */
 export class Mover {
-  constructor(session) {
+  constructor(session, { now = () => Date.now() } = {}) {
     this.session = session;
+    // AN INJECTABLE CLOCK, BECAUSE THE MOVER IS THROTTLED BY WALL TIME.
+    //
+    // Position reports are gated to one per MOVE_INTERVAL_MS, which is right against a
+    // real server and untestable against a loop. m59-mover-test drove 200 ticks in about a
+    // millisecond: the first send went out, the gate shut, and the other 199 did nothing —
+    // so "the mover routed around the wall" failed reporting `states: moving` and looked
+    // like a pathfinding bug rather than a stopped clock. Router already takes its clock
+    // this way; this brings Mover into line.
+    this.now = now;
     this.dest = null;       // { col, row } in protocol square coordinates
     this.destProto = null;  // { x, y } in protocol units (centre of dest square)
     this.path = null;       // [ {x, y} ] waypoints in protocol units, index 0 = next
@@ -405,8 +414,8 @@ export class Mover {
         const stepProto = Math.min(rd, KOD_FINENESS);
         const rawX = Math.round(myProtoX + (rx / rd) * stepProto);
         const rawY = Math.round(myProtoY + (ry / rd) * stepProto);
-        if (Date.now() - (this._lastRawLogAt ?? 0) > 2000) {
-          this._lastRawLogAt = Date.now();
+        if (this.now() - (this._lastRawLogAt ?? 0) > 2000) {
+          this._lastRawLogAt = this.now();
           console.error(`[raw-door-push] my=(${Math.round(myProtoX)},${Math.round(myProtoY)}) dest=(${destCol},${destRow}) dist=${distToDest0.toFixed(0)} raw->(${rawX},${rawY}) wp=${wp?'yes':'no'}`);
         }
         // The raw-door-push is a DELIBERATE escape into a fine-blocked gap (a
@@ -420,12 +429,12 @@ export class Mover {
         // server is client-authoritative here — a position packet into the
         // alcove is accepted — so send it directly. A short cooldown prevents
         // a flood while the character is mid-gap.
-        if (Date.now() - (this._lastRawPushAt ?? 0) >= 500) {
-          this._lastRawPushAt = Date.now();
+        if (this.now() - (this._lastRawPushAt ?? 0) >= 500) {
+          this._lastRawPushAt = this.now();
           Promise.resolve(s.pacer.submit('move', () => s.client.moveTo(rawX, rawY, 18, s.client.room?.id ?? 0), 100)).catch(() => {});
         }
-        if (Date.now() - (this._lastRawLogAt ?? 0) > 5000) {
-          this._lastRawLogAt = Date.now();
+        if (this.now() - (this._lastRawLogAt ?? 0) > 5000) {
+          this._lastRawLogAt = this.now();
           console.error(`[raw-door-push] my=(${Math.round(myProtoX)},${Math.round(myProtoY)}) dest=(${destCol},${destRow}) dist=${distToDest0.toFixed(0)} wp=${wp?'yes':'no'}`);
         }
         this.path = null;  // drop any stale path; we're pushing through the gap
@@ -634,7 +643,7 @@ export class Mover {
       this._recordReport(enrProtoX, enrProtoY);
     } else {
       if (process.env.M59_MOVE_DEBUG !== '0')
-        console.error(`[movedbg-gate] t3 gateCLOSED step=(${stepCol},${stepRow}) me=(${me.col},${me.row}) server=(${myProtoX},${myProtoY}) lastReport=(${this._lastReportX},${this._lastReportY}) interval=${Date.now()-this._lastReportAt}ms`);
+        console.error(`[movedbg-gate] t3 gateCLOSED step=(${stepCol},${stepRow}) me=(${me.col},${me.row}) server=(${myProtoX},${myProtoY}) lastReport=(${this._lastReportX},${this._lastReportY}) interval=${this.now()-this._lastReportAt}ms`);
     }
     // A SHUFFLE IS A STALL, AND STILLNESS IS NOT THE ONLY WAY TO STAND STILL.
     //
@@ -705,7 +714,7 @@ export class Mover {
   // A stale _lastReport (a gap > 1 square from the current position — a refused
   // move, a teleport, a respawn) is handled by the mover's re-plan, so no extra snap.
   _movementGateOk(protoX, protoY, myProtoX, myProtoY, serverX, serverY) {
-    const now = Date.now();
+    const now = this.now();
     // The gate compares the STEP (protoX/protoY — where the character is heading)
     // against the SERVER POSITION (serverX/serverY — where the server last confirmed
     // the character is). This is the client's MoveUpdateServer model: report when
@@ -726,7 +735,7 @@ export class Mover {
     return movedEnough && intervalOk;
   }
   _recordReport(protoX, protoY) {
-    this._lastReportAt = Date.now();
+    this._lastReportAt = this.now();
     this._lastReportX = protoX;
     this._lastReportY = protoY;
   }
@@ -791,7 +800,7 @@ export class Mover {
    * Fire a confirmPosition and sync dead reckoning when it resolves.
    */
   maybeConfirm() {
-    const now = Date.now();
+    const now = this.now();
     if (now - this.lastConfirm < this.confirmInterval) return false;
     this.lastConfirm = now;
     const s = this.session;

@@ -32,6 +32,7 @@
 //
 // No dependencies. Reads the ledger JSONL files, needs nothing live.
 
+import { pathToFileURL } from 'node:url';
 import { readLedger } from './m59-ledger.mjs';
 
 // ── pattern detection (exported for testing) ──────────────────────────────────
@@ -116,8 +117,11 @@ function parseWindow(s) {
 }
 
 // ── main (only when run directly, not imported) ──────────────────────────────
+// pathToFileURL, not a hand-built `file://` template: the template leaves spaces
+// percent-encoded on one side of the comparison and not the other, and needs drive-letter
+// repair on Windows. Node owns this conversion. m59-path-test.mjs guards it.
 const isMain = process.argv[1] &&
-  import.meta.url === new URL(`file://${process.argv[1]}`).href;
+  import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (isMain) {
   const argv = process.argv.slice(2);

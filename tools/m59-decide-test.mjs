@@ -97,8 +97,17 @@ console.log('\nan action that could not be bound reports a refusal, not a succes
   decide({ in_game: true, objects: session.client.room.objects }, new Actuator(session), null);
   ok('nothing was sent', sent.length === 0);
   const d = seen[seen.length - 1];
-  ok('and it said why', d && d.sent === false && /no weapon/.test(d.why ?? ''),
-     'no error has never meant success here');
+  // THE POINT IS THAT IT SAYS SOMETHING, NOT WHICH SENTENCE IT SAYS.
+  //
+  // This pinned /no weapon/, which was the refusal when `armed` planned to equip from the
+  // pack. It now plans to BUY one when the pack is empty, so the truthful refusal for this
+  // character is "no merchant in room" — a different sentence and an equally honest one.
+  // Asserting the wording made the test fail for a plan that improved.
+  //
+  // What must not regress is the rule this file is named for: a refusal reports sent:false
+  // AND gives a reason. Silence, or sent:true with nothing behind it, is the failure.
+  ok('and it said why', d && d.sent === false && typeof d.why === 'string' && d.why.length > 0,
+     `no error has never meant success here — got ${JSON.stringify(d)}`);
 }
 
 console.log('\nthe target comes from the world state, never a second search');
