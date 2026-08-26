@@ -260,6 +260,26 @@ export const SYMBOLS = {
   // and whether health is actually going down. Proximity alone would call a room of six
   // idle rats an ambush; damage alone cannot tell one attacker from three. Together they
   // mean what the rule always said it meant.
+  // A FLEE ALREADY UNDER WAY. Set by the decider when a flee goal wins; read back here so
+  // the ladder can hold it against the sampling noise in the conditions that started it.
+  // Reading session state is what `under_attack` does with the health trail, and for the
+  // same reason: the fact is about a span of time, not about this instant.
+  fleeing: {
+    describe: 'a flee is already under way and has not run out or been resolved',
+    whenUnknown: false,
+    why_unknown: 'never invent a flee — a wrong true walks a healthy character out of a fight it was winning',
+    produce: ({ session, client }) => {
+      const until = session?._fleeUntil ?? 0;
+      if (!until || Date.now() > until) return false;
+      // A DIFFERENT ROOM IS THE ONLY THING THAT RELIABLY MEANS SAFETY, and it ends the
+      // commitment early rather than making the character run out the clock somewhere it
+      // has already got away to.
+      const room = client?.room?.id ?? client?.room?.num ?? null;
+      if (session._fleeRoom != null && room != null && room !== session._fleeRoom) return false;
+      return true;
+    },
+  },
+
   outnumbered: {
     describe: 'two or more creatures are within striking distance while health is falling',
     whenUnknown: false,

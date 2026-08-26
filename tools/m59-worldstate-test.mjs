@@ -249,5 +249,26 @@ console.log('\ntwo samples are evidence: the first hits must not read as safety'
   ok('and a flat trail is not an attack', mk([20, 20, 20]).under_attack === false);
 }
 
+console.log('\na flee already under way survives the sample that would have cancelled it');
+{
+  const mk = (session, roomId = 1) =>
+    evaluate({ client: fakeClient({ hp: 15, hpMax: 20, col: 5, row: 5,
+                                    room: { num: roomId, name: 'R', objects: [] } }),
+               session, policy: {} });
+  const soon = Date.now() + 5000, past = Date.now() - 1;
+
+  // JayB fled, regenerated one point between blows, and the rung that started the flee went
+  // false: flee -> hunt -> _fight -> flee, and he swung at one of the two things chasing him.
+  // hp trail [18,19,20,15,14,15,5,3]; the 14 -> 15 is the tick that unlatched it.
+  ok('a live commitment reads as fleeing', mk({ _fleeUntil: soon, _fleeRoom: 1 }).fleeing === true);
+  ok('an expired one does not', mk({ _fleeUntil: past, _fleeRoom: 1 }).fleeing === false);
+  ok('and no commitment at all does not', mk({}).fleeing === false);
+
+  // A DIFFERENT ROOM IS THE ONLY THING THAT RELIABLY MEANS SAFETY, and it ends the
+  // commitment early rather than running out the clock somewhere already safe.
+  ok('leaving the room ends the commitment early',
+     mk({ _fleeUntil: soon, _fleeRoom: 999 }, 1).fleeing === false);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

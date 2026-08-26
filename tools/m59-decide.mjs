@@ -212,6 +212,12 @@ import { CombatController } from './m59-combat.mjs';
 // character knocked out of its rest sits back down promptly.
 const REST_REPEAT_MS = Number(process.env.M59_REST_REPEAT_MS || 3000);
 
+// How long a flee holds once begun, against the sampling noise in the conditions that
+// started it. Long enough to clear a room at walking pace; short enough that a character
+// which has genuinely escaped is not still running a minute later. Ends early on a room
+// change, which is the one signal that actually means safety.
+const FLEE_COMMIT_MS = Number(process.env.M59_FLEE_COMMIT_MS || 8000);
+
 export const INTENTS = {
   rest:  (f, act, ctx) => {
     // Resting recovers HP and vigor. At an inn it's fast;
@@ -1386,6 +1392,39 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     _resting = active?.goal === 'healthy' || active?.goal === 'vigor_low';
     _fighting = active?.goal === '_fight';
 
+    // A FLEE IS A COMMITMENT, AND A HALF-FLEE IS WORSE THAN STANDING AND FIGHTING.
+    //
+    // The flee rungs read this instant: `under_attack` is a net loss over the last few
+    // health readings, so a single tick of regeneration between blows makes it false, the
+    // rung loses, and `_fight` — sitting immediately below — wins. The character turns
+    // round and swings at the thing it was escaping, having spent the intervening seconds
+    // walking away from its own target.
+    //
+    // JayB's last four decisions, in order:
+    //
+    //     flee_danger -> travel (flee to room 576 via south)
+    //     hunt        -> travel (travel moving -> 576)
+    //     _fight      -> swing (swing at giant rat)
+    //     flee_danger -> travel (travel moving -> 576)
+    //
+    // hp trail [18,19,20,15,14,15,5,3] — the 14 -> 15 is the tick that unlatched it. Two
+    // attackers then took him from 15 to dead while he was deciding which he was doing.
+    //
+    // So a flee, once begun, holds for FLEE_COMMIT_MS. It ends early on the only thing that
+    // actually means safety — being in a different room — and it is not renewed once the
+    // danger conditions stop firing on their own. This does not make fleeing more likely;
+    // it makes an already-taken decision survive the next sample.
+    if (active?.goal === 'flee_danger' || active?.goal === 'flee_hurt') {
+      session._fleeUntil = now() + FLEE_COMMIT_MS;
+      session._fleeRoom = client?.room?.id ?? client?.room?.num ?? null;
+    } else if (session?._fleeUntil) {
+      const here = client?.room?.id ?? client?.room?.num ?? null;
+      const left = session._fleeRoom != null && here != null && here !== session._fleeRoom;
+      if (left || now() > session._fleeUntil) {
+        session._fleeUntil = 0; session._fleeRoom = null;
+      }
+    }
+
     // STAND BEFORE MOVING (OR EQUIPPING). Resting sits the character down, and a
     // sitting character cannot move OR equip — the server silently refuses steps and
     // `use` while seated. When we transition from a rest goal to a movement goal OR
@@ -1813,6 +1852,10 @@ export const DEFAULT_GOALS = [
   // next to the thing that put it there, waiting to be hit again so that fleeing could become
   // legal. `in_reach` is a fact about this instant and a chasing mob is in and out of it every
   // second; below the critical line the answer is the same either way.
+  // THE COMMITMENT RUNG. Above every flee condition, because its whole job is to keep
+  // fleeing after the condition that started it has flickered off. See the note beside
+  // `_fleeUntil` in the decider.
+  { goal: 'flee_danger', when: ws => ws.fleeing === true },
   { goal: 'flee_danger', when: ws => ws.critical === true && ws.has_target === true },
   // OUTNUMBERED: LEAVE. Two or more aggroed creatures on us is not the fight the thresholds
   // below were calibrated for — the incoming rate doubles while the outgoing does not, and a
