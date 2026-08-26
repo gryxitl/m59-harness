@@ -184,5 +184,55 @@ console.log('\ncontroller mover: a crossing is spent the moment the room changes
      sent.length === afterFirst, `sent=${sent.length} was=${afterFirst}`);
 }
 
+console.log('\ncontroller: walking is not how a room is left');
+{
+  // move.c refuses an off-room destination LOCALLY (x = last_x; y = last_y; break) and sends
+  // a separate speed-0 request. We did not, and movement is client-authoritative -- so the
+  // belief stepped past the boundary, replicated, and the server read the coordinates
+  // against the room's own bounds and fired that edge's exit.
+  //
+  // JayB at the Main gate to the city of Tos (58x44) with a leg planned NORTH: the north
+  // staging square and the west boundary meet at the same corner. He drifted past column 1,
+  // left by the WEST exit into the Western border of the Twisted Wood, and was two rooms
+  // down the wrong road. The route he wanted was 586 -> 585 -> 584 -> ...
+  const { CharacterController, CLIENT_PER_SQUARE } = await import('./m59-controller.mjs');
+  // A room with no walls at all: every refusal here is the bounds test, nothing else.
+  const geo = {
+    collisionReady: true, rows: 58, cols: 44,
+    leafAtClient: () => ({}), floorBaseAtClient: () => 0,
+    traceFineMoveClient: (x0, y0, x1, y1) => ({ available: true, x: x1, y: y1, slid: false, blocked: false }),
+  };
+  const at = (col, row) => ({ x: (col - 0.5) * CLIENT_PER_SQUARE, y: (row - 0.5) * CLIENT_PER_SQUARE });
+
+  // Heading west from column 2, with open floor all the way: without the bounds test the
+  // body walks straight out of the room.
+  const c = new CharacterController();
+  c.syncFrom({ col: 2, row: 30 });
+  c.path = [at(-4, 30)];  c.pathIdx = 0;
+  for (let i = 0; i < 40; i++) c.step(100, { geo, client: null });
+  const col = Math.floor(c.x / CLIENT_PER_SQUARE) + 1;
+  ok('the body does not walk out through the west boundary', col >= 1, `col=${col}`);
+  ok('and the refusal is counted rather than silent', (c.stats.offRoomRefused ?? 0) > 0,
+     String(c.stats.offRoomRefused));
+
+  // The same room, a destination well inside it: ordinary movement is untouched.
+  const d = new CharacterController();
+  d.syncFrom({ col: 20, row: 30 });
+  d.path = [at(30, 30)]; d.pathIdx = 0;
+  const startX = d.x;
+  for (let i = 0; i < 20; i++) d.step(100, { geo, client: null });
+  ok('a move that stays inside the room still happens', d.x > startX,
+     `x ${startX} -> ${d.x}`);
+
+  // Bounds we could not read must mean no opinion, never a room nobody can move in.
+  const e = new CharacterController();
+  e.syncFrom({ col: 2, row: 30 });
+  e.path = [at(-4, 30)]; e.pathIdx = 0;
+  const noBounds = { ...geo, rows: undefined, cols: undefined };
+  for (let i = 0; i < 10; i++) e.step(100, { geo: noBounds, client: null });
+  ok('unknown room bounds grant permission rather than refusing',
+     (e.stats.offRoomRefused ?? 0) === 0, String(e.stats.offRoomRefused));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

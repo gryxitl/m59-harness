@@ -290,6 +290,36 @@ export class CharacterController {
     catch { stranded = false; }
     if (stranded) this.stats.stranded = (this.stats.stranded ?? 0) + 1;
 
+    // LEAVING THE ROOM IS A DECISION, AND WALKING IS NOT HOW IT IS MADE.
+    //
+    // move.c documents this four lines above and we never applied it. The real client tests
+    // IsInRoom on the destination and, when it fails, REFUSES THE MOVE LOCALLY — `x = last_x;
+    // y = last_y; break;` — and sends a separate speed-0 request instead. It never walks a
+    // body out of a room by accident, because it cannot.
+    //
+    // We could, and did. Movement is client-authoritative: the belief stepped past the
+    // boundary, replicated, and the server read the coordinates against the room's own
+    // bounds (room.kod SomethingMoved: new_col < 1 -> LEAVE_WEST) and obligingly fired that
+    // exit. JayB was at the Main gate to the city of Tos with a leg planned NORTH to the
+    // border of the Badlands -- the room is 58x44, so the north staging square and the west
+    // boundary are near the same corner. He drifted past column 1 on the way there, left by
+    // the west edge into the Western border of the Twisted Wood, and was two rooms down a
+    // road nobody had planned before anything noticed. The correct route was
+    // 586 -> 585 -> 584 -> 574 -> 564 -> 554 -> 545 -> 535.
+    //
+    // A deliberate crossing does not come through here: the mover marks it off-map, stops
+    // steering, and _requestOffRoom sends the speed-0 request the way the client does.
+    //
+    // Bounds unknown means no opinion -- permission, never refusal. A room whose dimensions
+    // we failed to read must not become a room nobody can move in.
+    const inRoom = (x, y) => {
+      const R = geo?.rows, C = geo?.cols;
+      if (!Number.isFinite(R) || !Number.isFinite(C)) return true;
+      const col = Math.floor(x / CLIENT_PER_SQUARE) + 1;
+      const row = Math.floor(y / CLIENT_PER_SQUARE) + 1;
+      return col >= 1 && col <= C && row >= 1 && row <= R;
+    };
+
     const tryMove = (fx, fy, tx, ty) => {
       let t;
       try { t = geo.traceFineMoveClient(fx, fy, tx, ty, { slide: true, allowNoStartFloor: stranded }); }
@@ -297,6 +327,10 @@ export class CharacterController {
       if (!t?.available) return null;
       const nx = t.x ?? fx, ny = t.y ?? fy;
       if (Math.hypot(nx - fx, ny - fy) < 0.5) return null;
+      if (!inRoom(nx, ny)) {
+        this.stats.offRoomRefused = (this.stats.offRoomRefused ?? 0) + 1;
+        return null;
+      }
       return { x: nx, y: ny, slid: !!t.slid, blocked: !!t.blocked };
     };
 
