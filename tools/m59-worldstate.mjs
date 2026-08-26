@@ -45,6 +45,7 @@ import * as skills from './m59-skills.mjs';
 import * as party  from './m59-party.mjs';
 import { REST_VIGOR_CAP, MIN_FIGHT_VIGOR } from './m59-localpolicy.mjs';
 import { affordances } from './m59-parse.mjs';
+import { preyNames, creatureKey } from './m59-combat.mjs';
 
 // Melee reach is a disc on SQUARE coordinates -- both sides run
 // `SquaredDistanceTo <= GetAttackRange^2` where range is Bound(2 + difficulty/6, 2, 3)
@@ -54,6 +55,10 @@ import { affordances } from './m59-parse.mjs';
 // What counts as a weapon for the surplus test. Deliberately narrow: the point is to shed
 // the pile of identical drops a farming character accumulates, not to judge gear.
 const WEAPON_RE = /\b(mace|sword|axe|hammer|dagger|club|staff|halberd|spear|flail|scimitar|rapier)\b/i;
+
+// How close an aggroed creature has to be to count as being ON us. A little beyond melee,
+// because something one step outside reach this instant is inside it on the next.
+const OUTNUMBERED_RANGE = 4;
 
 export const MELEE_REACH = 3;
 
@@ -201,6 +206,36 @@ export const SYMBOLS = {
   // It stops paying at max health 25. Advancement needs monster_level > base_max_health and the
   // only thing Raza generates is the level-25 mummy, so from 25 onward a character can farm the
   // whole zone for ever and gain nothing — which is exactly what JayB was doing.
+  // MORE THAN ONE THING IS ON US.
+  //
+  // A character trades blows with one creature and wins or loses on arithmetic. Two or more
+  // at once is a different fight: the incoming rate doubles while the outgoing does not, and
+  // the flee thresholds — which are fractions of health — are calibrated for the first case.
+  // Counting only AGGROED creatures (OF.ENEMY) matters: a room with six rats standing about
+  // is not the same as three of them hitting you, and only the flag tells them apart.
+  //
+  // Prey only, so the merchant exclusion keeps shopkeepers out of the tally.
+  outnumbered: {
+    describe: 'two or more aggroed creatures are within striking distance',
+    whenUnknown: false,
+    why_unknown: 'a wrong true throws away a winnable fight; a wrong false only costs what it already cost',
+    produce: ({ client }) => {
+      const objs = client?.room?.objects;
+      const me = client?.self;
+      if (!(objs instanceof Map) || me?.col == null) return null;
+      let n = 0;
+      for (const o of objs.values()) {
+        if (o.is_self || o.col == null) continue;
+        if (!(o.flags & 0x02000000)) continue;                     // OF.ENEMY
+        const nm = String(client?.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
+        if (!preyNames().has(creatureKey(nm))) continue;
+        if (Math.hypot(o.col - me.col, o.row - me.row) > OUTNUMBERED_RANGE) continue;
+        if (++n >= 2) return true;
+      }
+      return false;
+    },
+  },
+
   in_raza: {
     describe: 'inside the newbie zone (rooms 1011-1018)',
     whenUnknown: false,

@@ -1682,6 +1682,16 @@ export const DEFAULT_GOALS = [
   // legal. `in_reach` is a fact about this instant and a chasing mob is in and out of it every
   // second; below the critical line the answer is the same either way.
   { goal: 'flee_danger', when: ws => ws.critical === true && ws.has_target === true },
+  // OUTNUMBERED: LEAVE. Two or more aggroed creatures on us is not the fight the thresholds
+  // below were calibrated for — the incoming rate doubles while the outgoing does not, and a
+  // character that stands its ground works down to a flee threshold it will cross with two of
+  // them still swinging. It goes ABOVE flee_hurt because the decision has to be made while
+  // there is still health to spend on the walk out, not after.
+  //
+  // Deliberately the same action as flee_danger: run for the nearest exit and leave the room.
+  // Holding a safe spot is the answer to ONE attacker — a wall at your back stops a single
+  // creature flanking you and stops nothing about being surrounded.
+  { goal: 'flee_danger', when: ws => ws.outnumbered === true },
   { goal: 'flee_danger', when: ws => ws.has_target === true && ws.target_in_band === false && ws.in_reach === true },
   // FLEE when hurt AND a target is actively in reach
   // (attacking you). If the target is in the room but
