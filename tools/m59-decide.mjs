@@ -153,6 +153,31 @@ import { trustedBuyer } from './m59-skills.mjs';
 // How long to stand on an Underworld portal before deciding it is unlit and trying another.
 const UNLIT_PORTAL_MS = Number(process.env.M59_UNLIT_PORTAL_MS || 12000);
 
+// The most dangerous thing a character will take on, as GetAttackAbility (monster.kod:
+// 3*viLevel + 60*viDifficulty). 250 sits above the mummy (195) and giant rat (150) this fleet
+// survives on and below the baby spider (315) and centipede (390) it dies to. Overridable per
+// character with policy.maxAttackAbility; null disables the check entirely.
+const DEFAULT_ATTACK_ABILITY_CAP = Number(process.env.M59_MAX_ATTACK_ABILITY || 250);
+
+// Attack ability by creature name, from the spawn table's level and difficulty. Built once.
+let _aa = null;
+function attackAbility(name) {
+  if (!_aa) {
+    _aa = new Map();
+    try {
+      const raw = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..',
+                                               'substrate', 'm59-spawns.json'), 'utf8'));
+      for (const list of Object.values(raw?.rooms ?? {})) {
+        for (const e of list ?? []) {
+          if (!e?.creature || e.level == null || e.difficulty == null) continue;
+          _aa.set(creatureKey(e.creature), 3 * e.level + 60 * e.difficulty);
+        }
+      }
+    } catch { /* no table: the cap simply cannot be applied */ }
+  }
+  return _aa.get(creatureKey(name)) ?? null;
+}
+
 const SELL_ROOM = Number(process.env.M59_SELL_ROOM || 374);   // Quintor, Jasper Blacksmith
 const BANK_ROOM = Number(process.env.M59_BANK_ROOM || 376);   // Yevitan, Jasper Banker
 import { creatureKey, preyNames } from './m59-combat.mjs';
@@ -1034,6 +1059,8 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           // never matched GiantRat), and it had no idea byMonster is full of shopkeepers.
           // preyNames() keys both sides the same way and subtracts the merchant index.
           const creatureNames = preyNames();
+          const dangerCap = Number.isFinite(policy?.maxAttackAbility)
+            ? policy.maxAttackAbility : DEFAULT_ATTACK_ABILITY_CAP;
 
           // Reset blacklist when the room changes or
           // after 60s (mobs may have moved).
@@ -1080,6 +1107,28 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             const isMob = (o.is_player && o.can_attack)
               || (creatureNames.size > 0 && creatureNames.has(creatureKey(objName)));
             if (!isMob) continue;
+            // LEVEL IS NOT DANGER. ATTACK ABILITY IS.
+            //
+            //   GetAttackAbility = 3*viLevel + 60*viDifficulty      (monster.kod)
+            //
+            //     giant rat    lv30 d1 = 150      mummy       lv25 d2 = 195
+            //     baby spider  lv25 d4 = 315      centipede   lv30 d5 = 390
+            //     fungus beast lv50 d1 = 210      spider      lv50 d4 = 390
+            //
+            // A level-30 centipede is exactly as dangerous as a level-50 spider, and a baby
+            // spider is 2.1x a giant rat that outranks it. Banding on level alone calls all of
+            // them prey, which is how JayB killed seventeen giant rats without trouble and then
+            // died five times in a row: every death was in a room holding a centipede, with no
+            // target and nothing flagged, health walked down over six to eight samples.
+            //
+            // So refuse a quarry that hits harder than the character can take. The default is
+            // read from what this fleet has survived rather than invented: rats (150) and
+            // mummies (195) are sustainable at 21-27 max health; baby spiders (315) and
+            // centipedes (390) are not.
+            if (dangerCap != null) {
+              const aa = attackAbility(objName);
+              if (aa != null && aa > dangerCap) continue;
+            }
             const d2 = (o.col - me.col) ** 2 + (o.row - me.row) ** 2;
             candidates.push({ o, d2 });
           }
