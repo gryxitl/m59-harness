@@ -27,7 +27,8 @@
 // FALLING BACK IS NOT OPTIONAL. Rooms without collision geometry exist, and a character whose
 // mover has no opinion must not stand still. Anything this cannot answer goes to the mover the
 // router built, which is kept and delegated to rather than discarded.
-import { CharacterController } from './m59-controller.mjs';
+import { CharacterController, RUN_CLIENT_PER_MS, TELEPORT_SLACK_CLIENT,
+         CLIENT_PER_SQUARE } from './m59-controller.mjs';
 
 // How many consecutive ticks the controller may report no progress before we tell the keeper
 // `stuck` and let it blink. The legacy mover waited 30s; three seconds is long enough to be a
@@ -50,17 +51,7 @@ const STUCK_TICKS = 30;
 // honest arrangement while the two geometries disagree.
 const HANDBACK_TICKS = 12;
 
-// The server's own word arrives asynchronously and is square-granular. Reconciling against it
-// every tick would treat its resolution as error — see CharacterController.reconcile.
-const RECONCILE_EVERY_MS = 1000;
 
-// HOW FAR BACK THE SERVER'S WORD IS ABOUT. A position push describes where the body was when
-// the server last processed it, so the error has to be measured against what WE believed at
-// roughly that moment. A ring of recent beliefs is the honest way to find it; the alternative
-// — comparing against a snapshot taken when we last SENT — freezes the moment sending stops,
-// and a blocked body stops sending immediately. That is how drift reached 3,254 units (three
-// squares) on the first live run while reconcile fired seven times and corrected nothing.
-const BELIEF_RING_MS = 3000;
 
 export class ControllerMover {
   constructor(session, fallback) {
@@ -71,7 +62,6 @@ export class ControllerMover {
     this.active = false;
     this._lastTickAt = 0;
     this._lastReconcileAt = 0;
-    this._beliefs = [];        // {x,y,at}, most recent last
     this._room = null;         // the room our believed position belongs to
     this._noProgress = 0;
     this._sentSeen = 0;
@@ -208,7 +198,6 @@ export class ControllerMover {
       this._room = roomNow;
       this.ctl.clear();
       this.ctl.x = null;                 // forces syncFrom(me) below
-      this._beliefs.length = 0;
       this._plannedFor = null;
       this._noProgress = 0;
       this._handedBack = false;
@@ -218,23 +207,36 @@ export class ControllerMover {
     const dt = this._lastTickAt ? Math.min(now - this._lastTickAt, 1000) : 0;
     this._lastTickAt = now;
 
-    // POSITION: adopt the server's word once, then own it.
+    // POSITION: ADOPT ONCE, THEN OWN IT. NO CORRECTION LOOP.
+    //
+    // This used to reconcile against the server every second. It should never have: the server
+    // does not move a walking character, WE do. What arrives once a second is BP_MOVE — the
+    // server echoing our own last report back at us, lagged by the round trip and by however
+    // long it took to walk the body there. Treating that echo as truth measured our own
+    // latency and called it error, then dragged the believed position toward it: 2 to 46
+    // squares of disagreement, 2,276 refused plans, a third of movement handed to the legacy
+    // mover. clientd3d/move.c has no such step, and `server_x/server_y` there are not the
+    // server's opinion at all — they are what the client last TOLD the server.
+    //
+    // The one real exception is the server RELOCATING us: a blink (our own keeper casts it to
+    // get unstuck), a portal, a death. That is moveobj.c:88 -> ServerMovedPlayer, and it is
+    // detected the only way it honestly can be — by a jump we could not have walked.
     if (this.ctl.x == null) this.ctl.syncFrom(me);
     else {
-      this._beliefs.push({ x: this.ctl.x, y: this.ctl.y, at: now });
-      while (this._beliefs.length && now - this._beliefs[0].at > BELIEF_RING_MS) this._beliefs.shift();
-      if (now - this._lastReconcileAt >= RECONCILE_EVERY_MS) {
-        this._lastReconcileAt = now;
-        // What did we believe about a second ago? That is the belief the server's word is
-        // about. If we have not moved in that time the answer is simply "here", and the
-        // reconcile becomes a straight correction — which is exactly right for a body that
-        // is wedged and needs its position fixed rather than its travel preserved.
-        const want = now - RECONCILE_EVERY_MS;
-        let snap = this._beliefs[0] ?? null;
-        for (const b of this._beliefs) if (Math.abs(b.at - want) < Math.abs(snap.at - want)) snap = b;
-        if (this.ctl.reconcile({ col: me.col, row: me.row }, snap)) this._plannedFor = null;
+      const believed = this.ctl.square();
+      const gap = Math.hypot((me.col - believed.col) * CLIENT_PER_SQUARE,
+                             (me.row - believed.row) * CLIENT_PER_SQUARE);
+      const couldHaveWalked = RUN_CLIENT_PER_MS * Math.max(0, now - (this._lastSeenAt ?? now))
+                            + TELEPORT_SLACK_CLIENT;
+      if (gap > couldHaveWalked) {
+        this.ctl.serverMovedPlayer(me.col, me.row);
+        this._plannedFor = null;
+        this.stats.teleports = (this.stats.teleports || 0) + 1;
+        console.error(`[ctlmover] ${this._agent} the server moved us to (${me.col},${me.row})`
+          + ` — ${Math.round(gap / CLIENT_PER_SQUARE)} squares, further than we could have walked; snapping`);
       }
     }
+    this._lastSeenAt = now;
 
     // PLAN: once per destination, on the grid. Re-planning at tick rate is what held the
     // first live run to 1.14 squares/sec.

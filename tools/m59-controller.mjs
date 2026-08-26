@@ -43,7 +43,7 @@ import { tracePath } from './m59-navtrace.mjs';
 //            A character that stands still under `strict` is the finding, not a malfunction.
 const NAV_MODE = (process.env.M59_NAV_TRACE || 'on').toLowerCase();
 
-const CLIENT_PER_SQUARE = 1024;
+export const CLIENT_PER_SQUARE = 1024;
 const HALF_PROTO = KOD_FINENESS / 2;
 
 // move.c:53,52 — at most 20 sub-steps per move, 200 a second. Sub-stepping is not
@@ -62,14 +62,12 @@ export const RUN_CLIENT_PER_MS = (CLIENT_PER_SQUARE / 2) / 100;
 export const MOVE_INTERVAL_MS = 1000;
 export const MOVE_THRESHOLD_CLIENT = CLIENT_PER_SQUARE / 4;
 
-// How far off a confirmation may be before we believe it over ourselves. Under this we
-// keep our own position: a confirmation is a square-granular read of a body that has moved
-// on since, so snapping to it every time would undo the integration this exists to do.
-export const RECONCILE_SNAP_CLIENT = CLIENT_PER_SQUARE;
-// And this much before the PLAN is suspect too. Three squares: far enough that the body is
-// somewhere the route did not anticipate — a knockback, a teleport, a refused stretch — and
-// not so tight that ordinary reading noise costs a replan.
-export const RECONCILE_REPLAN_CLIENT = CLIENT_PER_SQUARE * 3;
+// HOW FAR THE BODY COULD POSSIBLY HAVE WALKED, plus a square of slack. A server position
+// further away than this is not our own echo arriving late — it is the server having MOVED us
+// (a blink, a portal, a death), which is the one case clientd3d/move.c accepts a position for
+// the player outside a room change. Anything inside it is the echo of our own last report and
+// is ignored, exactly as the real client ignores it.
+export const TELEPORT_SLACK_CLIENT = CLIENT_PER_SQUARE;
 
 export class CharacterController {
   constructor(session, { run = false } = {}) {
@@ -86,12 +84,12 @@ export class CharacterController {
     this._lastSentX = null;
     this._lastSentY = null;
     // Diagnostics that answer the questions this driver has been unable to answer
-    this.stats = { ticks: 0, slid: 0, blocked: 0, sent: 0, reconciled: 0,
-                   drift_max: 0, arrived: 0, replans: 0 };
+    this.stats = { ticks: 0, slid: 0, blocked: 0, sent: 0, serverMoved: 0,
+                   arrived: 0, replans: 0 };
   }
 
-  // Adopt the server's position as the starting truth. Called on a new destination, a room
-  // change, or when a confirmation disagrees beyond RECONCILE_SNAP_CLIENT.
+  // Adopt the server's position as the starting truth. Called when we have no position yet
+  // and on a room change — the two places clientd3d takes a position for the player.
   syncFrom(me) {
     if (!me) return false;
     const px = me.x ?? (me.col * KOD_FINENESS + HALF_PROTO);
@@ -152,40 +150,32 @@ export class CharacterController {
     return { ok: true, waypoints: plan.waypoints.length, planner: steeredBy };
   }
 
-  // A SNAPSHOT OF WHAT WE BELIEVED WHEN A CONFIRMATION WAS ASKED FOR. Pass it back to
-  // reconcile(). Without it, reconciliation compares a two-second-old reading against a
-  // position that has legitimately moved five squares since, and calls the difference error.
-  snapshot() { return { x: this.x, y: this.y, at: Date.now() }; }
-
-  // RECONCILE AGAINST WHAT WE BELIEVED AT THE TIME, AND CORRECT BY THE DELTA.
+  // THE SERVER MOVED US — SNAP, AND RESET THE REPORTING BASELINE.
   //
-  // `confirmPosition` is a square-granular read of where the body WAS when the round trip
-  // started. Comparing it to where we are NOW measures staleness, not error — and the first
-  // live run did exactly that: 12 reconciles in 26 seconds, each nulling the path, 21
-  // replans, and the character held to 1.14 squares/sec because it kept throwing away a
-  // plan that was working.
+  // This replaces a periodic reconcile that did not belong here at all. `clientd3d/move.c`
+  // never corrects the player toward the server during ordinary movement: `server_x/server_y`
+  // are the client's record of WHAT IT LAST TOLD THE SERVER, and MoveUpdatePosition compares
+  // the player's position against that to decide whether to speak again. The only two places
+  // the server sets the player's position are entering a room (game.c:379) and an explicit
+  // object-move for the player (moveobj.c:88), and the latter returns early with the comment
+  // "Don't interpolate or animate our own motion" and calls ServerMovedPlayer — whose whole
+  // body is `server_x = motion.x; server_y = motion.y`. It does not move the player; it resets
+  // the baseline so we do not immediately re-send a position the server just dictated.
   //
-  // So: measure the error against the snapshot taken when the request went out, then apply
-  // that error to the CURRENT position. Travel since the request is preserved, which is the
-  // whole point of integrating in the first place. This is ordinary client-side prediction
-  // reconciliation, and the stock client needs none of it only because it never asks.
-  reconcile(confirmed, snap = null) {
-    if (!confirmed || this.x == null) return false;
-    const cx = (confirmed.col - 0.5) * CLIENT_PER_SQUARE;
-    const cy = (confirmed.row - 0.5) * CLIENT_PER_SQUARE;
-    const ref = snap ?? { x: this.x, y: this.y };
-    const ex = cx - ref.x, ey = cy - ref.y;
-    const err = Math.hypot(ex, ey);
-    if (err > this.stats.drift_max) this.stats.drift_max = err;
-    // A square of disagreement is the reading's own resolution, not a mistake.
-    if (err <= RECONCILE_SNAP_CLIENT) return false;
-    this.x += ex; this.y += ey;
-    this.stats.reconciled++;
-    // The plan rests on where we thought we were, so a LARGE correction invalidates it. A
-    // small one does not, and abandoning the path for every small one is what cost the
-    // first live run more than half its speed.
-    if (err > RECONCILE_REPLAN_CLIENT) { this.path = null; return true; }
-    return false;
+  // We had it inverted: we polled the server's echo of our OWN last report every second,
+  // treated it as truth, and dragged the believed position toward it — measuring our own
+  // latency and calling it error. That is what produced a believed position 2 to 46 squares
+  // from the body, and with it 2,276 refused plans ("no free space at the start", "no route
+  // through free space") and a third of all movement handed to the legacy mover.
+  serverMovedPlayer(col, row) {
+    if (!Number.isFinite(col) || !Number.isFinite(row)) return false;
+    this.x = (col - 0.5) * CLIENT_PER_SQUARE;
+    this.y = (row - 0.5) * CLIENT_PER_SQUARE;
+    this.path = null; this.pathIdx = 0;      // the plan was made from somewhere we no longer are
+    this._lastSentX = this.x; this._lastSentY = this.y;   // ServerMovedPlayer's whole job
+    this._lastSentAt = Date.now();
+    this.stats.serverMoved = (this.stats.serverMoved ?? 0) + 1;
+    return true;
   }
 
   // ONE TICK. Synchronous, no awaits, no promises — the loop forbids them.
