@@ -1334,6 +1334,23 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           const fullBand = policy?.threatBand ?? Math.floor(level / 2);
           const band = isArmed ? fullBand : Math.floor(fullBand / 2);
           const ceiling = level + band;
+          // AN ASSIGNED ROOM IS AN ORDER, AND THIS IGNORED IT.
+          //
+          // nearestHuntRoom picks purely by level ceiling, so a character with
+          // policy.assignedRoom set went wherever the ceiling pointed — Lee to 557 for
+          // centipedes with baby spiders ordered in 575, JayB to whatever was nearest with
+          // giant rats ordered in 535. assigned_room is also what stops the whole fleet
+          // stacking into one top-ranked room, which is the reason it exists.
+          //
+          // So an assignment wins outright while the character is not in it. Nothing else
+          // changes: once there, the ordinary in-room hunt takes over.
+          const assigned = Number(policy?.assignedRoom);
+          if (Number.isFinite(assigned) && assigned !== resolved) {
+            router.to(assigned);
+            onDecision?.({ ticks, goal: 'hunt', action: 'travel',
+              what: `assigned room ${assigned} — heading there`, sent: true });
+            return;
+          }
           const hunt = nearestHuntRoom(resolved, ceiling);
           if (hunt && hunt.room !== resolved) {
             router.to(hunt.room);
