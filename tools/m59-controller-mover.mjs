@@ -246,7 +246,31 @@ export class ControllerMover {
         // NO ROUTE IS A REAL ANSWER AND THE KEEPER ACTS ON IT — it blacklists the target
         // rather than chasing something behind a wall. Only say it when the planner refused,
         // never when we merely failed to make progress.
-        this.stats.noRoute++; this.stats.planFail++;
+        this.stats.planFail++;
+        // A BODY STANDING IN ROCK CANNOT BE PLANNED FOR, AND THAT IS NOT THE QUARRY'S FAULT.
+        //
+        // navPath plans through free space, so it refuses outright when the START is a square
+        // the room calls solid — and `no-route` tells the keeper the DESTINATION is
+        // unreachable, so it blacklists a perfectly good target and gives up. Lee sat in the
+        // Yonder Inn on (13,4), a walkable=false square in region 1, with the only exit at
+        // (8,2) in region 0: six NO-ROUTEs in a row and seven minutes of not moving, over a
+        // route the graph plans in six hops.
+        //
+        // The legacy mover has verified escape fans and raw server-confirmed moves for
+        // exactly this, so a body that cannot be planned FROM is handed to it rather than
+        // surrendered. `no-route` keeps its real meaning: we are somewhere sane and the
+        // destination still cannot be reached.
+        const geoRock = this._geo();
+        if (geoRock?.walkable && geoRock.walkable(me.row, me.col) === false) {
+          if (!this._warnedRock) {
+            this._warnedRock = true;
+            console.error(`[ctlmover] ${this._agent} is standing on an unwalkable square`
+              + ` (${me.col},${me.row}) — handing movement to the legacy mover to get out`);
+          }
+          this.stats.rockDelegations = (this.stats.rockDelegations || 0) + 1;
+          return this._delegate(posOverride, 'body is on an unwalkable square');
+        }
+        this.stats.noRoute++;
         this.active = false;
         console.error(`[ctlmover] ${this._agent} NO-ROUTE to (${this.dest.col},${this.dest.row})`
           + ` from (${me.col},${me.row}): ${plan?.reason ?? '?'}`);
