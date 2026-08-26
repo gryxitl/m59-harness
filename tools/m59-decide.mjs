@@ -181,7 +181,10 @@ export const INTENTS = {
   // Two phases, one command per tick, like every other intent here: route to 1018 while
   // outside it, then alternate (11,2) and (11,3) once inside.
   leave_raza: (f, act, ctx) => {
-    const room = Number(f?.room?.num ?? ctx.client?.room?.num);
+    // The MAP number again — client.room.id is the room object's id. Same trap the in_raza
+    // fact fell into: this resolved to NaN, NaN never equals 1018, and the intent routed to
+    // the museum for ever while standing inside it.
+    const room = Number(ctx.session?.world?.room?.num ?? f?.room?.num);
     const MUSEUM = 1018;
     if (room !== MUSEUM) {
       const r = ctx.session?._router;
@@ -189,11 +192,22 @@ export const INTENTS = {
       r.to(MUSEUM);
       return { sent: true, what: `route to the Grand Museum (${MUSEUM}) for the portal out` };
     }
-    // Inside the museum: alternate so a bounce is followed by a fresh approach.
+    // Inside the museum: walk onto the portal, and alternate with the square below it so a
+    // bounce is followed by a fresh approach rather than a re-touch of a square we are no
+    // longer standing on. The portal's own position is read from the room when it is visible
+    // — it is object 2179 at (11,2) — and (11,2) is the documented fallback.
+    let px = 11, py = 2;
+    const objs = ctx.client?.room?.objects;
+    if (objs?.values) {
+      for (const o of objs.values()) {
+        const nm = String(o.name ?? ctx.client?.rsc?.get?.(o.nameRsc) ?? '').toLowerCase();
+        if (nm === 'portal' && Number.isFinite(o.col) && Number.isFinite(o.row)) { px = o.col; py = o.row; break; }
+      }
+    }
     const n = (ctx.session._razaTouch = (ctx.session._razaTouch ?? 0) + 1);
-    const [col, row] = (n % 2) ? [11, 2] : [11, 3];
+    const [col, row] = (n % 2) ? [px, py] : [px, py + 1];
     const sent = !!act.walk?.(col, row, { maxSteps: 40 });
-    return { sent, what: `portal: step to (${col},${row}) — touch ${Math.ceil(n / 2)} of 2+` };
+    return { sent, what: `portal at (${px},${py}): step to (${col},${row}) — touch ${Math.ceil(n / 2)} of 2+` };
   },
 
   equip: (f, act, ctx) => {
