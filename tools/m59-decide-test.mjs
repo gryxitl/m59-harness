@@ -187,14 +187,17 @@ console.log('\nbelow the flee line: finish a fight, never start one');
   // JayB engaged a giant rat at 7 of 20 -- below the flee line (fleeBelow 0.5) but above
   // critical (0.3). flee_hurt needs the target IN REACH and the rat was not adjacent yet,
   // so nothing fled and _fight won: he walked TOWARD it. hp trail [7,8,6,7,6,5,2,3].
-  ok('hurt and below the flee line does NOT close on a distant target',
-     fight.when({ ...base, below_flee: true, in_reach: false }) === false);
-  ok('but it still swings at what is already on us',
-     fight.when({ ...base, below_flee: true, in_reach: true }) === true);
+  // The gate is now `fit_to_engage` rather than `below_flee` — a strictly higher bar, for
+  // the reason in m59-worldstate.mjs: this fleet's fleeBelow is 0.4, so below_flee would
+  // only have stopped him at 8 of 20, one exchange from death.
+  ok('below the ENGAGE bar he does NOT close on a distant target',
+     fight.when({ ...base, fit_to_engage: false, in_reach: false }) === false);
+  ok('but he still swings at what is already on us',
+     fight.when({ ...base, fit_to_engage: false, in_reach: true }) === true);
   ok('and a healthy character closes normally',
-     fight.when({ ...base, below_flee: false, in_reach: false }) === true);
+     fight.when({ ...base, fit_to_engage: true, in_reach: false }) === true);
   ok('critical still refuses outright, in reach or not',
-     fight.when({ ...base, critical: true, below_flee: true, in_reach: true }) === false);
+     fight.when({ ...base, critical: true, fit_to_engage: true, in_reach: true }) === false);
 }
 
 console.log('\na cast holds the character still, because the tick loop is what breaks it');
