@@ -981,8 +981,12 @@ class KeeperProxy {
   activity() {
     const g = this._state?.goap;
     if (!g?.running) return 'no keeper';
-    if (g.action) return g.action;
-    if (g.goal) return g.goal.replace(/^_/, '');
+    // Prefer the sentence over the verb: "close gap" and "assigned room 575 — heading there"
+    // say what a character is doing; "walk" does not. The tick keeper publishes both.
+    const goal = g.goal ? String(g.goal).replace(/^_/, '') : null;
+    if (g.doing) return goal ? `${goal}: ${g.doing}` : String(g.doing);
+    if (g.action) return goal ? `${goal}: ${g.action}` : String(g.action);
+    if (goal) return goal;
     return 'idle';
   }
   status({ full = false } = {}) {

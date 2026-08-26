@@ -193,6 +193,16 @@ async function join() {
       // wired here until somebody notices.
       const plannerDecide = makeDecider({ session, policy, goals: DEFAULT_GOALS,
         onDecision: (d) => {
+          // WHAT THIS CHARACTER IS DOING, WHERE THE DASHBOARD CAN SEE IT.
+          //
+          // The /health goap block reads autopilot._goapKeeper.state().goal and
+          // autopilot._currentAction — survive-keeper machinery the tick driver never fills —
+          // so KeeperProxy.activity() fell through to 'idle' and the fleet page showed "idle"
+          // for a character that was travelling, buying and fighting. The same class of bug
+          // was already fixed one field above for `running`, with a comment about the
+          // dashboard saying nothing was driving JayB while the tick driver swung at mummies.
+          session._tickDecision = { goal: d.goal ?? null, action: d.action ?? null,
+                                    what: d.what ?? null, why: d.why ?? null, at: Date.now() };
           // Log decisions that change, not every tick.
           const line = `${d.goal ?? 'idle'}${d.action ? ' -> ' + d.action : ''}${d.what ? ' (' + d.what + ')' : ''}${d.why ? ' — ' + d.why : ''}`;
           if (line !== lastTickLog) {
@@ -334,8 +344,15 @@ function state() {
       mana: s.mana,
     })).filter(s => s.name),
     goap: autopilot ? {
-      goal: autopilot._goapKeeper?.state()?.goal ?? null,
-      action: autopilot._currentAction ?? null,
+      // In tick mode the decision comes from the tick decider, not the GOAP keeper.
+      goal: (autopilot.mode === 'tick' ? session._tickDecision?.goal : null)
+            ?? autopilot._goapKeeper?.state()?.goal ?? null,
+      action: (autopilot.mode === 'tick' ? session._tickDecision?.action : null)
+            ?? autopilot._currentAction ?? null,
+      // The human-readable half — "close gap", "assigned room 575 — heading there" — so the
+      // dashboard can say what the character is doing rather than only which goal won.
+      doing: autopilot.mode === 'tick' ? (session._tickDecision?.what ?? null) : null,
+      decided_ms_ago: session._tickDecision?.at ? Date.now() - session._tickDecision.at : null,
       // In tick mode the driver is session._tickDecide, NOT autopilot.running
       // (which stays false because the autopilot's own loop isn't the driver).
       // Report running=true when EITHER is active, or the broker's proxy sees
