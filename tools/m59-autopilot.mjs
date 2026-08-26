@@ -14976,17 +14976,63 @@ export class Autopilot {
   // Herbs, and a character stuck at 80 vigor for want of four items is losing far more
   // than the markup. Bounded by reagentTarget and by walkingMoney, so it can never eat
   // the money a character needs to get home.
-  async restockReagents(seller) {
+  // ── Restock decomposition ──────────────────────────────────────────
+  //
+  // The seam between restockReagents() and its decisions. This landed once (a362c97) and
+  // was lost in a later rewrite, leaving m59-restock-test.mjs asserting methods that no
+  // longer existed.
+  //
+  // Restored against the CURRENT rule, which is not the one the original test asserted:
+  // the floor used to be walkingMoney (400), relaxed to hungryFloor (100) when hungry, and
+  // that was deliberately changed to zero. The reasoning is recorded at the call site and
+  // was measured — walkingMoney is also the level bankRun banks DOWN to, so the two met: a
+  // character banked to 400, walked to a merchant, found its purse exactly at the floor,
+  // declined, and walked back. Restocks arrived 150 shillings at a time against a 3,360sh
+  // fill, with the fleet trading 54% of its active time and fighting 17%.
+  //
+  // `policy.shopFloor` is the way to ask for a reserve back; the default is that money
+  // brought to a shop is money to spend at the shop.
+  _restockCheckBudget(purse, ctx = {}) {
+    const floor = Math.max(0, Number(this.policy.shopFloor ?? 0));
+    return { canBuy: purse > floor, budget: purse - floor, floor };
+  }
+
+  /**
+   * Buy the chosen items, one at a time, and record why each was bought.
+   *
+   * One at a time with a pause between, because the server answers a buy with prose and a
+   * batch gives no way to tell which line refused. The inventory is re-read at the end so
+   * the caller's next read is not the snapshot from before the purchase.
+   */
+  async _restockBuyItems(shop, seller, items) {
     const s = this.s, c = s.need();
+    const got = [];
+    for (const it of items) {
+      await s.pacer.submit('buy', () => c.buyItems(shop.sellerId, [it.id]));
+      await new Promise(r => setTimeout(r, 700));
+      got.push(`${it.name} @${it.cost}`);
+      this.recordPurchase(it.name, it.cost, { kind: skills.shareKind(it.name) || (isFood(it.name) ? 'food' : null),
+        // seller may be a bare id — the signature accepts both — so do not assume an object.
+        from: seller?.nameRsc ? (c.rsc.get(seller.nameRsc) ?? null) : null,
+        why: isFood(it.name) ? 'food bought at a counter we were already standing at — the only way past the vigor-80 resting cap' : 'reagent top-up at a counter we were already standing at, to keep create food castable' });
+    }
+    await s.pacer.submit('read', () => c.requestInventory()).catch(() => {});
+    return got;
+  }
+
+  // ── Restock decomposition, continued ───────────────────────────────
+  /**
+   * What this character is short of, and whether it is hungry.
+   *
+   * Two sources folded into one answer: the reagent targets, so `create food` stays
+   * castable, and the loadout's own carry floors. Pure reads — safe to call before the
+   * caller decides whether the trip is worth making at all.
+   */
+  _restockCalculateNeeds() {
+    const c = this.s.need();
     const mayBuyFood = purchaseEnabled(this.policy, 'food');
     const mayBuyReagents = purchaseEnabled(this.policy, 'reagents');
-    if (!mayBuyFood && !mayBuyReagents) return [];
-    // Sell first. A merchant refuses a purchase into a full pack by SPEAKING, and the buy
-    // call reports success either way — so without this a character walks to a counter,
-    // is talked at, and walks home with nothing.
-    await this.makeRoomToBuy(seller?.id ?? seller).catch(() => {});
-    // Per kind: the field refills elderberry for nothing and nothing in the world drops a
-    // herb, so they are not the same number. See REAGENT_TARGET_BY_KIND.
+
     const wantEb = reagentTargetFor('elderberry', this.policy.reagentTarget);
     const wantHb = reagentTargetFor('herb', this.policy.reagentTarget);
     const want = wantEb;                      // what the older log lines and notes report
@@ -15035,120 +15081,36 @@ export class Autopilot {
         if (kind) need[kind] = short; else askedFor[norm(entry.item)] = short;
       }
     }
-    const shortOf = (name) => {
-      if (!mayBuyReagents) return 0;
-      const k = skills.shareKind(name);
-      if (k && need[k] > 0) return need[k];
-      return askedFor[norm(name)] || 0;
-    };
-
-    // "AT THE REAGENT TARGET" IS NOT A REASON TO WALK PAST THE BREAD.
-    //
-    // This returned whenever the two reagents were stocked, and everything below it —
-    // including the entire food-buying half of this function — is downstream of that
-    // return. So a character with sixty herbs and no dinner declined at the counter
-    // selling dinner, and the ledger recorded it as `already at the reagent target`,
-    // which is true and is not the question that was being asked.
-    //
-    // Silent until I made it worse. Raising the herb target to 60 (see
-    // REAGENT_TARGET_BY_KIND) is what pushed the fleet over the line: characters now top
-    // up herbs at Joguer's, arrive at the bread shop already satisfied, and take this
-    // return. Measured over one day afterwards — 214 purchases, ALL of them reagents (185
-    // herbs, 32 elderberry) and NOT ONE item of food, while seventeen of twenty-one
-    // carried nothing to eat and the fleet's median vigor fell from 164 to 81.
-    //
-    // The two wants are independent and the test has to be too. `buyFoodInTown` walks to
-    // 103 specifically to buy food, and this is the function it calls to do it.
-    const wantsFood = mayBuyFood && (!this.larder(c).length ||
-                      (vigorPct(c.vitals?.()) ?? 1) < (this.policy.vigorWant ?? 0.9));
-    if (!need.elderberry && !need.herb && !wantsFood &&
-        !Object.values(askedFor).some(n => n > 0)) {
-      this.declinedPurchase('already at the reagent target and not hungry', { have, target: want,
-        ...(loadout ? { from_loadout: loadout.carry.length + ' item(s) listed' } : {}) });
-      return [];
-    }
-    const purse = (c.inventory || []).filter(o => /shilling/i.test(c.rsc.get(o.nameRsc) || ''))
-                                     .reduce((t, o) => t + (o.amount || 1), 0);
-    // THE WALKING FLOAT MUST NOT STARVE THE CHARACTER IT PROTECTS.
-    //
-    // This refused outright below the float, so a character holding 300 shillings bought
-    // no reagents at all — when sixty of them is three casts of create food, and create
-    // food is the only route to vigor for a character nowhere near a shop. The fleet
-    // declined 894 casts in one day for want of reagents, against 58 for want of mana.
-    //
-    // The float exists so a character can pay its way home. Reagents are 10 or so each
-    // and weigh nothing, so when it is hungry the reserve drops to what a trip home
-    // actually costs and the rest is spendable. A character that cannot eat cannot earn,
-    // and the float it was guarding buys nothing at all if it dies holding it.
-    // AN EMPTY PACK COUNTS AS HUNGRY, BECAUSE THE TRIP THAT GOT HERE SAYS SO.
-    //
-    // bankRun now walks a character to the bread shop for having no food and no way to
-    // cook. Both gates below then asked a different question — is it hungry RIGHT NOW —
-    // and the two disagree exactly where it matters: a character at 200 vigor with an
-    // empty pack is not hungry, and is one fight away from being stuck at the resting cap
-    // with no way back up. Nine of them walked to The Bhrama & Falcon on the new door and
-    // stood in it buying nothing, which is a longer way to fail than never setting off.
-    //
-    // So "hungry" here means "cannot eat", not "wants to eat now".
+    // Hoisted here from further down the caller so the whole "what do we need" answer is
+    // in one place. Both are pure reads of the larder and the vitals, so computing them a
+    // few lines earlier changes nothing.
+    const lowVigor = (vigorPct(c.vitals?.()) ?? 1) < (this.policy.vigorWant ?? 0.9);
     const emptyLarder = mayBuyFood && !this.larder(c).length;
-    const hungryNow = emptyLarder ||
-                      (vigorPct(c.vitals?.()) ?? 1) < (this.policy.vigorWant ?? 0.9);
-    // THE WALKING MONEY IS FOR SPENDING, AND THIS IS THE SHOP.
-    //
-    // The float exists so a character can pay its way home — but this function only ever
-    // runs standing at a counter, which is where home is. There is a bank in every town
-    // that has a merchant, so a character that spends its last shilling here re-banks on
-    // the way out; the reserve was being guarded in the one place it is not needed.
-    //
-    // Guarding it cost the fleet its supply. walkingMoney is also the level bankRun banks
-    // DOWN to, so the two met: a character banked to 400, walked to a merchant, found its
-    // purse at exactly the floor, declined, and walked back. Measured with the shipped
-    // 500/400: purses of 0 to 586 against bank balances of 10,000 to 36,000, restocks
-    // arriving 150 shillings at a time against a 3,360sh fill, trading at 54% of all
-    // active time against 17% fighting, and three characters that had not fought at all.
-    //
-    // So the floor here is zero. `hungryFloor` is kept for anyone who wants a reserve
-    // back — set it and it applies — but the default is that money brought to a shop is
-    // money to spend at the shop.
-    const floor = Math.max(0, Number(this.policy.shopFloor ?? 0));
-    if (purse <= floor) {
-      this.declinedPurchase('purse is empty at the counter', { purse, float: floor, need });
-      return [];
-    }
+    const wantsFood = mayBuyFood && (!this.larder(c).length || lowVigor);
+    const hungryNow = emptyLarder || lowVigor;
 
-    const before = c.evSeq;
-    await s.pacer.submit('buy', () => c.buy(seller.id ?? seller));
-    const ev = await c.waitFor({ since: before, kinds: ['shop', 'message'], timeoutMs: 4000 }).catch(() => ({ events: [] }));
-    const shop = ev.events?.find(e => e.kind === 'shop');
-    if (!shop) {
-      this.declinedPurchase('the merchant never opened a shop list');
-      return [];
-    }
-    // BUY FOOD TOO, NOT JUST REAGENTS.
-    //
-    // This filtered every shop list through shareKind, which matches elderberry and herbs
-    // and nothing else — so a character could stand at a counter selling bread, with
-    // money in hand and vigor pinned at the resting cap, and buy nothing. Ten of
-    // twenty-one sat at exactly 80 for an entire session on that.
-    //
-    // Resting stops awarding vigor at 80 of 200, so everything above it has to be EATEN.
-    // Making food needs elderberry and herbs in the eater's own pack, and the fleet's
-    // reagents are hoarded in rooms nobody hungry ever visits — buying is the route that
-    // does not depend on the geography lining up.
-    //
-    // isFood comes from the Food class tree (m59-items.mjs), not a word list: guessing by
-    // name would miss "Inky-cap mushroom" and "goblet of ale" and would wrongly include
-    // the mushrooms that are reagents.
+    return { need, askedFor, want, have, loadout,
+             wantsFood, hungryNow, emptyLarder, mayBuyFood, mayBuyReagents };
+  }
+
+  /** Am I short of this item, counting both reagent targets and loadout floors? */
+  _restockShortOf(name, { need = {}, askedFor = {}, mayBuyReagents = true } = {}) {
+    if (!mayBuyReagents) return 0;
+    const k = skills.shareKind(name);
+    if (k && need[k] > 0) return need[k];
+    return askedFor[norm(name)] || 0;
+  }
+
+  /**
+   * What to buy from this shop, within budget: the reagents we are short of, then food
+   * ranked by vigor per shilling until the gap is covered.
+   */
+  _restockRankItems(shop, ctx = {}) {
+    const c = this.s.need();
+    const { need = {}, askedFor = {}, mayBuyReagents = true, mayBuyFood = true,
+            hungryNow = false, emptyLarder = false, budget = 0 } = ctx;
     const hungry = mayBuyFood && hungryNow;
-
-    // RANK FOOD BY VIGOR PER SHILLING, and stop once the gap is closed.
-    //
-    // viNutrition is vigor one-for-one (player.kod:1277-1278) and spans an order of
-    // magnitude: a water skin is 3, a wheel of cheese 30. This took one of everything in
-    // whatever order the shop listed it, and checked each price against the purse it
-    // walked in with rather than what was left — so it could both overspend and come away
-    // with a handful of water skins when a single cheese was the same trip.
-    const budget = purse - floor;
+    const shortOf = (name) => this._restockShortOf(name, { need, askedFor, mayBuyReagents });
     let spend = 0;
     const affordable = it => (it.cost ?? 0) > 0 && (it.cost ?? 0) <= budget - spend;
 
@@ -15204,6 +15166,129 @@ export class Autopilot {
         food.push(pick.it); spend += pick.it.cost; gap -= pick.vigor;
       }
     }
+    return { reagents, food };
+  }
+
+  async restockReagents(seller) {
+    const s = this.s, c = s.need();
+    const mayBuyFood = purchaseEnabled(this.policy, 'food');
+    const mayBuyReagents = purchaseEnabled(this.policy, 'reagents');
+    if (!mayBuyFood && !mayBuyReagents) return [];
+    // Sell first. A merchant refuses a purchase into a full pack by SPEAKING, and the buy
+    // call reports success either way — so without this a character walks to a counter,
+    // is talked at, and walks home with nothing.
+    await this.makeRoomToBuy(seller?.id ?? seller).catch(() => {});
+    // Per kind: the field refills elderberry for nothing and nothing in the world drops a
+    // herb, so they are not the same number. See REAGENT_TARGET_BY_KIND.
+    const { need, askedFor, want, have, loadout, wantsFood, hungryNow, emptyLarder }
+      = this._restockCalculateNeeds();
+    const shortOf = (name) =>
+      this._restockShortOf(name, { need, askedFor, mayBuyReagents });
+
+    // "AT THE REAGENT TARGET" IS NOT A REASON TO WALK PAST THE BREAD.
+    //
+    // This returned whenever the two reagents were stocked, and everything below it —
+    // including the entire food-buying half of this function — is downstream of that
+    // return. So a character with sixty herbs and no dinner declined at the counter
+    // selling dinner, and the ledger recorded it as `already at the reagent target`,
+    // which is true and is not the question that was being asked.
+    //
+    // Silent until I made it worse. Raising the herb target to 60 (see
+    // REAGENT_TARGET_BY_KIND) is what pushed the fleet over the line: characters now top
+    // up herbs at Joguer's, arrive at the bread shop already satisfied, and take this
+    // return. Measured over one day afterwards — 214 purchases, ALL of them reagents (185
+    // herbs, 32 elderberry) and NOT ONE item of food, while seventeen of twenty-one
+    // carried nothing to eat and the fleet's median vigor fell from 164 to 81.
+    //
+    // The two wants are independent and the test has to be too. `buyFoodInTown` walks to
+    // 103 specifically to buy food, and this is the function it calls to do it.
+    if (!need.elderberry && !need.herb && !wantsFood &&
+        !Object.values(askedFor).some(n => n > 0)) {
+      this.declinedPurchase('already at the reagent target and not hungry', { have, target: want,
+        ...(loadout ? { from_loadout: loadout.carry.length + ' item(s) listed' } : {}) });
+      return [];
+    }
+    const purse = (c.inventory || []).filter(o => /shilling/i.test(c.rsc.get(o.nameRsc) || ''))
+                                     .reduce((t, o) => t + (o.amount || 1), 0);
+    // THE WALKING FLOAT MUST NOT STARVE THE CHARACTER IT PROTECTS.
+    //
+    // This refused outright below the float, so a character holding 300 shillings bought
+    // no reagents at all — when sixty of them is three casts of create food, and create
+    // food is the only route to vigor for a character nowhere near a shop. The fleet
+    // declined 894 casts in one day for want of reagents, against 58 for want of mana.
+    //
+    // The float exists so a character can pay its way home. Reagents are 10 or so each
+    // and weigh nothing, so when it is hungry the reserve drops to what a trip home
+    // actually costs and the rest is spendable. A character that cannot eat cannot earn,
+    // and the float it was guarding buys nothing at all if it dies holding it.
+    // AN EMPTY PACK COUNTS AS HUNGRY, BECAUSE THE TRIP THAT GOT HERE SAYS SO.
+    //
+    // bankRun now walks a character to the bread shop for having no food and no way to
+    // cook. Both gates below then asked a different question — is it hungry RIGHT NOW —
+    // and the two disagree exactly where it matters: a character at 200 vigor with an
+    // empty pack is not hungry, and is one fight away from being stuck at the resting cap
+    // with no way back up. Nine of them walked to The Bhrama & Falcon on the new door and
+    // stood in it buying nothing, which is a longer way to fail than never setting off.
+    //
+    // So "hungry" here means "cannot eat", not "wants to eat now".
+    // THE WALKING MONEY IS FOR SPENDING, AND THIS IS THE SHOP.
+    //
+    // The float exists so a character can pay its way home — but this function only ever
+    // runs standing at a counter, which is where home is. There is a bank in every town
+    // that has a merchant, so a character that spends its last shilling here re-banks on
+    // the way out; the reserve was being guarded in the one place it is not needed.
+    //
+    // Guarding it cost the fleet its supply. walkingMoney is also the level bankRun banks
+    // DOWN to, so the two met: a character banked to 400, walked to a merchant, found its
+    // purse at exactly the floor, declined, and walked back. Measured with the shipped
+    // 500/400: purses of 0 to 586 against bank balances of 10,000 to 36,000, restocks
+    // arriving 150 shillings at a time against a 3,360sh fill, trading at 54% of all
+    // active time against 17% fighting, and three characters that had not fought at all.
+    //
+    // So the floor here is zero. `hungryFloor` is kept for anyone who wants a reserve
+    // back — set it and it applies — but the default is that money brought to a shop is
+    // money to spend at the shop.
+    const { canBuy, floor } = this._restockCheckBudget(purse, { hungryNow: hungry });
+    if (!canBuy) {
+      this.declinedPurchase('purse is empty at the counter', { purse, float: floor, need });
+      return [];
+    }
+
+    const before = c.evSeq;
+    await s.pacer.submit('buy', () => c.buy(seller.id ?? seller));
+    const ev = await c.waitFor({ since: before, kinds: ['shop', 'message'], timeoutMs: 4000 }).catch(() => ({ events: [] }));
+    const shop = ev.events?.find(e => e.kind === 'shop');
+    if (!shop) {
+      this.declinedPurchase('the merchant never opened a shop list');
+      return [];
+    }
+    // BUY FOOD TOO, NOT JUST REAGENTS.
+    //
+    // This filtered every shop list through shareKind, which matches elderberry and herbs
+    // and nothing else — so a character could stand at a counter selling bread, with
+    // money in hand and vigor pinned at the resting cap, and buy nothing. Ten of
+    // twenty-one sat at exactly 80 for an entire session on that.
+    //
+    // Resting stops awarding vigor at 80 of 200, so everything above it has to be EATEN.
+    // Making food needs elderberry and herbs in the eater's own pack, and the fleet's
+    // reagents are hoarded in rooms nobody hungry ever visits — buying is the route that
+    // does not depend on the geography lining up.
+    //
+    // isFood comes from the Food class tree (m59-items.mjs), not a word list: guessing by
+    // name would miss "Inky-cap mushroom" and "goblet of ale" and would wrongly include
+    // the mushrooms that are reagents.
+    const hungry = mayBuyFood && hungryNow;
+
+    // RANK FOOD BY VIGOR PER SHILLING, and stop once the gap is closed.
+    //
+    // viNutrition is vigor one-for-one (player.kod:1277-1278) and spans an order of
+    // magnitude: a water skin is 3, a wheel of cheese 30. This took one of everything in
+    // whatever order the shop listed it, and checked each price against the purse it
+    // walked in with rather than what was left — so it could both overspend and come away
+    // with a handful of water skins when a single cheese was the same trip.
+    const budget = purse - floor;
+    const { reagents, food } = this._restockRankItems(shop, {
+      need, askedFor, mayBuyReagents, mayBuyFood, hungryNow, emptyLarder, budget });
     const wanted = [...reagents, ...food];
     if (!wanted.length) {
       // WHICH of the two it was matters, and both look like "bought nothing" from the
@@ -15220,17 +15305,7 @@ export class Autopilot {
                                      .map(it => `${it.name} @${it.cost}`).slice(0, 6) });
       return [];
     }
-    const got = [];
-    for (const it of wanted) {
-      await s.pacer.submit('buy', () => c.buyItems(shop.sellerId, [it.id]));
-      await new Promise(r => setTimeout(r, 700));
-      got.push(`${it.name} @${it.cost}`);
-      this.recordPurchase(it.name, it.cost, { kind: skills.shareKind(it.name) || (isFood(it.name) ? 'food' : null),
-        // seller may be a bare id — the signature accepts both — so do not assume an object.
-        from: seller?.nameRsc ? (c.rsc.get(seller.nameRsc) ?? null) : null,
-        why: isFood(it.name) ? 'food bought at a counter we were already standing at — the only way past the vigor-80 resting cap' : 'reagent top-up at a counter we were already standing at, to keep create food castable' });
-    }
-    await s.pacer.submit('read', () => c.requestInventory()).catch(() => {});
+    const got = await this._restockBuyItems(shop, seller, wanted);
     if (got.length) this.note('restocked reagents', { bought: got, had: have, target: want,
       why: 'create food refuses silently without 2 elderberry and 2 herbs' });
     return got;

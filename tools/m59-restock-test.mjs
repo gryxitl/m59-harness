@@ -120,24 +120,41 @@ t('_restockCalculateNeeds: not hungry when larder has food and vigor is high', (
 
 // --- _restockCheckBudget ---
 
-t('_restockCheckBudget: canBuy when purse above floor', () => {
+// MONEY BROUGHT TO A SHOP IS MONEY TO SPEND AT THE SHOP.
+//
+// These three asserted the ORIGINAL rule — floor = walkingMoney (400), relaxed to
+// hungryFloor (100) when hungry — which was deliberately changed to zero, and the
+// reasoning is recorded at the call site in m59-autopilot.mjs. walkingMoney is also the
+// level bankRun banks DOWN to, so the two met exactly: a character banked to 400, walked to
+// a merchant, found its purse at the floor, declined, and walked back. Measured with the
+// shipped 500/400 — restocks arriving 150 shillings at a time against a 3,360sh fill, the
+// fleet trading 54% of its active time against 17% fighting, three characters that had not
+// fought at all.
+//
+// So these now pin the CURRENT rule. A test that keeps asserting a superseded design is
+// not protecting anything; it just fails until somebody deletes it.
+t('_restockCheckBudget: the default floor is zero — a shop is where the money is for', () => {
   const k = mockKeeper();
   const r = k._restockCheckBudget(500, { hungryNow: false });
   if (r.canBuy !== true) throw new Error('expected canBuy=true');
-  if (r.floor !== 400) throw new Error(`expected floor=400, got ${r.floor}`);
+  if (r.floor !== 0) throw new Error(`expected floor=0, got ${r.floor}`);
+  if (r.budget !== 500) throw new Error(`expected the whole purse as budget, got ${r.budget}`);
 });
 
-t('_restockCheckBudget: cannotBuy when purse at floor', () => {
+t('_restockCheckBudget: an empty purse still cannot buy', () => {
   const k = mockKeeper();
-  const r = k._restockCheckBudget(400, { hungryNow: false });
+  const r = k._restockCheckBudget(0, { hungryNow: false });
   if (r.canBuy !== false) throw new Error('expected canBuy=false');
 });
 
-t('_restockCheckBudget: relaxed floor when hungry', () => {
-  const k = mockKeeper();
-  const r = k._restockCheckBudget(150, { hungryNow: true });
-  if (r.floor !== 100) throw new Error(`expected floor=100 when hungry, got ${r.floor}`);
+t('_restockCheckBudget: shopFloor is how a reserve is asked for', () => {
+  const k = mockKeeper({ policy: { shopFloor: 100 } });
+  const r = k._restockCheckBudget(150, { hungryNow: false });
+  if (r.floor !== 100) throw new Error(`expected floor=100, got ${r.floor}`);
   if (r.canBuy !== true) throw new Error('expected canBuy=true');
+  if (r.budget !== 50) throw new Error(`expected budget=50, got ${r.budget}`);
+  const at = k._restockCheckBudget(100, { hungryNow: false });
+  if (at.canBuy !== false) throw new Error('a purse exactly at the floor cannot buy');
 });
 
 // --- _restockRankItems ---
