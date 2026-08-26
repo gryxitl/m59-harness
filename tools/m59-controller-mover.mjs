@@ -421,7 +421,26 @@ export class ControllerMover {
     //
     // Escape fans and raw server-confirmed moves are the legacy mover's job. Hand it over the
     // moment we notice, rather than after twelve ticks of grinding.
-    if (geo.walkable && geo.walkable(me.row, me.col) === false) {
+    // ASK THE MODEL THE MOVER ENFORCES, NOT THE ONE THE SERVER KEEPS.
+    //
+    // This asked `geo.walkable` -- the COARSE grid, a server artifact the real client never
+    // consults, and the exact mistake the note in m59-controller.mjs:270 was written about.
+    // The two grids disagree constantly, and not marginally: of the fine-walkable squares in
+    // the Deep Forest of Farol, 76% are coarse-UNwalkable (2,432 of 3,201). Across six rooms
+    // the fleet actually walks, 36.5%.
+    //
+    // So better than a third of every journey was spent "embedded", handed to the legacy
+    // mover to dig out of ground it was standing on perfectly well -- and the legacy mover
+    // AWAITS server confirmation, which is where the multi-second pauses come from. Reported
+    // as "he seems to pause for a few seconds every now and then" while crossing Farol, and
+    // measured at delegated 308 -> 598 in one twenty-second window against six controller
+    // steps.
+    //
+    // The claim in the note below that "the fine tracer refuses too, so this is not a
+    // coarse-grid artifact" was true of the square it was written about and not in general.
+    // fineWalkable is what traceFineMoveClient enforces, so it is what may declare a body
+    // stuck in rock.
+    if (geo.fineWalkable && geo.fineWalkable(me.row, me.col) === false) {
       this.stats.rockDelegations = (this.stats.rockDelegations || 0) + 1;
       if (!this._warnedRock) {
         this._warnedRock = true;
@@ -430,7 +449,7 @@ export class ControllerMover {
       }
       return this._delegate(posOverride, 'body is on an unwalkable square');
     }
-    if (this._warnedRock && geo.walkable && geo.walkable(me.row, me.col) !== false)
+    if (this._warnedRock && geo.fineWalkable && geo.fineWalkable(me.row, me.col) !== false)
       this._warnedRock = false;      // back on real ground; the next embedding is news again
 
     // PLAN: once per destination, on the grid. Re-planning at tick rate is what held the

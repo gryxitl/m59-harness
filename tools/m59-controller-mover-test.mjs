@@ -234,5 +234,48 @@ console.log('\ncontroller: walking is not how a room is left');
      (e.stats.offRoomRefused ?? 0) === 0, String(e.stats.offRoomRefused));
 }
 
+console.log('\ncontroller mover: "embedded" is judged by the model the mover enforces');
+{
+  // THE COARSE GRID IS A SERVER ARTIFACT THE CLIENT NEVER CONSULTS, and the two disagree
+  // constantly: 76% of the fine-walkable squares in the Deep Forest of Farol are
+  // coarse-UNwalkable, 36.5% across six rooms the fleet actually walks. Judging "embedded"
+  // by the coarse grid therefore handed better than a third of every journey to the legacy
+  // mover to dig out of ground the body was standing on perfectly well -- and that mover
+  // AWAITS server confirmation, which is what the reported multi-second pauses were.
+  const mkGeo = (coarse, fine) => ({
+    collisionReady: true, rows: 55, cols: 63,
+    walkable: () => coarse, fineWalkable: () => fine,
+    traceFineMoveClient: (x0, y0, x1, y1) => ({ available: true, x: x1, y: y1 }),
+  });
+  const run = geo => {
+    const session = {
+      agent: 't-test',
+      client: { state: 'game', self: { col: 46, row: 21 }, room: { id: 1, num: 556 } },
+      world: { geometry: geo },
+    };
+    let delegated = 0;
+    const fallback = { to() {}, tick: () => { delegated++; return { state: 'moving' }; }, cancel() {} };
+    const cm = new ControllerMover(session, fallback);
+    cm.ctl = stubCtl({ col: 46, row: 21 }, 'moving');
+    cm.to(30, 2);
+    cm._room = 1;
+    cm._plannedFor = '30,2';
+    for (let i = 0; i < 5; i++) { cm._lastTickAt = Date.now() - 100; cm.tick({ col: 46, row: 21 }); }
+    return { delegated, rock: cm.stats.rockDelegations ?? 0 };
+  };
+
+  // The live case: coarse says rock, the fine model says it is fine. This is 76% of Farol.
+  const disagree = run(mkGeo(false, true));
+  ok('a coarse-only refusal does NOT count as embedded', disagree.rock === 0,
+     `rockDelegations=${disagree.rock}`);
+
+  // Genuinely embedded: the model that actually gates movement refuses.
+  const embedded = run(mkGeo(false, false));
+  ok('a fine-model refusal DOES count as embedded', embedded.rock > 0,
+     `rockDelegations=${embedded.rock}`);
+  ok('and it is handed to the legacy mover to dig out', embedded.delegated > 0,
+     `delegated=${embedded.delegated}`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
