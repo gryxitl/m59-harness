@@ -27,7 +27,8 @@
 // FALLING BACK IS NOT OPTIONAL. Rooms without collision geometry exist, and a character whose
 // mover has no opinion must not stand still. Anything this cannot answer goes to the mover the
 // router built, which is kept and delegated to rather than discarded.
-import { CharacterController, TELEPORT_SQUARES, CLIENT_PER_SQUARE } from './m59-controller.mjs';
+import { CharacterController, TELEPORT_SQUARES, DIVERGENCE_SQUARES,
+         CLIENT_PER_SQUARE } from './m59-controller.mjs';
 
 // How many consecutive ticks the controller may report no progress before we tell the keeper
 // `stuck` and let it blink. The legacy mover waited 30s; three seconds is long enough to be a
@@ -252,6 +253,23 @@ export class ControllerMover {
       const believed = this.ctl.square();
       const gap = Math.hypot((me.col - believed.col) * CLIENT_PER_SQUARE,
                              (me.row - believed.row) * CLIENT_PER_SQUARE);
+      // A LARGE, PERSISTENT GAP MEANS WE ARE SIMPLY WRONG — adopt the server's word.
+      // Checked about once a second and required twice running, so ordinary echo lag (3-6
+      // squares at walking speed) never triggers it.
+      if (gap > DIVERGENCE_SQUARES * CLIENT_PER_SQUARE
+          && gap <= TELEPORT_SQUARES * CLIENT_PER_SQUARE) {
+        if (now - (this._divSince ?? 0) > 3000) this._divSince = now;   // start a fresh window
+        else if (now - this._divSince >= 900) {
+          this._divSince = 0;
+          this.ctl.serverMovedPlayer(me.col, me.row);
+          this._plannedFor = null;
+          this.stats.resyncs = (this.stats.resyncs || 0) + 1;
+          console.error(`[ctlmover] ${this._agent} believed (${believed.col},${believed.row}) but the server`
+            + ` says (${me.col},${me.row}) — ${Math.round(gap / CLIENT_PER_SQUARE)} squares for a second; adopting the server`);
+        }
+      } else if (gap <= DIVERGENCE_SQUARES * CLIENT_PER_SQUARE) {
+        this._divSince = 0;                       // back in agreement
+      }
       if (gap > TELEPORT_SQUARES * CLIENT_PER_SQUARE) {
         this.ctl.serverMovedPlayer(me.col, me.row);
         this._plannedFor = null;

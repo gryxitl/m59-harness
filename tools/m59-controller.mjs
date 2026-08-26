@@ -76,6 +76,24 @@ export const MOVE_THRESHOLD_CLIENT = CLIENT_PER_SQUARE / 4;
 // reintroducing a ring of past beliefs to diff against.
 export const TELEPORT_SQUARES = 10;
 
+// AND A FLOOR UNDER ORDINARY DIVERGENCE, which the real client does not need and we do.
+//
+// clientd3d/move.c never corrects the player toward the server, and reading that I deleted our
+// reconciliation entirely. That was the wrong lesson. The real client CANNOT diverge: it owns
+// the position and the server accepts whatever it reports, so its belief is the truth by
+// definition. Ours is not — our moves can fail to take effect, and with nothing pulling us
+// back we integrate forward against a body that never moved.
+//
+// Measured on JayB: the controller believed (46,40) while the server had him at (44,31), nine
+// squares apart and growing, so navPath planned from the fiction and answered "no route
+// through free space" for a journey that routes in 65 waypoints from his real square. A
+// hand-issued walkTo moved him instantly, because walkTo re-reads the server every time.
+//
+// So: not the old per-second reconcile, which chased round-trip lag and threw away working
+// plans. A gap this large is not lag — the echo runs 3 to 6 squares behind at walking speed —
+// and it must persist across two checks a second apart before we act on it.
+export const DIVERGENCE_SQUARES = 6;
+
 export class CharacterController {
   constructor(session, { run = false } = {}) {
     this.session = session;
