@@ -16,7 +16,7 @@
 //
 // It changes nothing. Read-only, safe at any time.
 
-import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
@@ -146,9 +146,25 @@ const short = p => p.replace(/^.*[\\/]substrate[\\/]/, 'substrate/').replace(/\\
 // A ROSTER PATH IS AN IDENTITY; A FLEET LABEL IS NOT. Two checkouts can each hold a fleet
 // called "prod" and they are not the same 21 characters — CLAUDE.md says so, m59-fleets.mjs
 // already matches brokers this way, and this file did not. Same comparison as that one.
+// A BROKER IS OURS WHEN ITS STATE PATH IS OUR ROSTER, AND A SYMLINK MUST NOT HIDE THAT.
+//
+// `resolve` makes a path absolute; it does not collapse symlinks. On macOS /tmp is a link
+// to /private/tmp and the per-user temp dir is likewise /var -> /private/var, so a broker
+// reporting one spelling and a roster resolved to the other compared UNEQUAL — and the
+// tool then reported the fleet as unheld, which is the exact false verdict it exists to
+// prevent. Node itself makes this easy to hit: a module loaded through a symlinked path
+// gets the REAL path in import.meta.url, so the two halves of this comparison can disagree
+// without anybody having done anything unusual.
+//
+// realpath when the path is on disk, the resolved string when it is not — a roster that
+// does not exist yet still has to compare equal to itself.
+const realOrResolve = (p) => {
+  const abs = resolve(String(p));
+  try { return realpathSync(abs); } catch { return abs; }
+};
 const samePath = (a, b) => !!a && !!b &&
-  resolve(String(a)).replace(/\\/g, '/').toLowerCase() ===
-  resolve(String(b)).replace(/\\/g, '/').toLowerCase();
+  realOrResolve(a).replace(/\\/g, '/').toLowerCase() ===
+  realOrResolve(b).replace(/\\/g, '/').toLowerCase();
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
