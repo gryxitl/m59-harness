@@ -75,6 +75,16 @@ export function renderRoom3D(name, rv, hero) {
   #hud .stats .hp { color:#e66; }
   #hud .stats .mana { color:#68e; }
   #hud .stats .vigor { color:#6a6; }
+  /* WHAT THE CHARACTER IS DOING, WHERE YOU ARE ALREADY LOOKING. Watching a body move and
+     having to guess whether it is fleeing, chasing or standing still is most of what makes
+     a stall hard to read from the 3D view -- "is he running away from it or attacking it"
+     is a question the picture cannot answer and one line of text can. */
+  #hud .doing { margin-top:5px; font-size:12px; color:#cfd6e0; max-width:34ch;
+                line-height:1.35; }
+  #hud .doing .goal { color:#ffcc33; text-transform:uppercase; letter-spacing:.04em;
+                      font-size:10px; }
+  #hud .doing .what { color:#9fb4c8; }
+  #hud .doing.idle .goal { color:#777; }
   #err { display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
     color:#f88; font:13px system-ui; text-align:center; max-width:85vw; white-space:pre-wrap; z-index:20; }
   #diag { position:fixed; right:10px; top:10px; z-index:30; font:12px system-ui; }
@@ -104,6 +114,18 @@ export function renderRoom3D(name, rv, hero) {
     ${hiddenCount ? `<span style="color:#ffcc33" title="Asymmetric safe cells: we can stand here, monsters (NSEW grid) cannot">&#9670; ${hiddenCount} hidden</span>` : ''}
     ${(rv.safe_spots?.length ?? 0) ? `<span style="color:#ffd700" title="Computed safe spots: walls that block enemy line-of-sight">&#9679; ${rv.safe_spots.length} safe</span>` : ''}
   </div>
+  <div class="doing${(hero?.goap?.goal || hero?.goap?.doing || hero?.goap?.action) ? '' : ' idle'}" id="doing">${
+    (() => {
+      // Painted server-side so the first frame is not blank for the three seconds before
+      // the first poll. The client's setDoing owns it from then on.
+      const g = hero?.goap ?? null;
+      const e = t => String(t).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+      const goal = g?.goal ? `<span class="goal">${e(g.goal)}</span>` : '';
+      const what = (g?.doing || g?.action) ? `<span class="what">${e(g.doing || g.action)}</span>` : '';
+      if (!goal && !what) return '<span class="goal">idle</span>';
+      return [goal, what].filter(Boolean).join('<br>');
+    })()
+  }</div>
 </div>
 <div id="diag">
   <button id="diagToggle" title="Diagnostic overlays">&#9881; overlays</button>
@@ -161,6 +183,38 @@ let travelLine = null, travelDots = null, travelGoal = null;
 let lastPath3d = null;          // so a toggle can redraw immediately
 let safeSpotGroup = null;       // set where the safe-spot tiles are built
 function applySafeSpotVisibility() { if (safeSpotGroup) safeSpotGroup.visible = !!DIAG.safespots; }
+// WHAT THE CHARACTER IS DOING, IN WORDS, NEXT TO THE PICTURE OF IT DOING IT.
+//
+// The keeper already publishes goal/action/doing and the fleet page shows them; the 3D view
+// is where somebody is actually WATCHING, and it showed nothing. "Is he running away from
+// it or attacking it" took a log dig to answer about a character that was on screen the
+// whole time, swinging.
+//
+// 'doing' is the sentence the decider wrote for this tick and is preferred when present;
+// goal + action is the fallback, because a keeper mid-restart has the pair before it has
+// the sentence. Nothing here throws on a missing field: this is a caption, and a caption
+// must never be the reason a frame does not draw.
+function setDoing(g) {
+  var el = document.getElementById('doing');
+  if (!el) return;
+  var goal = g && g.goal ? String(g.goal) : null;
+  var what = g && (g.doing || g.action) ? String(g.doing || g.action) : null;
+  if (!goal && !what) { el.className = 'doing idle'; el.innerHTML = '<span class="goal">idle</span>'; return; }
+  el.className = 'doing';
+  var parts = [];
+  if (goal) parts.push('<span class="goal">' + esc(goal) + '</span>');
+  if (what) parts.push('<span class="what">' + esc(what) + '</span>');
+  el.innerHTML = parts.join('<br>');
+}
+
+// A name from the world is untrusted text -- a monster name, a room name, a decider's
+// sentence -- and it is being written into innerHTML.
+function esc(t) {
+  return String(t).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
 function setPath3d(p) {
   if (pathGroup) { scene.remove(pathGroup); pathGroup.traverse(n => { n.geometry?.dispose?.(); n.material?.dispose?.(); }); pathGroup = null; }
   pathLine = pathDots = directLine = directX = null;
@@ -661,6 +715,11 @@ async function pollData() {
       var tObj = (d.objects || []).find(function(o) { return o._objId === targetId; });
       setTargetBeacon(tObj ? { x: tObj.x, z: tObj.z, name: tObj.n } : null);
     }
+    // WHAT HE IS DOING, on every poll. The goal is the ladder rung that won this tick and
+    // the action is what it actually sent, so "hunt / travel moving -> 535" and
+    // "_fight / swing at giant rat" read as two different situations at a glance -- which
+    // is the difference between watching a chase and watching a stall.
+    setDoing(d.goap);
     // Update the debug path overlay (fine path + direct raycast) on EVERY poll —
     // the path can replan even when the entity set is unchanged.
     lastPath3d = d.path3d || null;
