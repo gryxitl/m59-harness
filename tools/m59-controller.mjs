@@ -22,7 +22,7 @@
 //
 // AFFORDABLE ONLY SINCE THE DESCENT PRUNE. A fine trace was 76us, which is why nobody put
 // one on a 10Hz path; it is 3us now, so collide-and-slide per tick is free.
-import { KOD_FINENESS, protocolToClient, clientToProtocol } from './m59-roo.mjs';
+import { MIN_SIDE_MOVE, KOD_FINENESS, protocolToClient, clientToProtocol } from './m59-roo.mjs';
 import { navPath } from './m59-navgrid.mjs';
 import { tracePath } from './m59-navtrace.mjs';
 
@@ -226,60 +226,75 @@ export class CharacterController {
     const aimX = this.x + (dx / dist) * travel;
     const aimY = this.y + (dy / dist) * travel;
 
-    // COLLIDE AND SLIDE, IN SUB-STEPS. move.c does this because a single long trace can
-    // tunnel and because sliding changes direction mid-move.
+    // COLLIDE AND SLIDE, THE WAY clientd3d/move.c ACTUALLY DOES IT.
+    //
+    // The real client's per-step collision is four things and NO walkability grid:
+    //
+    //   1. floor:  BSPFindLeafByPoint — a null leaf or sector refuses the move
+    //   2. walls:  FindIntersection over the BSP, then SlideAlongWall
+    //   3. RETRY:  FindIntersection again; if still blocked, SlideAlongWall again
+    //   4. SIDE:   step MIN_SIDE_MOVE at angle+270, then at angle+90, then give up
+    //
+    // and `IsInRoom` is only `row >= 0 && row < rows && col >= 0 && col < cols` — a bounds
+    // test. Nothing client-side consults a per-square passable table for a player move.
+    //
+    // We had both halves wrong. We vetoed on the coarse `walkable` grid, which is a SERVER
+    // artifact the client never asks about, and we gave up after ONE slide where the client
+    // tries two slides and two perpendicular side-steps. Between them those produced bodies
+    // that reported zero of eight directions passable while standing somewhere the game was
+    // perfectly happy with — JayB and Lee both immobilised in the Deep Forest of Farol, with
+    // every downstream fix helpless because each one needed a legal step to exist.
     const subs = Math.max(1, Math.min(STEPS_PER_MOVE,
       Math.round(NUM_STEPS_PER_SECOND * dt / 1000)));
     const beforeX = this.x, beforeY = this.y;
-    const startSq = this.square();
-    // Are we standing somewhere the room calls solid? Then we are escaping, not travelling.
-    const escaping = geo.walkable ? geo.walkable(startSq.row, startSq.col) === false : false;
     let cx = this.x, cy = this.y, slid = false, blocked = false;
+
+    // One attempt at a target, returning where it landed or null if it went nowhere. The
+    // tracer's own `slide` covers FindIntersection + SlideAlongWall.
+    // Is our own leaf unresolvable? Then judge the DESTINATION only, as move.c does — see
+    // allowNoStartFloor. A body standing on such a spot is not stuck in the game, only in us.
+    let stranded = false;
+    try { stranded = geo.floorBaseAtClient(this.x, this.y, geo.leafAtClient(this.x, this.y), {}) == null; }
+    catch { stranded = false; }
+    if (stranded) this.stats.stranded = (this.stats.stranded ?? 0) + 1;
+
+    const tryMove = (fx, fy, tx, ty) => {
+      let t;
+      try { t = geo.traceFineMoveClient(fx, fy, tx, ty, { slide: true, allowNoStartFloor: stranded }); }
+      catch { return null; }
+      if (!t?.available) return null;
+      const nx = t.x ?? fx, ny = t.y ?? fy;
+      if (Math.hypot(nx - fx, ny - fy) < 0.5) return null;
+      return { x: nx, y: ny, slid: !!t.slid, blocked: !!t.blocked };
+    };
+
     for (let i = 0; i < subs; i++) {
       const tx = this.x + (aimX - this.x) * ((i + 1) / subs);
       const ty = this.y + (aimY - this.y) * ((i + 1) / subs);
-      let t;
-      try { t = geo.traceFineMoveClient(cx, cy, tx, ty, { slide: true }); }
-      catch { blocked = true; break; }
-      if (!t?.available) { blocked = true; break; }
-      const nx = t.x ?? cx, ny = t.y ?? cy;
-      if (t.blocked) blocked = true;
-      if (t.slid) slid = true;
-      // A sub-step that goes nowhere means the wall is in front of us, not beside us.
-      if (Math.hypot(nx - cx, ny - cy) < 0.5) { blocked = true; cx = nx; cy = ny; break; }
 
-      // DO NOT SLIDE INTO ROCK.
-      //
-      // The fine tracer answers from the BSP alone, so a slide along a wall will happily
-      // deposit the body on a square the coarse grid calls solid. `moverStepLands` refuses
-      // exactly that (`walkable(toRow,toCol)`) and this did not, so the controller could put
-      // the body somewhere the planner cannot plan FROM — and that is where it then sat.
-      //
-      // Measured on JayB: of ten distinct positions the controller gave up from, SEVEN were
-      // coarse-unwalkable, while all sixty-three destinations it was aiming at were fine. The
-      // plans were never the problem; the body was in rock.
-      //
-      // The origin square is exempt: a body already standing on one has to be able to leave.
-      // ...UNLESS WE ARE ALREADY IN IT, IN WHICH CASE THIS IS THE WAY OUT.
-      //
-      // Exempting only the ORIGIN square was not enough. A body embedded in a rock REGION has
-      // rock on every side, so every sub-step was refused and it could never walk out: JayB
-      // sat on an unwalkable (30,47) with ctlBlocked=19789 against 17,938 ticks and slid=0 —
-      // more refusals than ticks, and not one slide. The guard that stops a character getting
-      // into rock became the thing that kept it there.
-      //
-      // So the check applies only while we are on legitimate ground. Standing in rock, any
-      // move is an improvement and the mover's own collision still decides what is possible.
-      if (geo.walkable && !escaping) {
-        const sq = { col: Math.floor(nx / CLIENT_PER_SQUARE) + 1,
-                     row: Math.floor(ny / CLIENT_PER_SQUARE) + 1 };
-        if ((sq.col !== startSq.col || sq.row !== startSq.row) && !geo.walkable(sq.row, sq.col)) {
-          blocked = true;
-          break;                      // keep the last good position; do not commit this one
-        }
+      // 1 + 2: the straight attempt, sliding.
+      let r = tryMove(cx, cy, tx, ty);
+
+      // 3: the client retries the same target after a slide before giving up.
+      if (!r) r = tryMove(cx, cy, tx, ty);
+
+      // 4: two perpendicular side-steps, MIN_SIDE_MOVE each, exactly as move.c does when the
+      // retry fails. This is what shakes a body out of a corner it has wedged into, and its
+      // absence is why ours reported every direction blocked.
+      if (!r) {
+        const dxa = tx - cx, dya = ty - cy;
+        const len = Math.hypot(dxa, dya) || 1;
+        const px = -dya / len * MIN_SIDE_MOVE, py = dxa / len * MIN_SIDE_MOVE;
+        r = tryMove(cx, cy, cx + px, cy + py) || tryMove(cx, cy, cx - px, cy - py);
+        if (r) { slid = true; this.stats.sideSteps = (this.stats.sideSteps ?? 0) + 1; }
       }
-      cx = nx; cy = ny;
+
+      if (!r) { blocked = true; break; }
+      if (r.slid) slid = true;
+      if (r.blocked) blocked = true;
+      cx = r.x; cy = r.y;
     }
+
     if (slid) this.stats.slid++;
     if (blocked) this.stats.blocked++;
 

@@ -873,13 +873,28 @@ export class RoomGeometry {
 
   _resolveClientMicrostep(from, to, {
     slide, playerRadius, playerHeight, roomFlags, overrideDepths, motionZ,
+    allowNoStartFloor = false,
   }) {
     const fromLeaf = this.leafAtClient(from.x, from.y, { preferSectorNum: from.sectorNum });
-    if (!fromLeaf) return { ...from, moved: false, blocked: true, reason: 'start_has_no_floor' };
-    const toLeaf = this.leafAtClient(to.x, to.y, { preferSectorNum: fromLeaf.sectorNum });
+    // THE ORIGIN LEAF IS NOT A VETO IN clientd3d/move.c — only the destination's is:
+    //   leaf = BSPFindLeafByPoint(tree, x, y);  // the DESTINATION
+    //   if (leaf == NULL || leaf->sector == NULL) refuse;
+    // With allowNoStartFloor we follow that, and lean on the destination leaf below. Without
+    // it a body whose own leaf will not resolve can never move again, which is how both tick
+    // characters ended up reporting zero of eight directions passable while standing on ground
+    // the game was perfectly happy with.
+    if (!fromLeaf && !allowNoStartFloor)
+      return { ...from, moved: false, blocked: true, reason: 'start_has_no_floor' };
+    // WITHOUT AN ORIGIN LEAF THERE IS NO ORIGIN HEIGHT, so a step-height test is meaningless
+    // and actively wrong: the caller substitutes z=0, the neighbouring floor sits at 2048, and
+    // every direction reads as a 2048-unit climb against a 384 limit. The client compares
+    // against the PLAYER's own motion.z, which it always has; we do not, so the honest thing
+    // is to let the destination's floor stand rather than invent a climb.
+    const stranded = !fromLeaf;
+    const toLeaf = this.leafAtClient(to.x, to.y, { preferSectorNum: fromLeaf?.sectorNum });
     if (!toLeaf) return { ...from, moved: false, blocked: true, reason: 'destination_has_no_floor' };
 
-    const hit = this._blockingWall(from, to, fromLeaf,
+    const hit = this._blockingWall(from, to, fromLeaf ?? toLeaf,
       { playerRadius, playerHeight, roomFlags, overrideDepths, motionZ });
     if (!hit) return { x: to.x, y: to.y, sectorNum: toLeaf.sectorNum,
                        moved: Math.hypot(to.x - from.x, to.y - from.y) > GEOMETRY_EPSILON,
@@ -1018,6 +1033,9 @@ export class RoomGeometry {
     // high side and lands on the medium side without ever standing on the low one. "The
     // player isn't walking from below, it's falling from above."
     fall = false,
+    // Let a body whose own leaf cannot be resolved still move, judging only the destination —
+    // which is what clientd3d/move.c does. See the refusal below.
+    allowNoStartFloor = false,
   } = {}) {
     if (!this.collisionReady) return {
       available: false, moved: false, blocked: true, x: x0, y: y0,
@@ -1027,24 +1045,46 @@ export class RoomGeometry {
     const startLeaf = this.leafAtClient(x0, y0);
     const startFloor = this.floorBaseAtClient(x0, y0, startLeaf,
       { roomFlags, overrideDepths });
-    if (startFloor == null) return {
+    // THE CLIENT CHECKS THE FLOOR AT THE DESTINATION, NEVER AT THE ORIGIN.
+    //
+    // clientd3d/move.c, inside the per-step loop:
+    //
+    //     leaf = BSPFindLeafByPoint(current_room.tree, x, y);   // x,y is the DESTINATION
+    //     if (leaf == NULL || leaf->sector == NULL) { x = last_x; ... break; }
+    //
+    // There is no equivalent test on last_x/last_y. `GetFloorBase(last_x, last_y)` reads the
+    // origin, but only to carry z — it never vetoes. So the real client will happily walk a
+    // body OUT of a spot whose leaf it cannot resolve, as long as where it is going is sound.
+    //
+    // Refusing on the origin strands anyone standing on such a spot for ever. Measured on both
+    // tick characters in the Deep Forest of Farol: leaf NULL, floor null, and zero of eight
+    // directions passable — immobilised by a rule the game does not have, while every
+    // downstream fix waited for a legal step that could never exist.
+    //
+    // `allowNoStartFloor` opts into the client's behaviour. Default OFF so the 256 collision
+    // assertions and 122 impossible-move refusals keep their current meaning; the mover turns
+    // it on for a body that is already standing somewhere unresolvable.
+    if (startFloor == null && !allowNoStartFloor) return {
       available: true, moved: false, blocked: true, x: x0, y: y0,
       reason: 'start_has_no_floor',
     };
     // This is the player's physical height (or conservative vertical-motion range)
     // for one command. The floor under each previous microstep may raise collision
     // z, but a descent cannot lower it instantaneously inside the packet.
+    // With no origin floor we have no z to carry; take the caller's or zero, and let the
+    // destination's own floor decide from the first microstep.
+    const startFloorZ = startFloor ?? 0;
     const commandMotionZ = Number.isFinite(motionZ?.min) && Number.isFinite(motionZ?.max)
       ? { min: Math.min(motionZ.min, motionZ.max), max: Math.max(motionZ.min, motionZ.max) }
-      : Number.isFinite(motionZ) ? motionZ : startFloor;
+      : Number.isFinite(motionZ) ? motionZ : startFloorZ;
     let carriedMotionZ = Number.isFinite(commandMotionZ?.min)
-      ? { min: Math.min(commandMotionZ.min, startFloor),
-          max: Math.max(commandMotionZ.max, startFloor) }
-      : { min: Math.min(commandMotionZ, startFloor), max: Math.max(commandMotionZ, startFloor) };
+      ? { min: Math.min(commandMotionZ.min, startFloorZ),
+          max: Math.max(commandMotionZ.max, startFloorZ) }
+      : { min: Math.min(commandMotionZ, startFloorZ), max: Math.max(commandMotionZ, startFloorZ) };
     const distance = Math.hypot(x1 - x0, y1 - y0);
     if (distance <= GEOMETRY_EPSILON)
       return { available: true, moved: false, blocked: false, arrived: true,
-               x: x0, y: y0, motionZ: carriedMotionZ, destinationFloor: startFloor };
+               x: x0, y: y0, motionZ: carriedMotionZ, destinationFloor: startFloorZ };
     const count = Math.max(1, Math.ceil(distance / Math.max(1, maxMicrostep)));
     const dx = (x1 - x0) / count, dy = (y1 - y0) / count;
     let at = { x: x0, y: y0, sectorNum: this.leafAtClient(x0, y0)?.sectorNum };
@@ -1057,7 +1097,7 @@ export class RoomGeometry {
     for (let i = 0; i < count; i++) {
       const next = this._resolveClientMicrostep(at, { x: at.x + dx, y: at.y + dy },
         { slide, playerRadius, playerHeight, roomFlags, overrideDepths,
-          motionZ: carriedMotionZ });
+          motionZ: carriedMotionZ, allowNoStartFloor });
       const resolved = next.moved
         ? this._resolveObjectMicrostep(at, next, obstacles,
           { playerRadius, playerHeight, roomFlags, overrideDepths,
@@ -1179,7 +1219,13 @@ export class RoomGeometry {
       // leaves, and its floor heights on each side — is the work. Until then the
       // consequence is known and bounded: the router will offer a walking route out of the
       // Cragged Mountains basin that only a character holding blink can take.
-      if (enforceStepHeight && Number.isFinite(floor)) {
+      // A STRANDED BODY HAS NO HEIGHT TO CLIMB FROM, so it has no climb. The caller
+      // substitutes z=0 when the origin leaf will not resolve, and against a floor at 2048
+      // that reads as a 2048-unit ascent — refusing every direction and pinning the character
+      // exactly where it already could not move. The client never faces this: it always has
+      // player.motion.z. Once the body reaches real ground the carried z is real again and the
+      // rule resumes on the very next microstep.
+      if (enforceStepHeight && Number.isFinite(floor) && !allowNoStartFloor) {
         const carried = carriedMotionZ?.max;
         if (Number.isFinite(carried) && floor - carried > MAX_STEP_HEIGHT) {
           at = stepFrom;                       // the climb never happened
