@@ -270,6 +270,44 @@ export class Router {
       }
     }
 
+    // AND IF NOTHING ON THE BOUNDARY LINE CAN BE STOOD ON, STEP INWARD.
+    //
+    // The slide above moves ALONG the boundary. That does not help when the whole line is
+    // unreachable, which is the ordinary case: a staging square within a square or two of the
+    // map edge cannot hold a body of radius 248, so the fine model refuses it however the
+    // coarse grid votes. Measured in the Deep Forest of Farol, aiming at column 30:
+    //
+    //     row 1  coarse walkable, fine-reachable from nowhere
+    //     row 2  coarse walkable, fine-reachable from nowhere
+    //     row 3  coarse walkable, reachable from everywhere tried
+    //
+    // Two characters queued at that crossing and stopped dead, several rows short, with the
+    // dashboard reporting "travel moving" the whole time.
+    //
+    // So walk to the nearest square on the same line that a body can actually occupy, and let
+    // the mover's raw boundary push cover the last stride — which is its job, and the one part
+    // of this that does not care about the player radius.
+    const dirForInward = String(exit.direction ?? exit.dir ?? '').toLowerCase()
+      || (() => { try {
+            const room = loadMap()?.rooms?.[here];
+            const e = (room?.edgeExits ?? []).find(x => Number(x.to) === Number(next));
+            return e?.leaveName ? String(e.leaveName).toLowerCase() : '';
+          } catch { return ''; } })();
+    if (standOn && fineSet && !fineSet.has(`${standOn.col},${standOn.row}`) && dirForInward) {
+      const inward = { north: [0, 1], south: [0, -1], west: [1, 0], east: [-1, 0] }[dirForInward];
+      if (inward) {
+        for (let step = 1; step <= 4; step++) {
+          const c = standOn.col + inward[0] * step, r = standOn.row + inward[1] * step;
+          if (fineSet.has(`${c},${r}`)) {
+            this.session?.log?.(`[route] boundary staging (${standOn.col},${standOn.row}) cannot hold a body;`
+              + ` approaching from (${c},${r}) instead`);
+            standOn = { col: c, row: r };
+            break;
+          }
+        }
+      }
+    }
+
     // Compute an edge target if the exit doesn't provide one.
     // The edge target is one square beyond the staging square,
     // in the direction of the exit. Walking to it triggers
