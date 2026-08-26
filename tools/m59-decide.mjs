@@ -178,6 +178,10 @@ function attackAbility(name) {
   return _aa.get(creatureKey(name)) ?? null;
 }
 
+// Where a graduated character buys a weapon. Quintor, the Jasper Blacksmith, whose sell list
+// in the merchant index carries Mace and ShortSword.
+const SMITH_ROOM = Number(process.env.M59_SMITH_ROOM || 374);
+
 const SELL_ROOM = Number(process.env.M59_SELL_ROOM || 374);   // Quintor, Jasper Blacksmith
 const BANK_ROOM = Number(process.env.M59_BANK_ROOM || 376);   // Yevitan, Jasper Banker
 import { creatureKey, preyNames } from './m59-combat.mjs';
@@ -358,7 +362,14 @@ export const INTENTS = {
       // No merchant in this room. Route to the main town (the Raza, room 1012) where
       // the smith sells weapons.
       if (s?._router) {
-        const dest = 1013;  // Raza Blacksmith — where the smith sells weapons
+        // WHICH SMITH. 1013 is the Raza Blacksmith and it was hardcoded — but leaving Raza is
+        // ONE-WAY, so for any graduated character that destination is unreachable for ever and
+        // the buy errand can never complete. Pick by where we are: inside the newbie zone the
+        // Raza smith is the only one; outside it, Quintor in Jasper (374), who sells Mace and
+        // ShortSword per the merchant index and passes trustedBuyer().
+        const here = Number(s.world?.room?.num ?? NaN);
+        const inRaza = Number.isFinite(here) && here >= 1011 && here <= 1018;
+        const dest = inRaza ? 1013 : SMITH_ROOM;
         if (s._router.dest !== dest) {
           s._router.to(dest);
           return { sent: true, what: `travel to the smith (room ${dest})` };
@@ -1685,8 +1696,19 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // `buy`: the character needs a replacement. This only fires when there IS a weapon
     // in the pack and it's broken — with an empty pack, `equip`'s "no weapon" refusal
     // stands (there's nothing to buy the character into; the refusal is the truth).
+    // AN EMPTY PACK IS EXACTLY WHEN YOU NEED TO BUY.
+    //
+    // This required a weapon to already be IN the pack (`pickWeapon(client) != null`), on the
+    // reasoning that with an empty pack "there's nothing to buy the character into; the refusal
+    // is the truth". That is backwards, and it strands anyone who DIES: death drops everything
+    // carried, so the survivor wakes with an empty pack, `equip` answers "no weapon to equip"
+    // for ever, and nothing ever plans a purchase. Lee sat unarmed through 25 of those
+    // refusals and could not kill anything at all.
+    //
+    // The condition that matters is the same in both cases: nothing wieldable. Broken or
+    // absent, the answer is to go and buy one.
     if (active.goal === 'armed' && first === 'equip'
-        && pickWeapon(client) != null && !pickWieldableWeapon(client, session)) {
+        && !pickWieldableWeapon(client, session)) {
       actionName = 'buy';
     }
     const r = intend(actionName, frame, act, { client, session, ws });

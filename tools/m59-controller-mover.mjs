@@ -84,6 +84,30 @@ export class ControllerMover {
       try { this.fallback?.to?.(col, row); } catch { /* it is a fallback, not a dependency */ }
       return;
     }
+    // AN OFF-MAP TARGET IS A CROSSING, NOT A DESTINATION.
+    //
+    // An edge exit fires by walking PAST the boundary, so the router aims one square beyond it
+    // — column 0 for a west edge, row 0 for a north one. Those squares do not exist, navPath
+    // cannot plan to them, and every attempt came back a plan failure: 99,593 of 178,420 ticks
+    // (56%), with the body oscillating between two staging squares — (1,30) aiming (0,30),
+    // then (1,42) aiming (0,42), and back — never crossing.
+    //
+    // The legacy mover knows how to push across a boundary with a raw server-confirmed move.
+    // This is its job, so give it straight over rather than planning a route to nowhere.
+    const geo = this._geo();
+    const offMap = col < 1 || row < 1
+      || (geo?.cols != null && col > geo.cols) || (geo?.rows != null && row > geo.rows);
+    if (offMap) {
+      this.stats.offMapCrossings = (this.stats.offMapCrossings || 0) + 1;
+      if (this.stats.offMapCrossings <= 3)
+        console.error(`[ctlmover] ${this._agent} (${col},${row}) is off the map — a boundary crossing;`
+          + ` handing it to the legacy mover`);
+      this.dest = { col, row };
+      this.active = false;                 // the controller is not steering this one
+      try { this.fallback?.to?.(col, row); } catch { /* fallback, not a dependency */ }
+      return;
+    }
+
     const isNew = !this.dest || this.dest.col !== col || this.dest.row !== row;
     this.dest = { col, row };
     this.active = true;
@@ -162,6 +186,9 @@ export class ControllerMover {
 
   tick(posOverride) {
     this.stats.ticks++;
+    // A crossing handed over in to() leaves us inactive with a destination still set: keep
+    // feeding the legacy mover until the room changes or a new destination arrives.
+    if (!this.active && this.dest) return this._delegate(posOverride, 'boundary crossing');
     if (!this.active || !this.dest) return { state: 'idle' };
 
     const c = this.session?.client;
