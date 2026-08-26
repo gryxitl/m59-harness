@@ -51,6 +51,10 @@ import { affordances } from './m59-parse.mjs';
 // for a monster (monster.kod:1682) and 2-3 by weapon type for us (weapon.kod:52).
 // Fine coordinates are read by nothing but the drawing code (MonsterOrient,
 // monster.kod:2189), so there is nothing finer than a square to stand on.
+// What counts as a weapon for the surplus test. Deliberately narrow: the point is to shed
+// the pile of identical drops a farming character accumulates, not to judge gear.
+const WEAPON_RE = /\b(mace|sword|axe|hammer|dagger|club|staff|halberd|spear|flail|scimitar|rapier)\b/i;
+
 export const MELEE_REACH = 3;
 
 // `create food`, the spell this fleet lives on. The wire carries no per-spell cost,
@@ -376,6 +380,43 @@ export const SYMBOLS = {
         .reduce((t, o) => t + (o.amount || 1), 0);
       if (!client?.inventory?.length) return null;
       return purse >= (policy?.walkingMoney ?? 100);
+    },
+  },
+
+  // SURPLUS WEAPONS AND SURPLUS MONEY — the two things a farming character accumulates and
+  // the tick keeper had no way to shed. JayB was carrying SEVENTEEN maces against a policy of
+  // two, and 1,020 shillings against a bank floor of 500, in a pack of 26 entries against a
+  // maxCarry of 14. A pack that cannot receive cannot loot.
+  over_weapons: {
+    describe: 'the pack holds more weapons than the loadout allows',
+    whenUnknown: false,
+    why_unknown: 'a wrong true sends a character to a smith for nothing; a wrong false only delays it',
+    produce: ({ client, policy }) => {
+      const inv = client?.inventory;
+      if (!Array.isArray(inv) || !inv.length) return null;
+      const max = policy?.maxWeapons;
+      if (!Number.isFinite(max)) return false;
+      const n = inv.filter(o => {
+        const name = String(client?.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
+        return WEAPON_RE.test(name);
+      }).length;
+      return n > max;
+    },
+  },
+
+  purse_heavy: {
+    describe: 'the purse is above the bank floor — the excess belongs in an account',
+    whenUnknown: false,
+    why_unknown: 'a wrong true walks a character to a bank for nothing',
+    produce: ({ client, policy }) => {
+      const inv = client?.inventory;
+      if (!Array.isArray(inv) || !inv.length) return null;
+      const floor = policy?.bankAbove;
+      if (!Number.isFinite(floor)) return false;
+      const purse = inv
+        .filter(o => /shilling/i.test(String(client?.rsc?.get?.(o.nameRsc) ?? o.name ?? '')))
+        .reduce((t, o) => t + (o.amount || 1), 0);
+      return purse > floor;
     },
   },
 

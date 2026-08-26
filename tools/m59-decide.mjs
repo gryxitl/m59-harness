@@ -143,6 +143,15 @@ function pickWieldableWeapon(client, session = null) {
 }
 import { nearestHuntRoom } from './m59-hunt-room.mjs';
 import { loadSpawns } from './m59-spawns.mjs';
+import * as skills from './m59-skills.mjs';
+import { trustedBuyer } from './m59-skills.mjs';
+
+// WHERE THE TOWN BUSINESS HAPPENS. Both verified against substrate/m59-merchants.json and
+// trustedBuyer(): Quintor the Jasper Blacksmith passes the allowlist, Yevitan the Jasper
+// Banker does NOT — he is on NEVER_SELL_TO, which is exactly the distinction that keeps a
+// pack from being handed to a banker for nothing.
+const SELL_ROOM = Number(process.env.M59_SELL_ROOM || 374);   // Quintor, Jasper Blacksmith
+const BANK_ROOM = Number(process.env.M59_BANK_ROOM || 376);   // Yevitan, Jasper Banker
 import { creatureKey } from './m59-combat.mjs';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
@@ -226,6 +235,66 @@ export const INTENTS = {
     act.use(item.id);
     ctx.session._lastEquipId = item.id;  // condemned on the next broken refusal (see scanBrokenFromEvents)
     return { sent: true, what: `equip ${item.name ?? item.id}` };
+  },
+
+  // SELL THE SURPLUS. Routes to a TRUSTED buyer and hands the pack to skills.sellAll, which
+  // reads the server's own use list so nothing worn or wielded can go.
+  //
+  // THE BUYER IS AN ALLOWLIST, NEVER A CHECK. `buys_anything` is true for the bankers and it
+  // is a robbery: Skivlat takes what you hand him, says thank you, and gives nothing back,
+  // and nothing on the wire tells that from a sale. So the merchant here must pass
+  // trustedBuyer() — verified for this route: Quintor (Jasper Blacksmith, room 374) passes,
+  // Yevitan (Jasper Banker, room 376) does not.
+  sell_loot: (f, act, ctx) => {
+    const s = ctx.session, c = ctx.client;
+    if (s?._sellInFlight) return { sent: false, why: 'a sale is already in flight' };
+    const list = c?.room?.objects instanceof Map ? [...c.room.objects.values()] : [];
+    const buyer = list.find(o => trustedBuyer(String(c?.rsc?.get?.(o.nameRsc) ?? o.name ?? '')));
+    if (!buyer) {
+      const dest = SELL_ROOM;
+      if (!s?._router) return { sent: false, why: 'no router to reach a buyer' };
+      if (s._router.dest !== dest) { s._router.to(dest); return { sent: true, what: `travel to Quintor (room ${dest}) to sell` }; }
+      const r = routeIntent(s._router)(f, act);
+      return { sent: r.sent, what: r.what ?? `on the way to the smith (room ${dest})` };
+    }
+    s._sellInFlight = true;
+    const name = String(c?.rsc?.get?.(buyer.nameRsc) ?? buyer.name ?? 'the merchant');
+    skills.sellAll(s, { merchant: buyer.id, maxWeapons: ctx.policy?.maxWeapons ?? 2,
+                        loadout: null, keep: [], protect: ctx.policy?.protectedItems ?? [] })
+      .then(r => console.error(`[sell] ${s.name}: sold ${r?.sold?.length ?? 0} item(s) to ${name}`))
+      .catch(e => console.error(`[sell] ${s.name}: ${e?.message}`))
+      .finally(() => { s._sellInFlight = false; });
+    return { sent: true, what: `selling the surplus to ${name}` };
+  },
+
+  // BANK THE EXCESS. Deposit everything above the walking-money floor, so a death costs the
+  // purse rather than the earnings — a vault balance is the only thing in this game that
+  // survives dying.
+  bank_money: (f, act, ctx) => {
+    const s = ctx.session, c = ctx.client;
+    if (s?._bankInFlight) return { sent: false, why: 'a deposit is already in flight' };
+    const list = c?.room?.objects instanceof Map ? [...c.room.objects.values()] : [];
+    const banker = list.find(o => /banker|yevitan|skivlat|setag|huital/i.test(
+      String(c?.rsc?.get?.(o.nameRsc) ?? o.name ?? '')));
+    if (!banker) {
+      const dest = BANK_ROOM;
+      if (!s?._router) return { sent: false, why: 'no router to reach a bank' };
+      if (s._router.dest !== dest) { s._router.to(dest); return { sent: true, what: `travel to the bank (room ${dest})` }; }
+      const r = routeIntent(s._router)(f, act);
+      return { sent: r.sent, what: r.what ?? `on the way to the bank (room ${dest})` };
+    }
+    const purse = (c?.inventory ?? [])
+      .filter(o => /shilling/i.test(String(c?.rsc?.get?.(o.nameRsc) ?? o.name ?? '')))
+      .reduce((t, o) => t + (o.amount || 1), 0);
+    const keep = ctx.policy?.walkingMoney ?? 400;
+    const amount = Math.floor(purse - keep);
+    if (amount <= 0) return { sent: false, why: `purse ${purse} is not above the walking floor ${keep}` };
+    s._bankInFlight = true;
+    Promise.resolve(s.pacer.submit('bank', () => c.deposit(amount)))
+      .then(() => console.error(`[bank] ${s.name}: deposited ${amount}, keeping ${keep}`))
+      .catch(e => console.error(`[bank] ${s.name}: ${e?.message}`))
+      .finally(() => { s._bankInFlight = false; });
+    return { sent: true, what: `deposit ${amount}, keeping ${keep} for the road` };
   },
 
   // BUY a weapon (or food) from the nearest merchant. The tick driver is synchronous,
@@ -1306,6 +1375,15 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       return;
     }
 
+    // 2c2. TOWN BUSINESS: sell the surplus, bank the excess.
+    if (active?.goal === 'sell_loot' || active?.goal === 'bank_money') {
+      const r = intend(active.goal, frame, act, { client, session, ws, policy });
+      note(active.goal, r.sent);
+      onDecision?.({ ticks, goal: active.goal, action: active.goal,
+        sent: r.sent, what: r.what ?? null, why: r.why ?? null });
+      return;
+    }
+
     // 2d. HUNT GOAL: if nothing better to do and no target in band,
     // pick a hunt room and set the router's destination. This is a
     // directional decision, not a world-state transition — it sets
@@ -1516,6 +1594,15 @@ export const DEFAULT_GOALS = [
                                  // Don't fight if the target is on a
                                  // different elevation (unreachable).
                                  && ws._targetElevated !== true },
+  // SHED THE SURPLUS BEFORE LOOKING FOR MORE WORK.
+  //
+  // Below `_fight` on purpose: finish the fight in front of you rather than walking off
+  // mid-swing. Above `hunt`, because a pack that cannot receive cannot loot, and hunting with
+  // a full pack earns nothing but risk. JayB was carrying seventeen maces and 1,020 shillings
+  // while still looking for the next rat.
+  { goal: 'sell_loot',  when: ws => ws.over_weapons === true
+                                 || (ws.has_loot === true && ws.pack_room === false) },
+  { goal: 'bank_money', when: ws => ws.purse_heavy === true },
   // HUNT before eating: the character should go find work (a mob to fight)
   // rather than sitting in town eating. Vigor management matters during
   // combat, not while idle. If vigor is truly too low to fight, the
