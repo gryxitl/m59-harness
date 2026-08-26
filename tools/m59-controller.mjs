@@ -57,6 +57,11 @@ export const NUM_STEPS_PER_SECOND = 200;
 export const WALK_CLIENT_PER_MS = (CLIENT_PER_SQUARE / 4) / 100;
 export const RUN_CLIENT_PER_MS = (CLIENT_PER_SQUARE / 2) / 100;
 
+// What each sector depth does to movement speed — clientd3d/move.c:196-201, indexed by the
+// depth the sector flags carry (SF_DEPTH0..3). The client computes these as integer
+// divisions of move_distance; the same three fractions expressed directly.
+export const WADE_FACTORS = [1, 3 / 4, 1 / 2, 1 / 4];
+
 // move.c:57,58 — replication, and ONLY replication. INCOMING_PACKET_THROTTLE is 5
 // (user.kod:50), so this stays at 1Hz however fast the body moves.
 export const MOVE_INTERVAL_MS = 1000;
@@ -253,7 +258,28 @@ export class CharacterController {
     if (dist < 1) { this.pathIdx++; return { state: 'moving', advanced: true }; }
 
     // STEER: speed x dt, never further than the waypoint.
-    const speed = this.run ? RUN_CLIENT_PER_MS : WALK_CLIENT_PER_MS;
+    //
+    // WADING SLOWS THE PLAYER DOWN, and getting this wrong is not cosmetic. The belief
+    // integrates at whatever speed we say; the real body moves at whatever speed the
+    // SERVER's copy of the client would. In deep water that is a factor of four, so a
+    // belief running at full speed pulls steadily ahead of the echo — which is precisely
+    // the divergence that shows up as rubberbanding, and as the lead-holds that stalled
+    // travel earlier today. A movement model that ignores terrain manufactures its own lag.
+    //
+    //   clientd3d/move.c:194   // Wading slows player movement down.
+    //                          depth = GetPointDepth(motion.x, motion.y)
+    //                          SF_DEPTH1 -> * 3/4    SF_DEPTH2 -> / 2    SF_DEPTH3 -> / 4
+    //
+    // Measured at the BODY's point, as the client does — not at the waypoint and not
+    // averaged along the step, so entering and leaving water changes speed exactly where
+    // the client changes it. Unknown depth means full speed: no geometry is no reason to
+    // crawl.
+    const baseSpeed = this.run ? RUN_CLIENT_PER_MS : WALK_CLIENT_PER_MS;
+    let depthIdx = 0;
+    try { depthIdx = geo.depthIndexAtClient?.(this.x, this.y) ?? 0; } catch { depthIdx = 0; }
+    const wade = WADE_FACTORS[depthIdx] ?? 1;
+    if (wade !== 1) this.stats.wadingTicks = (this.stats.wadingTicks ?? 0) + 1;
+    const speed = baseSpeed * wade;
     const travel = Math.min(speed * dt, dist);
     const aimX = this.x + (dx / dist) * travel;
     const aimY = this.y + (dy / dist) * travel;

@@ -770,6 +770,24 @@ export class RoomGeometry {
     return floorHeightAt(x, y, leaf.sector) - depth;
   }
 
+  // WADING SLOWS THE PLAYER DOWN, AND THE CLIENT DOES IT AT THE BODY'S OWN POINT.
+  //
+  //   clientd3d/move.c:195   depth = GetPointDepth(player_obj->motion.x, player_obj->motion.y);
+  //                          SF_DEPTH1 -> move_distance * 3/4
+  //                          SF_DEPTH2 -> move_distance / 2
+  //                          SF_DEPTH3 -> move_distance / 4
+  //
+  // Returns the depth INDEX (0-3) under a client-unit point, which is what a speed factor
+  // wants; SECTOR_DEPTHS[i] is the same thing in height units, which is what the floor
+  // calculation above wants. Null when there is no leaf to ask.
+  depthIndexAtClient(x, y, leaf = null) {
+    leaf = leaf ?? this.leafAtClient(x, y);
+    if (!leaf?.sector) return null;
+    if (Number.isInteger(leaf.sector.flags)) return sectorDepth(leaf.sector.flags);
+    const i = SECTOR_DEPTHS.indexOf(leaf.sector.depth ?? 0);
+    return i < 0 ? 0 : i;
+  }
+
   _blockingWall(from, to, leaf, {
     playerRadius, playerHeight, roomFlags, overrideDepths, motionZ,
   }) {

@@ -364,5 +364,57 @@ console.log('\ncontroller mover: holding is for running AHEAD, never for falling
      && (close.ctl.adopted ?? []).length === 0);
 }
 
+console.log('\ncontroller: wading slows the body down, exactly as the client does');
+{
+  const { CharacterController, CLIENT_PER_SQUARE, WADE_FACTORS } =
+    await import('./m59-controller.mjs');
+  // clientd3d/move.c:194 "Wading slows player movement down." — SF_DEPTH1 * 3/4,
+  // SF_DEPTH2 / 2, SF_DEPTH3 / 4, measured at the BODY's own point via GetPointDepth.
+  // Ignoring it is not cosmetic: the belief integrates at whatever speed we say while the
+  // body moves at whatever the real client would, so in deep water the belief pulls ahead
+  // by a factor of four -- manufacturing exactly the divergence that reads as rubberbanding.
+  ok('the wading factors match the client', WADE_FACTORS.join(',') === [1, 0.75, 0.5, 0.25].join(','),
+     WADE_FACTORS.join(','));
+
+  const at = (col, row) => ({ x: (col - 0.5) * CLIENT_PER_SQUARE, y: (row - 0.5) * CLIENT_PER_SQUARE });
+  const distanceAtDepth = depth => {
+    const geo = {
+      collisionReady: true, rows: 50, cols: 50,
+      leafAtClient: () => ({}), floorBaseAtClient: () => 0,
+      depthIndexAtClient: () => depth,
+      traceFineMoveClient: (x0, y0, x1, y1) => ({ available: true, x: x1, y: y1 }),
+    };
+    const c = new CharacterController();
+    c.syncFrom({ col: 5, row: 25 });
+    c.path = [at(45, 25)]; c.pathIdx = 0;
+    const x0 = c.x;
+    for (let i = 0; i < 10; i++) c.step(100, { geo, client: null });
+    return c.x - x0;
+  };
+
+  const dry = distanceAtDepth(0);
+  ok('dry ground covers ground', dry > 0, String(dry));
+  for (const d of [1, 2, 3]) {
+    const got = distanceAtDepth(d) / dry;
+    // Allow a little slack: the step is also bounded by the distance to the waypoint.
+    ok(`depth ${d} moves at ${WADE_FACTORS[d]} speed`, Math.abs(got - WADE_FACTORS[d]) < 0.02,
+       `ratio ${got.toFixed(3)} vs ${WADE_FACTORS[d]}`);
+  }
+
+  // Geometry that cannot answer must not make the character crawl.
+  const noDepth = {
+    collisionReady: true, rows: 50, cols: 50,
+    leafAtClient: () => ({}), floorBaseAtClient: () => 0,
+    traceFineMoveClient: (x0, y0, x1, y1) => ({ available: true, x: x1, y: y1 }),
+  };
+  const c = new CharacterController();
+  c.syncFrom({ col: 5, row: 25 });
+  c.path = [at(45, 25)]; c.pathIdx = 0;
+  const x0 = c.x;
+  for (let i = 0; i < 10; i++) c.step(100, { geo: noDepth, client: null });
+  ok('unknown depth is full speed, not a crawl', Math.abs((c.x - x0) - dry) < 1e-6,
+     `${c.x - x0} vs ${dry}`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
