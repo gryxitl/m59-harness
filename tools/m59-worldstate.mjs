@@ -61,6 +61,12 @@ const WEAPON_RE = /\b(mace|sword|axe|hammer|dagger|club|staff|halberd|spear|flai
 // blink.kod:41 viSpellExertion, and player.kod's HasVigor wants STRICTLY more than it.
 const BLINK_EXERTION = 20;
 
+// The fraction of health below which a character stops PICKING fights (it may still finish
+// one it is already in). Deliberately well above fleeBelow: the flee line is where you run,
+// and choosing a fight from just above it is choosing to run almost immediately. Override
+// with policy.engageAbove.
+const DEFAULT_ENGAGE_ABOVE = 0.6;
+
 const OUTNUMBERED_RANGE = 4;
 
 export const MELEE_REACH = 3;
@@ -303,6 +309,36 @@ export const SYMBOLS = {
   //
   // Unknown vigor answers TRUE: an unreadable vital must not be what keeps a body buried,
   // and the cast throttle bounds what a wrong true costs to one refused packet every 12s.
+  // STARTING A FIGHT AND CONTINUING ONE DESERVE DIFFERENT BARS.
+  //
+  // Every health threshold here was a DISENGAGE threshold — below_flee, critical — and the
+  // decision to walk across a room and pick a fight was made against the same numbers, or
+  // against nothing at all. With fleeBelow at 0.4 and max health 20, that meant a character
+  // would happily close on a fresh giant rat at 9 HP.
+  //
+  // The damage rate is what makes that indefensible. Measured on three consecutive deaths,
+  // the last few samples before dying:
+  //
+  //     [19,20,19,20,17,15,10,2]      [18,19,20,18,14,11,4,5]      [17,18,19,17,13,8,5,6]
+  //
+  // Five to eight points per sample — 11 to 4 in one. A flee line at 8 is a decision made
+  // one exchange from death, and no amount of fixing the ESCAPE helps a character that
+  // chose the fight from there.
+  //
+  // So: engaging needs headroom, not merely a pulse. Continuing does not — walking away
+  // from something already swinging at you is worse than finishing it, which is why the
+  // flee rungs ask for in_reach.
+  fit_to_engage: {
+    describe: 'healthy enough to START a fight, which is a higher bar than continuing one',
+    whenUnknown: true,
+    why_unknown: 'an unreadable health bar must not stop a character working; the flee ladder still guards it',
+    produce: ({ client, policy }) => {
+      const h = client?.vitals?.()?.health;
+      if (h?.value == null || !h?.max) return null;
+      return (h.value / h.max) >= (policy?.engageAbove ?? DEFAULT_ENGAGE_ABOVE);
+    },
+  },
+
   can_pay_blink: {
     describe: 'vigor is above blink\'s exertion cost, so the server will not refuse the cast',
     whenUnknown: true,

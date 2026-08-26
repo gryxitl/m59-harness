@@ -299,5 +299,29 @@ console.log('\nan entombed character must be able to pay the WHOLE price of the 
      unwedge.when({ entombed: true, has_mana: true, can_pay_blink: true }) === true);
 }
 
+console.log('\nstarting a fight needs headroom; continuing one does not');
+{
+  const mk = (hp, policy = {}) => evaluate({ client: fakeClient({ hp, hpMax: 20 }), policy });
+  // Every health threshold was a DISENGAGE threshold, and the decision to cross a room and
+  // pick a fight was made against the same numbers. With fleeBelow 0.4 and max health 20
+  // that let a character close on a fresh giant rat at 9 HP -- and the measured damage rate
+  // is 5 to 8 points per sample ([18,19,20,18,14,11,4,5]: 11 to 4 in one). A fight chosen
+  // from there is lost before the escape logic is ever consulted.
+  ok('9 of 20 is not fit to start a fight', mk(9).fit_to_engage === false);
+  ok('12 of 20 is (the default bar is 0.6)', mk(12).fit_to_engage === true);
+  ok('and the bar is policy-settable', mk(12, { engageAbove: 0.8 }).fit_to_engage === false);
+
+  const { DEFAULT_GOALS: G } = await import('./m59-decide.mjs');
+  const fight = G.find(g => g.goal === '_fight');
+  const base = { has_target: true, target_in_band: true, critical: false,
+                 hurt: true, vigor_floor: true, _targetElevated: false };
+  ok('a hurt character does NOT cross the room for a new fight',
+     fight.when({ ...base, fit_to_engage: false, in_reach: false }) === false);
+  ok('but it still finishes the one already on it',
+     fight.when({ ...base, fit_to_engage: false, in_reach: true }) === true);
+  ok('and a healthy one engages freely',
+     fight.when({ ...base, fit_to_engage: true, in_reach: false }) === true);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

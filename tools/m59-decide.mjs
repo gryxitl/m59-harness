@@ -2068,7 +2068,13 @@ export const DEFAULT_GOALS = [
   // health should be doing.
   { goal: '_fight',   when: ws => ws.has_target === true && ws.target_in_band === true
                                  && ws.critical !== true
-                                 && (ws.below_flee !== true || ws.in_reach === true)
+                                 // FINISH WHAT IS ON YOU; DO NOT GO AND FIND MORE.
+                                 // in_reach means the fight is already happening. Otherwise
+                                 // closing the gap is a CHOICE, and it needs headroom —
+                                 // see `fit_to_engage`, which sits well above the flee line
+                                 // because picking a fight from just above it is picking a
+                                 // fight you must immediately run from.
+                                 && (ws.in_reach === true || ws.fit_to_engage !== false)
                                  && (ws.hurt === true || ws.vigor_floor !== false)
                                  // Don't fight if the target is on a
                                  // different elevation (unreachable).
