@@ -51,6 +51,10 @@ const STUCK_TICKS = 30;
 // honest arrangement while the two geometries disagree.
 const HANDBACK_TICKS = 12;
 
+// MOVE_OFF_ROOM_INTERVAL in clientd3d/move.c. One request a second while pressed against a
+// boundary; the client rate-limits identically.
+const OFF_ROOM_INTERVAL_MS = 1000;
+
 
 
 export class ControllerMover {
@@ -101,13 +105,14 @@ export class ControllerMover {
     if (offMap) {
       this.stats.offMapCrossings = (this.stats.offMapCrossings || 0) + 1;
       if (this.stats.offMapCrossings <= 3)
-        console.error(`[ctlmover] ${this._agent} (${col},${row}) is off the map — a boundary crossing;`
-          + ` handing it to the legacy mover`);
+        console.error(`[ctlmover] ${this._agent} (${col},${row}) is off the map — a boundary crossing`);
       this.dest = { col, row };
+      this.crossing = { col, row };        // handled by _requestOffRoom, not by walking
       this.active = false;                 // the controller is not steering this one
       try { this.fallback?.to?.(col, row); } catch { /* fallback, not a dependency */ }
       return;
     }
+    this.crossing = null;
 
     const isNew = !this.dest || this.dest.col !== col || this.dest.row !== row;
     this.dest = { col, row };
@@ -129,6 +134,24 @@ export class ControllerMover {
 
   // Passed through untouched: the decider calls it every pass and it belongs to the legacy
   // mover's lazy position reporting, which still runs for travel.
+  // The client's off-room request: speed 0, the coordinates OUTSIDE the room, once a second.
+  _requestOffRoom(c) {
+    const x = this.crossing;
+    if (!x || !c) return;
+    const now = Date.now();
+    if (now - (this._offRoomAt ?? 0) < OFF_ROOM_INTERVAL_MS) return;
+    this._offRoomAt = now;
+    // Protocol units, the same conversion every other send uses.
+    const px = Math.round((x.col - 0.5) * CLIENT_PER_SQUARE / 16 + 64);
+    const py = Math.round((x.row - 0.5) * CLIENT_PER_SQUARE / 16 + 64);
+    try {
+      c.moveTo(px, py, 0, c.room?.id ?? 0);
+      this.stats.offRoomRequests = (this.stats.offRoomRequests || 0) + 1;
+      if (this.stats.offRoomRequests <= 3)
+        console.error(`[ctlmover] ${this._agent} off-room request to (${x.col},${x.row}) at speed 0`);
+    } catch (e) { /* the server answers by moving us, or not at all */ }
+  }
+
   maybeConfirm(...a) { return this.fallback?.maybeConfirm?.(...a); }
 
   cancel() {
@@ -189,7 +212,29 @@ export class ControllerMover {
     this.stats.ticks++;
     // A crossing handed over in to() leaves us inactive with a destination still set: keep
     // feeding the legacy mover until the room changes or a new destination arrives.
-    if (!this.active && this.dest) return this._delegate(posOverride, 'boundary crossing');
+    if (!this.active && this.dest) {
+      // LEAVING A ROOM IS ITS OWN REQUEST, AND IT IS NOT A WALK.
+      //
+      // clientd3d/move.c, when the next step would land outside the room:
+      //
+      //     if (!IsInRoom(row, col, current_room)) {
+      //        if (now - move_off_room_time >= MOVE_OFF_ROOM_INTERVAL)   // 1000ms
+      //           RequestMove(y, x, 0, player.room_id);                  // SPEED ZERO
+      //        x = last_x; y = last_y; z = last_z;                       // do not move locally
+      //        break;
+      //     }
+      //
+      // Speed 0 is the signal: it asks the SERVER to perform the transition, rather than
+      // asking it to walk us to a square that does not exist. Every move we send carries
+      // speed 18 or 32, so we have never once made that request — which is why a character
+      // reaches the staging square and simply stands there. JayB walked thirty squares clean
+      // across West Jasper and then sat at (60,2) indefinitely.
+      //
+      // Rate-limited to one a second exactly as the client is, and the body deliberately does
+      // not move while it waits.
+      this._requestOffRoom(c);
+      return this._delegate(posOverride, 'boundary crossing');
+    }
     if (!this.active || !this.dest) return { state: 'idle' };
 
     const c = this.session?.client;
