@@ -260,14 +260,33 @@ console.log('\npacer: a state request does not grow the queue');
      (p.coalesced ?? 0) >= 198, `coalesced=${p.coalesced}`);
 }
 
+console.log('\npacer: a stale move is not merely redundant, it is wrong');
+{
+  const { Pacer } = await import('./m59-game.mjs');
+  const p = new Pacer(1);
+  const sent = [];
+  // A move carries an ABSOLUTE position and movement is client-authoritative, so a queued
+  // move that has not left yet says "I am where I was" by the time it goes out -- and the
+  // server puts the body back there. JayB stranded in the Underworld: 286 queued moves, the
+  // oldest 28.8 SECONDS old, every escape step undone by the backlog of his own positions.
+  for (let i = 0; i < 100; i++) p.submit('move', () => { sent.push(i); return true; });
+  ok('a hundred queued moves collapse to one slot', p.depth <= 2, `depth=${p.depth}`);
+  // AND IT MUST BE THE NEWEST ONE THAT SURVIVES -- coalescing to the oldest would keep
+  // exactly the stale packet this exists to drop.
+  await sleep(1200);
+  ok('and the position that goes out is the NEWEST, not the oldest',
+     sent.length > 0 && sent[sent.length - 1] === 99, JSON.stringify(sent));
+}
+
 console.log('\npacer: a flood of distinct packets is shed rather than queued for ever');
 {
   const { Pacer } = await import('./m59-game.mjs');
   const p = new Pacer(1);
-  // `move` does not coalesce — each one is a different destination — so this is the case
-  // the depth cap exists for. A packet ten thousand deep would be sent hours late.
+  // `use` neither coalesces nor is urgent — every use names a different object — so this
+  // is the case the depth cap exists for. A packet ten thousand deep would be sent hours
+  // late, which is worse than not sending it.
   const promises = [];
-  for (let i = 0; i < 2000; i++) promises.push(p.submit('move', () => true));
+  for (let i = 0; i < 2000; i++) promises.push(p.submit('use', () => true));
   ok('the queue is capped rather than unbounded', p.depth <= 400, `depth=${p.depth}`);
   ok('and shedding is counted', (p.shed ?? 0) > 0, `shed=${p.shed}`);
   // A DROPPED PACKET MUST NOT HANG ITS CALLER. This is the property that turns a flood
@@ -285,14 +304,14 @@ console.log('\npacer: urgent packets are never shed');
   const p = new Pacer(1);
   let sentAttacks = 0;
   for (let i = 0; i < 40; i++) p.submit('attack', () => { sentAttacks++; return true; });
-  for (let i = 0; i < 2000; i++) p.submit('move', () => true);
+  for (let i = 0; i < 2000; i++) p.submit('use', () => true);
   const queuedAttacks = p.q.filter(j => j.kind === 'attack').length;
   // `pump` dispatches the head of the queue straight away and then waits on the rate
   // timer, so exactly one attack is legitimately in flight — out of the queue and not yet
   // executed. What must never happen is an attack being SHED: two thousand moves arriving
   // behind them must cost movement, never a swing. If urgency were not honoured here the
   // loss would be wholesale, not off-by-one.
-  ok('a flood of movement sheds movement, never a swing',
+  ok('a flood of ordinary packets sheds them, never a swing',
      queuedAttacks >= 39, `queued=${queuedAttacks} sent=${sentAttacks} shed=${p.shed}`);
 }
 

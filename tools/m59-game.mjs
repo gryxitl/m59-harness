@@ -480,8 +480,21 @@ async function readAbilitiesOnce(s, { why = 'read', kinds = 'both' } = {}) {
 // ---------------------------------------------------------------- Pacer
 
 // Kinds where a queued request is fully superseded by the next one of the same kind.
-// Both are STATES the server holds, not events it counts. See Pacer.submit.
-const COALESCE_KINDS = new Set(['rest', 'stand']);
+//
+// `rest` and `stand` are STATES the server holds, not events it counts: asking twice does
+// not rest twice.
+//
+// `move` is here for a sharper reason. A move packet carries an ABSOLUTE position, not a
+// delta — movement is client-authoritative, so what we send IS where the body goes. A
+// queued move that has not left yet is therefore not merely redundant, it is WRONG: by the
+// time it goes out it says "I am where I was", and the server obligingly puts the body
+// back there. Watched on JayB stranded in the Underworld: 286 moves queued, the oldest
+// 28.8 SECONDS old, production 10/s against 3.67/s sent, and every escape step he took
+// undone by the backlog of his own stale positions. The real client never does this — it
+// reports its CURRENT position on an interval and keeps no backlog at all.
+//
+// Intermediate positions are history, and history is not worth sending late.
+const COALESCE_KINDS = new Set(['rest', 'stand', 'move']);
 // The backstop depth. Far above any legitimate burst; low enough that the tail of the
 // queue is still packets from this minute rather than this morning.
 const MAX_QUEUE_DEPTH = Number(process.env.M59_PACER_MAX_QUEUE || 300);
