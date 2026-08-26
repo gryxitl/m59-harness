@@ -215,6 +215,34 @@ export const SYMBOLS = {
   // is not the same as three of them hitting you, and only the flag tells them apart.
   //
   // Prey only, so the merchant exclusion keeps shopkeepers out of the tally.
+  // SOMETHING IS HITTING US, AND THE FLAGS WILL NOT TELL YOU.
+  //
+  // Every flee rule we had was gated on has_target or OF.ENEMY. JayB's first recorded death
+  // shows why that fails: hp_trail [16,13,14,11,12,9,4,3] — ground down over eight samples
+  // with time to react — while last_target was null and engaged_by was 0. He was being beaten
+  // by creatures he was not fighting, and every rule that could have saved him asked a
+  // question whose answer was no.
+  //
+  // The flags cannot be trusted for this: read live in a room with a live NPC in it, EVERY
+  // object came back flags=0x0. Health going down is the one signal that is always true when
+  // something is hitting you, whatever the wire says about it.
+  //
+  // Net loss over the window, not any single dip, so that a rest tick or a heal does not mask
+  // an attack and a single unlucky sample does not invent one.
+  under_attack: {
+    describe: 'health has fallen over the last few samples — something is hitting us',
+    whenUnknown: false,
+    why_unknown: 'an unreadable health bar must not invent an attack',
+    produce: ({ client, session }) => {
+      const v = client?.vitals?.()?.health?.value;
+      if (v == null) return null;
+      const t = session?._hpTrail;
+      if (!Array.isArray(t) || t.length < 3) return false;
+      const window = t.slice(-4);
+      return window[0] - window[window.length - 1] >= 2;
+    },
+  },
+
   outnumbered: {
     describe: 'two or more aggroed creatures are within striking distance',
     whenUnknown: false,

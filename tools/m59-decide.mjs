@@ -1692,6 +1692,10 @@ export const DEFAULT_GOALS = [
   // Holding a safe spot is the answer to ONE attacker — a wall at your back stops a single
   // creature flanking you and stops nothing about being surrounded.
   { goal: 'flee_danger', when: ws => ws.outnumbered === true },
+  // AND FLEE WHEN WE ARE LOSING HEALTH AND ALREADY HURT, whether or not anything is flagged
+  // as an enemy and whether or not we hold a target. This is the rule that would have saved
+  // JayB: hurt, health falling over eight samples, and every other flee condition false.
+  { goal: 'flee_danger', when: ws => ws.under_attack === true && ws.hurt === true },
   { goal: 'flee_danger', when: ws => ws.has_target === true && ws.target_in_band === false && ws.in_reach === true },
   // FLEE when hurt AND a target is actively in reach
   // (attacking you). If the target is in the room but
