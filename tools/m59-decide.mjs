@@ -143,6 +143,7 @@ function pickWieldableWeapon(client, session = null) {
 }
 import { nearestHuntRoom } from './m59-hunt-room.mjs';
 import { loadSpawns } from './m59-spawns.mjs';
+import { creatureKey } from './m59-combat.mjs';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -817,10 +818,23 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           // matches a compendium creature is a mob.
           let creatureNames = new Set();
           try {
+            // CLASS NAMES IN, DISPLAY NAMES ON THE WIRE — key both the same way.
+            //
+            // The compendium stores `GiantRat` and `SpiderBaby`; the server sends "giant rat"
+            // and "baby spider". A plain toLowerCase compare only matches where the two
+            // coincide, which is why this set answered TRUE for mummy and centipede and FALSE
+            // for giant rat, baby spider and fungus beast. An object that fails the test is
+            // not a mob, so the tick keeper could not target a giant rat at all: JayB stood in
+            // room 535 with SIX of them in the room, every one attackable, and has_target
+            // false. He farmed mummies for days for the same reason — Mummy is its own display
+            // name.
+            //
+            // creatureKey reduces both sides to a sorted set of words, so SpiderBaby and
+            // "baby spider" land on the same key.
             const spawns = loadSpawns(SPAWNS_FILE);
             if (spawns?.byMonster) {
               for (const name of Object.keys(spawns.byMonster)) {
-                creatureNames.add(name.toLowerCase());
+                creatureNames.add(creatureKey(name));
               }
             }
           } catch { /* compendium unavailable */ }
@@ -868,7 +882,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             // exactly matches a compendium creature.
             // Exact match only: "baby spider" != "spider".
             const isMob = (o.is_player && o.can_attack)
-              || (creatureNames.size > 0 && creatureNames.has(objName));
+              || (creatureNames.size > 0 && creatureNames.has(creatureKey(objName)));
             if (!isMob) continue;
             const d2 = (o.col - me.col) ** 2 + (o.row - me.row) ** 2;
             candidates.push({ o, d2 });
