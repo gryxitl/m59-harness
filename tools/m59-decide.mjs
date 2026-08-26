@@ -223,6 +223,11 @@ const FLEE_COMMIT_MS = Number(process.env.M59_FLEE_COMMIT_MS || 8000);
 // racing it. See the unwedge goal.
 const BLINK_CAST_MS = Number(process.env.M59_BLINK_CAST_MS || 12000);
 
+// How long the character is held perfectly still for a cast. Any move or turn packet sent
+// while a spell is charging interrupts it, and the tick driver sends both at 10Hz. Slightly
+// under BLINK_CAST_MS so the hold ends before the goal is willing to ask again.
+const CAST_HOLD_MS = Number(process.env.M59_CAST_HOLD_MS || 11000);
+
 export const INTENTS = {
   rest:  (f, act, ctx) => {
     // Resting recovers HP and vigor. At an inn it's fast;
@@ -569,7 +574,42 @@ function castIntent(name, f, act, ctx) {
   const want = name.slice('cast '.length).toLowerCase();
   const spell = knownSpells(ctx.client).find(sp => String(sp.name).toLowerCase() === want);
   if (!spell) return { sent: false, why: `does not know ${want}` };
-  act.cast(spell.id, []);
+
+  // A CAST NEEDS CONCENTRATION, AND THE TICK LOOP IS THE THING BREAKING IT.
+  //
+  // This sent the cast and returned. The loop then went on sending move and turn packets
+  // at 10Hz for the ten seconds the spell takes, interrupting it every time — so the cast
+  // never completed, and nothing anywhere reported a failure, because none of it failed.
+  //
+  // Both of the OTHER blink paths already knew this: the keeper's /action cast freezes the
+  // loop, and the decider's `unstuck` blink freezes it. `unwedge` comes through here, so it
+  // was the one that did not — which is why Lee sat entombed at (28,35) in the Deep Forest
+  // of Farol, at full mana, casting blink and never moving. Genuinely entombed (0 of 8
+  // directions open), correctly diagnosed, correctly prescribed, and the cure was being
+  // cancelled by the caller a tenth of a second later.
+  //
+  // The freeze carries a deadline, so a lost thaw costs at most CAST_HOLD_MS rather than
+  // the life of the process.
+  const c = ctx.client, session = ctx.session;
+  const loop = session?._tickLoop;
+  if (!loop?.freeze) { act.cast(spell.id, []); return { sent: true, what: name }; }
+
+  const since = c?.evSeq ?? 0;
+  loop.freeze(CAST_HOLD_MS, `cast ${want}`);
+  const done = () => { try { loop.thaw(); } catch { /* the deadline covers us */ } };
+  try { act.cast(spell.id, []); } catch { done(); return { sent: false, why: `cast ${want} threw` }; }
+  try {
+    c?.waitFor?.({ since, kinds: ['moved'], timeoutMs: CAST_HOLD_MS })
+      // A spell that MOVED us has to reach the mover, or it replicates the old square and
+      // drags the body straight back — see ControllerMover.relocated.
+      ?.then((w) => {
+        const mv = (w?.events ?? []).filter(e => e.kind === 'moved');
+        const last = mv[mv.length - 1];
+        if (last && Number.isFinite(last.col))
+          try { session._mover?.relocated?.(last.col, last.row); } catch { /* best effort */ }
+        done();
+      })?.catch(done);
+  } catch { done(); }
   return { sent: true, what: name };
 }
 

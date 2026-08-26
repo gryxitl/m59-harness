@@ -197,5 +197,41 @@ console.log('\nbelow the flee line: finish a fight, never start one');
      fight.when({ ...base, critical: true, below_flee: true, in_reach: true }) === false);
 }
 
+console.log('\na cast holds the character still, because the tick loop is what breaks it');
+{
+  // A cast needs concentration and the tick driver sends move/turn at 10Hz, so a cast that
+  // does not hold the body is a cast that never completes. The keeper's /action path and
+  // the decider's `unstuck` blink both freeze the loop; `unwedge` goes through castIntent,
+  // which did not. Lee sat entombed at (28,35) in the Deep Forest of Farol at full mana,
+  // casting blink on a loop and never moving: correctly diagnosed, correctly prescribed,
+  // and the cure cancelled by the caller a tenth of a second later.
+  const { session, client, sent } = world();
+  client.spells = [{ id: 42, name: 'blink' }];
+  let frozenFor = 0, thawed = 0;
+  session._tickLoop = {
+    freeze(ms) { frozenFor = ms; return () => {}; },
+    thaw() { thawed++; },
+  };
+  client.waitFor = () => Promise.resolve({ events: [], timedOut: true });
+  const act = new Actuator(session);
+  const r = intend('cast blink', {}, act, { client, session, ws: {}, policy: {} });
+  // The rig's pacer defers to a microtask, exactly as the real one does — that deferral is
+  // what makes the actuator fire-and-forget, and it is pinned in m59-tick-test.
+  await sleep(5);
+  ok('the cast is sent', r.sent === true && sent.some(x => x[0] === 'cast'),
+     JSON.stringify(sent));
+  ok('and the loop is frozen for it', frozenFor > 5000, `frozenFor=${frozenFor}`);
+
+  // A spell that cannot be found must not leave the character frozen.
+  const b = world();
+  b.client.spells = [];
+  let bFrozen = 0;
+  b.session._tickLoop = { freeze(ms) { bFrozen = ms; return () => {}; }, thaw() {} };
+  const r2 = intend('cast blink', {}, new Actuator(b.session),
+                    { client: b.client, session: b.session, ws: {}, policy: {} });
+  ok('an unknown spell is refused without freezing anything',
+     r2.sent === false && bFrozen === 0, `${JSON.stringify(r2)} frozen=${bFrozen}`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
