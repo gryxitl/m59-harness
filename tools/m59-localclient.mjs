@@ -128,11 +128,47 @@ const CLIENT_ARG_RE = /(^|[\\/])meridian\.exe"?$/i;
 // generously, and the cap is applied to distinct accounts after grouping.
 const MAX_SCAN = 400;
 
-async function posixClients({ max = 32 } = {}) {
-  let entries = [];
-  try { entries = await readdir('/proc'); } catch { return []; }
-  const pids = entries.filter(n => /^\d+$/.test(n)).map(Number);
+// NOT EVERY UNIX HAS /proc, AND THE ONE THIS FLEET RUNS ON DOES NOT.
+//
+// This read /proc and returned [] when it could not — which on macOS is always, because
+// /proc does not exist there. So `localClients()` reported "nobody is playing" on every
+// scan, and everything built on that answer quietly stopped working: `heldByLocalClients`
+// is the guard that stops the broker logging in a character somebody is at the keyboard
+// for, and an empty list means it resumes everything, every time.
+//
+// The failure is silent in the worst way — no error, no warning, just a confident "no
+// clients found" — and it is invisible to a reader because /proc is genuinely where this
+// lives on Linux. m59-localclient-test was reporting it as nine failures.
+//
+// `ps` is the portable answer. Linux keeps the /proc path because it is cheaper and exact
+// (an argv NUL-split cannot be confused by a space in a path); this is the fallback.
+async function bsdClients() {
+  let stdout = '';
+  try { ({ stdout } = await run('ps', ['-Ao', 'pid=,command='], { timeout: 3000 })); }
+  catch { return []; }
   const found = [];
+  for (const line of stdout.split('\n')) {
+    if (found.length >= MAX_SCAN) break;
+    const m = line.match(/^\s*(\d+)\s+(.*)$/);
+    if (!m) continue;
+    const pid = Number(m[1]), command = m[2];
+    if (pid === process.pid) continue;
+    // Split on whitespace only to ASK THE QUESTION; the account is parsed from the whole
+    // command string, so a path containing a space costs us the argv[0] test and nothing
+    // more. Being wrong about `isClient` only reorders equals; being wrong about `account`
+    // would name the wrong character.
+    const argv = command.split(/\s+/).filter(Boolean);
+    if (!argv.some(a => CLIENT_ARG_RE.test(a))) continue;
+    found.push({ pid, isClient: CLIENT_ARG_RE.test(argv[0]), ...parseClientCommand(command) });
+  }
+  return found;
+}
+
+async function posixClients({ max = 32 } = {}) {
+  let entries = null;
+  try { entries = await readdir('/proc'); } catch { entries = null; }
+  const found = entries ? [] : await bsdClients();
+  const pids = entries ? entries.filter(n => /^\d+$/.test(n)).map(Number) : [];
   for (const pid of pids) {
     if (found.length >= MAX_SCAN) break;
     if (pid === process.pid) continue;
