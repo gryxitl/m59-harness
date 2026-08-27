@@ -812,6 +812,39 @@ async function keeperState(agent, index) {
   return null;
 }
 
+// PUSH A POLICY CHANGE INTO A RUNNING KEEPER PROCESS.
+//
+// A process-backed keeper reads `entry.autopilot.policy` from the roster ONCE, at startup
+// (m59-keeper-process.mjs), and hands that object straight to `makeDecider`. Nothing
+// re-reads it. So updating the broker's copy and the roster file — which is all the
+// `autopilot` tool did — changed the saved orders and NOT the character: the tool answered
+// with the new policy, `status` echoed it back, the roster showed it, and the decider went
+// on reading the values it was born with.
+//
+// 2026-08-27: four characters re-assigned to room 534, confirmed in the roster and in
+// `autopilot status`, and all four still hunting in 575 an hour later. `POST /policy` on
+// the keeper's own port fixed it instantly, because that endpoint mutates the very object
+// the decider holds. This makes the documented surface do the same thing.
+//
+// Best-effort on purpose: an in-process keeper has no port and needs none (it shares the
+// object), and a keeper that is down will read the roster when it comes back up. A failure
+// here must not fail the tool call that carried the setting.
+async function pushPolicyToKeeper(agent, index, policy) {
+  const port = keeperPort(agent, index);
+  if (!port) return { pushed: false, why: 'no keeper port' };
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/policy`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(policy),
+      signal: AbortSignal.timeout(5000),
+    });
+    return { pushed: res.ok };
+  } catch (e) {
+    return { pushed: false, why: e.message };
+  }
+}
+
 async function keeperAction(agent, index, name, args) {
   const port = keeperPort(agent, index);
   try {
@@ -6684,7 +6717,7 @@ const TOOLS = [
         ] },
       full_journal: { type: 'boolean', description: 'return the whole journal, not just the tail' },
     }, required: ['agent', 'action'] },
-    run: (a) => {
+    run: async (a) => {
       if (a.action === 'list') return { autopilots: allAutopilots() };
       const s = session(a.agent);
       s.need();
@@ -7117,8 +7150,16 @@ const TOOLS = [
       // Persist the instruction, not the running object: on the far side of a
       // restart the keeper is rebuilt from these fields alone.
       rememberAutopilot(a.agent, { mode: p.mode, policy: { ...p.policy } });
+      // AND TELL THE CHARACTER, not just the file. See pushPolicyToKeeper.
+      const sess = sessions.get(a.agent);
+      const pushed = (sess instanceof KeeperProxy)
+        ? await pushPolicyToKeeper(a.agent, sess._index, { ...p.policy })
+        : { pushed: false, why: 'in-process keeper shares the policy object' };
       const started = p.start();
-      return retired ? { ...started, retired } : started;
+      const out = retired ? { ...started, retired } : started;
+      if (pushed?.pushed === false && pushed.why && !/in-process/.test(pushed.why))
+        out.policy_push = pushed;      // visible when the character was NOT told
+      return out;
     },
   },
   {
