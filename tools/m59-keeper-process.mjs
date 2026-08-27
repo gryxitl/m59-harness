@@ -820,6 +820,23 @@ const server = createServer(async (req, res) => {
       json({ path, direct, travel, self: { x: me.col - 1, z: me.row - 1 }, target: { x: t.col - 1, z: t.row - 1 } });
       return;
     }
+    if (req.method === 'GET' && path === '/wire') {
+      // WHAT WE WOULD ACTUALLY PUT ON THE WIRE for a move. `replicate` sends
+      // client.moveTo(px, py, speed, client.room?.id) directly — not through the pacer —
+      // so a null room id there is a malformed packet the server can simply ignore, and
+      // nothing anywhere would say so.
+      try {
+        const c = session.client;
+        json({ room_id: c?.room?.id ?? null,
+               room_num: session.world?.room?.num ?? null,
+               self: c?.self ? { col: c.self.col, row: c.self.row, x: c.self.x, y: c.self.y } : null,
+               believed: (() => { try { return session._mover?.ctl?.square?.() ?? null; } catch { return null; } })(),
+               believed_xy: (() => { const k = session._mover?.ctl; return k && k.x != null ? { x: k.x, y: k.y } : null; })(),
+               ctl_stats: session._mover?.ctl?.stats ?? null });
+      } catch (e) { json({ error: e.message }); }
+      return;
+    }
+
     if (req.method === 'GET' && path === '/exits') {
       // WHAT THE LIVE ROOM OFFERS, as against what the baked map believes. The two can
       // disagree — the map carries inferred reverse edges that are not doors, and it can
