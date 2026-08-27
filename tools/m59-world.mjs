@@ -19,6 +19,7 @@
 // a person or an agent can look at.
 
 import { sharedRoomGeometry } from './m59-roo.mjs';
+import { navPath } from './m59-navgrid.mjs';
 import { exitsOf, findPath, inferredExits, codeExits, edgeExitsOf, edgeCandidatesOf, LEAVE,
          AVOID_IN_TRANSIT, selectedEdgeAt } from './m59-map.mjs';
 import { inRegion } from './m59-codeexits.mjs';
@@ -325,7 +326,36 @@ export class World {
     // So this answers the tactical question — how far is that square, really — exactly as
     // it did before clearance existed. Crossing the room is `walkTo`'s business.
     const r = geo.path(me.row, me.col, toRow, toCol, { clearance: 0 });
-    if (!r.found) return { reachable: false, verified: false, why: r.reason };
+    if (!r.found) {
+      // ASK THE PLANNER THE MOVER ACTUALLY STEERS WITH BEFORE SAYING NO.
+      //
+      // `geo.path` is the square-grid A*. The ControllerMover steers on `navPath`, which
+      // plans through FREE SPACE and — since the squeeze landed — may thread a seam the
+      // clearance margin seals. So the two disagree exactly where it hurts: in a pocket.
+      //
+      // Gountrug, Marion (15,80): that square is free-space region #3 while the whole rest
+      // of the town is region #0, so geo.path failed in every mode and `reach()` reported
+      // EVERY exit unreachable — the shops, the hall, the sanctuary and both region exits
+      // out of the town. The router then had no usable exit and he stood on the crypt door
+      // for hours. navPath plans the same trips in 121 to 195 waypoints.
+      //
+      // This is the rule the routing notes already state — the router must plan on the map
+      // the mover enforces — and the error direction is the documented one: being wrong
+      // about reachability costs a walk, while refusing everything costs the character its
+      // whole day. So a second opinion can only turn "no" into "yes", never the reverse,
+      // and it is marked unverified because no square-by-square path was produced.
+      try {
+        const P = (col, row) => ({ x: (col - 0.5) * 1024, y: (row - 0.5) * 1024 });
+        const n = navPath(geo, P(me.col, me.row), P(toCol, toRow));
+        if (n?.found) {
+          return { reachable: true, verified: false,
+                   steps: n.waypoints.length, path: [],
+                   why: 'the square grid found no route; the free-space planner the mover '
+                      + 'steers with did' };
+        }
+      } catch { /* a second opinion that throws is simply not an opinion */ }
+      return { reachable: false, verified: false, why: r.reason };
+    }
     // REACHABLE, AND SEPARATELY, WALKABLE ALL THE WAY.
     //
     // `path` will plan a final step into the goal that the MOVER refuses rather than delete

@@ -820,6 +820,21 @@ const server = createServer(async (req, res) => {
       json({ path, direct, travel, self: { x: me.col - 1, z: me.row - 1 }, target: { x: t.col - 1, z: t.row - 1 } });
       return;
     }
+    if (req.method === 'GET' && path === '/exits') {
+      // WHAT THE LIVE ROOM OFFERS, as against what the baked map believes. The two can
+      // disagree — the map carries inferred reverse edges that are not doors, and it can
+      // also simply be missing one — and there was no way to ask from outside.
+      try {
+        const exits = session.world?.exits?.() ?? [];
+        json({ room: session.world?.room?.num ?? null,
+               count: exits.length,
+               exits: exits.map(e => ({ to: e.to, to_name: e.to_name ?? null, kind: e.kind ?? null,
+                                        direction: e.direction ?? null, stand_on: e.stand_on ?? null,
+                                        reachable: e.reachable ?? null, steps_away: e.steps_away ?? null })) });
+      } catch (e) { json({ error: e.message }); }
+      return;
+    }
+
     if (req.method === 'GET' && path === '/probe') {
       // Debug: report the character's position, neighbor walkability,
       // and the geometry state. Used to diagnose stuck-on-a-ledge.
