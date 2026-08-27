@@ -113,6 +113,26 @@ export const DIVERGENCE_SQUARES = 6;
 // than a rubberband and leaves the belief close enough that no snap is ever needed.
 export const MAX_LEAD_SQUARES = 4;
 
+// A PLAN OVER SQUARE CENTRES, VALIDATED BY THE MOVER'S OWN PREDICATE.
+//
+// `geo.path({ collision: true })` walks the square grid with `moverStepLands` on every edge,
+// which is the question "will the mover take this step" rather than "is there free space
+// here". Its output is squares; the controller steers in client units, so the centres are
+// what it is handed — and a centre is the one point in a square the geometry is known to
+// accept, which is why these plans survive contact with the tracer when free-cell waypoints
+// do not. Returns null when there is no such route, so the caller can fall further back.
+function squarePlan(geo, from, to) {
+  if (typeof geo?.path !== 'function') return null;
+  const sqOf = (v) => Math.floor(v / CLIENT_PER_SQUARE) + 1;
+  const fc = sqOf(from.x), fr = sqOf(from.y), tc = sqOf(to.x), tr = sqOf(to.y);
+  let p;
+  try { p = geo.path(fr, fc, tr, tc, { collision: true }); } catch { return null; }
+  if (!p?.found || !p.steps?.length) return null;
+  return { found: true,
+           waypoints: p.steps.map(st => ({ x: (st.col - 0.5) * CLIENT_PER_SQUARE,
+                                           y: (st.row - 0.5) * CLIENT_PER_SQUARE })) };
+}
+
 export class CharacterController {
   constructor(session, { run = false } = {}) {
     this.session = session;
@@ -181,8 +201,31 @@ export class CharacterController {
       if (traced && !traced.blocked) { plan = { found: true, waypoints: traced.waypoints }; steeredBy = 'trace'; }
       else if (NAV_MODE === 'strict') { plan = { found: false, reason: 'trace_blocked' }; steeredBy = 'trace'; }
       else {
-        plan = navPath(geo, from, to);
-        this.stats.trace_fellback = (this.stats.trace_fellback || 0) + 1;
+        // THE TRACE IS BLOCKED. FALL BACK TO THE PLANNER WHOSE STEPS THE MOVER CAN TAKE.
+        //
+        // This fell back to navPath, which plans through FREE-SPACE CELLS of 256 units.
+        // Those are not places a body can be steered between: the first waypoint is often a
+        // SUB-SQUARE hop, and aiming at something that close slides the body along whatever
+        // wall it is already near and leaves it in the same square. No square progress, so
+        // the stall detector re-centres it, so it slides into the same spot again — a closed
+        // loop that only a keeper restart broke.
+        //
+        // Measured offline on the two squares that held the fleet all night. Following
+        // navPath's plan with the real tracer: Cor Noth (68,29) STOPS after 3 steps, still
+        // on (68,29); the King's Way (13,39) stops on (14,39). Following geo.path's plan,
+        // whose edges are validated by `moverStepLands` — the mover's own predicate — over
+        // SQUARE CENTRES: Cor Noth walks all 18 steps to (69,31), the King's Way all 64 to
+        // (15,39). Same geometry, same tracer, same destinations.
+        //
+        // navPath stays as the last resort, because it can squeeze through a clearance seam
+        // that the square planner refuses outright — that is what gets a body off a ledge —
+        // and a plan that is hard to walk still beats no plan at all.
+        const sq = squarePlan(geo, from, to);
+        if (sq) { plan = sq; steeredBy = 'squares'; }
+        else {
+          plan = navPath(geo, from, to);
+          this.stats.trace_fellback = (this.stats.trace_fellback || 0) + 1;
+        }
       }
     } else plan = grid;
     this.stats[`steered_${steeredBy}`] = (this.stats[`steered_${steeredBy}`] || 0) + 1;
