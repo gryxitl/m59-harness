@@ -2132,8 +2132,28 @@ export const DEFAULT_GOALS = [
   // mid-swing. Above `hunt`, because a pack that cannot receive cannot loot, and hunting with
   // a full pack earns nothing but risk. JayB was carrying seventeen maces and 1,020 shillings
   // while still looking for the next rat.
+  //
+  // AND SELL WHEN THERE IS NOTHING ELSE TO DO, not only when the pack is full.
+  //
+  // Both original triggers are about SHEDDING: too many weapons, or no room left. Neither
+  // fires for a character carrying a few sellable stacks with slots to spare, so loot sat
+  // in packs indefinitely and never became money — 118 kills on 2026-08-27 produced one
+  // purse of 77 shillings across five characters, and with `walkingMoney` at 400 that is
+  // the same as none. No money means no food, no reagents and no replacement weapon after
+  // a death, which is the loop that keeps a character weak.
+  //
+  // The third trigger is the free one: no target in front of us. A hunt room with nothing
+  // in it is dead time — four characters spent fifteen minutes in room 534 waiting for
+  // spawns with reagents in their packs — and a town trip costs nothing that is not
+  // already being lost. `has_target` is the same gate `healthy` and `vigor_ok` use, so
+  // this cannot pull anybody out of a fight, and `_fight` outranks it regardless.
+  //
+  // It also self-terminates: selling empties the pack, `has_loot` goes false, and `hunt`
+  // (immediately below) takes the next tick. No standing state, no oscillation.
   { goal: 'sell_loot',  when: ws => ws.over_weapons === true
-                                 || (ws.has_loot === true && ws.pack_room === false) },
+                                 || (ws.has_loot === true && ws.pack_room === false)
+                                 || (ws.has_loot === true && ws.has_target !== true
+                                     && ws.under_attack !== true) },
   { goal: 'bank_money', when: ws => ws.purse_heavy === true },
   // HUNT before eating: the character should go find work (a mob to fight)
   // rather than sitting in town eating. Vigor management matters during

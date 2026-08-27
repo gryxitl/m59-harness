@@ -292,5 +292,46 @@ console.log('\na cast holds the character still, because the tick loop is what b
   ok('an unreadable bar never pins a character', latch(null, true, 0, 0) === false);
 }
 
+// SELLING WHEN THERE IS NOTHING ELSE TO DO.
+//
+// Both original triggers were about SHEDDING — too many weapons, or no room left — so a
+// character carrying a few sellable stacks with slots to spare never sold anything. 118
+// kills on 2026-08-27 produced one purse of 77 shillings across five characters, and with
+// walkingMoney at 400 that is the same as none: no food, no reagents, no replacement
+// weapon after a death.
+{
+  const sell = DEFAULT_GOALS.find(g => g.goal === 'sell_loot');
+  ok('the sell_loot goal exists', !!sell);
+
+  // The two original triggers still work.
+  ok('surplus weapons still trigger a trip', sell.when({ over_weapons: true }) === true);
+  ok('a full pack with loot still triggers one',
+     sell.when({ has_loot: true, pack_room: false }) === true);
+
+  // The new one: idle with loot.
+  ok('loot and no target triggers a trip',
+     sell.when({ has_loot: true, pack_room: true, has_target: false,
+                 under_attack: false }) === true);
+
+  // The things that must still stop it.
+  ok('a target in front of us does not',
+     sell.when({ has_loot: true, pack_room: true, has_target: true,
+                 under_attack: false }) === false);
+  ok('being under attack does not',
+     sell.when({ has_loot: true, pack_room: true, has_target: false,
+                 under_attack: true }) === false);
+  ok('and an empty pack never does',
+     sell.when({ has_loot: false, pack_room: true, has_target: false,
+                 under_attack: false }) === false);
+
+  // It self-terminates: once the loot is gone the goal stops matching, so `hunt` (which
+  // sits immediately below it) takes the next tick rather than a town/hunt oscillation.
+  const after = { has_loot: false, pack_room: true, has_target: false, under_attack: false };
+  ok('selling ends the trip rather than repeating it', sell.when(after) === false);
+  const hunt = DEFAULT_GOALS.find(g => g.goal === 'hunt');
+  ok('and hunt picks up immediately afterwards',
+     hunt.when({ ...after, has_target: false }) === true);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
