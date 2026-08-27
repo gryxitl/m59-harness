@@ -636,13 +636,32 @@ export class ControllerMover {
     // destination, so it gets the first attempt.
     if (!moved && this._noProgress >= BLOCKED_RESYNC_TICKS && c?.self) {
       const sv = c.self;
-      if (Number.isFinite(sv.col) && Number.isFinite(sv.row)
-          && (sv.col !== after.col || sv.row !== after.row)) {
+      // AGREEING ABOUT THE SQUARE IS NOT THE SAME AS BEING FREE TO LEAVE IT.
+      //
+      // This only re-synced when the server named a DIFFERENT square, on the reasoning that
+      // agreement means the belief is fine. It does not: the belief carries a FINE position
+      // inside the square, and that can be pressed into geometry while the square itself is
+      // perfectly good. Nothing then corrects it, because the two agree — so the body slides
+      // against the same wall for ever and the square never changes.
+      //
+      // Lee, room 150, two squares from his waypoint: 112,000 ticks, 15,454 of them
+      // "moving", slid=117,105, ctl sent=1,613, arrived=ZERO, and not one square of
+      // progress in two hours. From the square CENTRE all eight directions are open and
+      // navPath plans the hop in eight waypoints — the square was never the problem.
+      //
+      // So a long enough stall re-centres the belief on the server's square whichever square
+      // that is. `serverMovedPlayer` puts the body at the stand point, which is the one
+      // position in the square known to be clear, and drops the plan that was drawn from
+      // wherever it had drifted to. The correction is bounded by a single square, and the
+      // alternative is a character frozen until somebody restarts its keeper.
+      if (Number.isFinite(sv.col) && Number.isFinite(sv.row)) {
+        const sameSquare = sv.col === after.col && sv.row === after.row;
         this._noProgress = 0;
         this.stats.blockedResyncs = (this.stats.blockedResyncs || 0) + 1;
         if (this.stats.blockedResyncs <= 5)
           console.error(`[ctlmover] ${this._agent} no square progress in ${BLOCKED_RESYNC_TICKS} ticks`
-            + ` at believed (${after.col},${after.row}); the server says (${sv.col},${sv.row}) — adopting it`);
+            + ` at believed (${after.col},${after.row}); the server says (${sv.col},${sv.row})`
+            + ` — ${sameSquare ? 're-centring on the stand point' : 'adopting it'}`);
         try { this.ctl.serverMovedPlayer(sv.col, sv.row); } catch { /* best effort */ }
         this._plannedFor = null;        // the plan was made from somewhere we are not
         return { state: 'moving', to: this.dest, resynced: true };

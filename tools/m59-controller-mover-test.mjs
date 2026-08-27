@@ -83,18 +83,30 @@ console.log('controller mover: a belief the model cannot leave is abandoned for 
      cm._plannedFor === null, String(cm._plannedFor));
 }
 
-console.log('\ncontroller mover: agreement is not a reason to resync');
+console.log('\ncontroller mover: agreeing about the square is not being free to leave it');
 {
-  // The belief and the server agree. Being blocked here says something about the GEOMETRY,
-  // not about the belief, and adopting a position we already hold would be a no-op that
-  // hides a real stall behind a counter that looks like it is doing something.
+  // AGREEMENT USED TO MEAN "the belief is fine, leave it alone". It does not. The belief
+  // carries a FINE position inside the square, and that can be pressed into geometry while
+  // the square itself is perfectly good — so the two agree, nothing corrects it, and the
+  // body slides against the same wall for ever.
+  //
+  // Lee, room 150, two squares from his waypoint: 112,000 ticks, slid=117,105, arrived=ZERO
+  // and not one square of progress in two hours, on a square whose centre has all eight
+  // directions open. A long stall now re-centres on the stand point, which is the one
+  // position in the square known to be clear.
   const { cm } = rig({ believed: { col: 5, row: 5 }, server: { col: 5, row: 5 } });
-  for (let i = 0; i < 60; i++) {
-    cm._lastTickAt = Date.now() - 100;
-    cm.tick({ col: 5, row: 5, x: 4608, y: 4608 });
-  }
-  ok('a blocked belief that MATCHES the server is never adopted over itself',
-     cm.ctl.adopted.length === 0, JSON.stringify(cm.ctl.adopted));
+
+  // NOT IMMEDIATELY, though. A couple of blocked ticks is an ordinary bump into a wall, and
+  // re-centring on every one of those would throw away good fine positioning constantly.
+  for (let i = 0; i < 3; i++) { cm._lastTickAt = Date.now() - 100; cm.tick({ col: 5, row: 5 }); }
+  ok('a brief block does not re-centre anything', cm.ctl.adopted.length === 0,
+     JSON.stringify(cm.ctl.adopted));
+
+  for (let i = 0; i < 40; i++) { cm._lastTickAt = Date.now() - 100; cm.tick({ col: 5, row: 5 }); }
+  ok('but a prolonged one re-centres the belief', cm.ctl.adopted.length > 0,
+     JSON.stringify(cm.ctl.adopted));
+  ok('and re-centres onto the SAME square, never somewhere else',
+     cm.ctl.adopted.every(([c, r]) => c === 5 && r === 5), JSON.stringify(cm.ctl.adopted));
 }
 
 console.log('\ncontroller mover: a body that is getting somewhere keeps its own position');
