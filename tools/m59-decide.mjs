@@ -320,6 +320,31 @@ export const INTENTS = {
   // and nothing on the wire tells that from a sale. So the merchant here must pass
   // trustedBuyer() — verified for this route: Quintor (Jasper Blacksmith, room 374) passes,
   // Yevitan (Jasper Banker, room 376) does not.
+  // GO WHERE A SHOP IS. The planner's `travel_to` produces `at_shop`, which is the
+  // precondition of both `buy` and `sell` — and the tick decider had no executor for it, so
+  // a plan containing it died on arrival:
+  //
+  //     [tick] t4 armed -> travel_to — no intent for "travel_to"
+  //
+  // Lee, 2026-08-27: no weapon, 77 shillings, the correct plan (travel_to -> buy) found and
+  // then dropped every tick because nothing could carry out its first step.
+  //
+  // It cannot simply alias `travel`, which follows `router.dest` and has none set here.
+  // The destination is the same one `sell_loot` uses when there is no buyer in the room:
+  // the merchant room this fleet trades at. Arriving satisfies `at_shop` and the planner's
+  // next step (`buy` or `sell`) runs there.
+  travel_to: (f, act, ctx) => {
+    const s = ctx.session;
+    if (!s?._router) return { sent: false, why: 'no router to reach a shop' };
+    const dest = SELL_ROOM;
+    if (s._router.dest !== dest) {
+      s._router.to(dest);
+      return { sent: true, what: `travel to the merchant (room ${dest})` };
+    }
+    const r = routeIntent(s._router)(f, act);
+    return { sent: r.sent, what: r.what ?? `on the way to the merchant (room ${dest})` };
+  },
+
   sell_loot: (f, act, ctx) => {
     const s = ctx.session, c = ctx.client;
     if (s?._sellInFlight) return { sent: false, why: 'a sale is already in flight' };

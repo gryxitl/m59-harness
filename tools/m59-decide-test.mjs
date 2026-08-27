@@ -333,5 +333,32 @@ console.log('\na cast holds the character still, because the tick loop is what b
      hunt.when({ ...after, has_target: false }) === true);
 }
 
+// THE PLANNER'S `travel_to` HAD NO EXECUTOR.
+//
+// `travel_to` produces `at_shop`, the precondition of both `buy` and `sell`. The tick
+// decider had no intent of that name, so a correct plan died on its first step:
+//     [tick] t4 armed -> travel_to — no intent for "travel_to"
+// Lee, 2026-08-27: no weapon, 77 shillings, the right plan found and dropped every tick.
+{
+  ok('travel_to is a registered intent', typeof INTENTS.travel_to === 'function');
+  ok('without a router it refuses rather than throwing',
+     INTENTS.travel_to({}, {}, { session: {} }).sent === false);
+
+  // It sets the destination on the first call, then steers on later ones.
+  const router = { dest: null, to(d) { this.dest = d; } };
+  const first = INTENTS.travel_to({}, {}, { session: { _router: router } });
+  ok('the first call sets the merchant room as the destination',
+     first.sent === true && router.dest === 374, `dest=${router.dest}`);
+
+  // It must not re-issue `to()` once already heading there, or the router would drop
+  // its leg on every tick — the oscillation this codebase has been bitten by twice.
+  let calls = 0;
+  const steady = { dest: 374, to() { calls++; },
+                   tick: () => ({ state: 'moving', why: 'steering' }) };
+  const again = INTENTS.travel_to({}, {}, { session: { _router: steady } });
+  ok('and does not re-target once already on the way', calls === 0);
+  ok('it steers instead', again.sent !== undefined);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
