@@ -821,12 +821,30 @@ export const SYMBOLS = {
     describe: 'the pack has items that are not food, money, or reagents (sellable loot)',
     whenUnknown: false,
     why_unknown: 'a wrong false just delays a sell trip; a wrong true wastes a walk to a shop',
-    produce: ({ client }) => {
+    // AN ITEM ON THE LOADOUT'S SELL LIST IS LOOT, WHATEVER CATEGORY IT LOOKS LIKE.
+    //
+    // The categories below are a sensible default for a character with no orders, and they
+    // hard-exclude reagents because a caster needs them for `create food`. But the loadout
+    // is the documented home for per-character orders, and four of ours say in as many
+    // words `sell: [elderberry, herb, mushroom, blue mushroom, red mushroom, ...]`. The
+    // predicate contradicted the order: the characters looted reagents all day, `has_loot`
+    // answered false, `sell_loot` never fired, and 118 kills produced one purse of 77
+    // shillings across five characters -- so nobody could buy food, reagents or a weapon.
+    //
+    // Naming an item on the sell list IS the operator calling it loot, so it wins over the
+    // category guess. Everything unnamed still falls through to the defaults, and a
+    // character with no sell list behaves exactly as before.
+    produce: ({ client, policy }) => {
       const inv = client?.inventory;
       if (!Array.isArray(inv) || !inv.length) return false;
+      const wanted = Array.isArray(policy?.sellList)
+        ? policy.sellList.map(x => String(x).toLowerCase().trim()).filter(Boolean)
+        : null;
       return inv.some(o => {
         const name = client?.rsc?.get?.(o.nameRsc) ?? o.name ?? o.nameRsc ?? '';
         const lower = name.toLowerCase();
+        // The order first, before any category can veto it.
+        if (wanted && wanted.some(w => lower.includes(w))) return true;
         if (/shilling|gold|silver|copper/i.test(lower)) return false;
         if (/bread|cheese|stew|apple|peach|bun|cake|pie|porridge|rice|meat|fish|salad|egg|ham|bacon|sausage|roast|kebab|bowl|plate|loaf|torta|pasta|noodles|sushi|burger|sandwich|pizza|dough|flour|milk|juice|water|beer|wine|ale|cider|potion|drink|food/i.test(lower)) return false;
         if (/elderberry|herb|mushroom|reagent/i.test(lower)) return false;

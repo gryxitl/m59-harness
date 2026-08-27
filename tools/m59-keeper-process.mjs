@@ -103,6 +103,17 @@ try {
     if (Object.keys(applied).length)
       console.error(`[keeper] ${agent} took policy from ${character}'s loadout: ${JSON.stringify(applied)}`);
   }
+  // AND THE SELL LIST, which is an order about what to do with the pack and had no reader
+  // in the tick keeper at all. `has_loot` classifies by category and hard-excludes
+  // reagents, so a loadout saying `sell: [elderberry, herb, mushroom, ...]` was contradicted
+  // by the predicate that decides whether a sell trip is worth making: the character looted
+  // reagents all day, `has_loot` answered false, `sell_loot` never fired, and nothing was
+  // ever converted into money. Naming an item here is the operator saying it is loot.
+  const sellList = loadoutFor(character)?.sell;
+  if (Array.isArray(sellList) && sellList.length) {
+    policy.sellList = sellList;
+    console.error(`[keeper] ${agent} sell list from ${character}'s loadout: ${sellList.join(', ')}`);
+  }
 } catch (e) {
   console.error(`[keeper] ${agent} could not read the loadout (${e.message}); using the roster policy alone`);
 }

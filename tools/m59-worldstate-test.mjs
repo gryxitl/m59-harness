@@ -419,5 +419,41 @@ console.log('\nstarting a fight needs headroom; continuing one does not');
      money({ client: { inventory: [{ name: 'shilling', amount: 200 }] } }) === true);
 }
 
+// AN ITEM ON THE LOADOUT'S SELL LIST IS LOOT, WHATEVER CATEGORY IT LOOKS LIKE.
+//
+// `has_loot` classifies by category and hard-excludes reagents, because a caster needs them
+// for `create food`. But the loadout is the documented home for per-character orders, and
+// four of ours said `sell: [elderberry, herb, mushroom, ...]` in as many words. The
+// predicate contradicted the order, `sell_loot` never fired, and 118 kills produced one
+// purse of 77 shillings across five characters -- nobody could buy food, reagents or a
+// weapon. 2026-08-27.
+{
+  const pack = (names) => ({ client: { inventory: names.map(n => ({ name: n })),
+                                       inventoryKnown: true } });
+  const withList = (names, sellList) => ({ ...pack(names), policy: { sellList } });
+  const reagents = ['elderberry', 'mushroom', 'herb', 'red mushroom'];
+  const SELL = ['elderberry', 'herb', 'mushroom', 'gem', 'ruby'];
+  const loot = SYMBOLS.has_loot.produce;
+
+  ok('reagents alone are NOT loot without orders', loot(pack(reagents)) === false);
+  ok('...and ARE loot when the loadout says to sell them',
+     loot(withList(reagents, SELL)) === true);
+  ok('a gem is loot either way', loot(pack(['ruby'])) === true);
+
+  // The categories the sell list must not override.
+  ok('the weapon in hand is never loot', loot(withList(['mace'], SELL)) === false);
+  ok('money is never loot', loot(withList(['shilling'], SELL)) === false);
+  ok('an empty pack is never loot', loot(withList([], SELL)) === false);
+
+  // A character with no list behaves exactly as before.
+  ok('no sell list means the old behaviour', loot(withList(reagents, [])) === false);
+  ok('and a malformed list is ignored rather than throwing',
+     loot({ ...pack(reagents), policy: { sellList: 'elderberry' } }) === false);
+
+  // Partial matching: the list names "mushroom", the pack holds "red mushroom".
+  ok('a list entry matches a longer item name',
+     loot(withList(['red mushroom'], ['mushroom'])) === true);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
