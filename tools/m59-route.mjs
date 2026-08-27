@@ -175,7 +175,20 @@ export class Router {
     if (!world) return { why: 'no world' };
     let hops = null;
     try {
-      const p = findPath(this.map, here, this.dest);
+      // A HOP THE ROOM HAS NO DOOR FOR MUST NOT BE PLANNED AGAIN.
+      //
+      // The graph carries INFERRED REVERSE edges — if 535 has a north exit to Marion, an
+      // edge Marion->535 is inferred — and CLAUDE.md is explicit that exits are not doors
+      // and are not 1:1. Marion genuinely has no way back to 535: its go-exits lead to
+      // 2600, 201, 202, 204 and 205 and nowhere else. So findPath answered "one hop",
+      // the leg planner found no usable exit for it, and the pass repeated that for ever.
+      // Gountrug stood on Marion's crypt door for two hours doing exactly this.
+      //
+      // Every hop that has been refused for want of a door is fed back to the planner, so
+      // the next plan routes around it instead of rediscovering it. `blockedHops` is the
+      // parameter findPath already has for this; nothing was filling it.
+      const p = findPath(this.map, here, this.dest,
+                         this._doorless?.size ? { blockedHops: this._doorless } : undefined);
       if (p?.found) hops = p.hops ?? [];
     } catch (e) { return { why: `route failed: ${e.message}` }; }
     if (!hops) return { why: `no route from ${here} to ${this.dest}` };
@@ -226,7 +239,19 @@ export class Router {
       // No fine-reachable candidate at all: keep the coarse pick rather than no leg —
       // the sub-leg planner and the mover's raw-door-push still have a chance.
       || !cands.some(x => x.reachable !== false && fineOk(x)))) ?? cands[0];
-    if (!exit) return { why: `no usable exit from ${here} toward ${next}` };
+    if (!exit) {
+      // Remember it, so the next plan does not choose the same non-existent door. Keyed the
+      // way findPath keys them, `from>to`, and kept on the router because it is a fact about
+      // the MAP rather than about this journey.
+      (this._doorless ??= new Set()).add(`${here}>${next}`);
+      if (!this._doorlessNoted?.has(`${here}>${next}`)) {
+        (this._doorlessNoted ??= new Set()).add(`${here}>${next}`);
+        console.error(`[route] ${this.session?.name ?? '?'} no door from ${here} to ${next}`
+          + ` — the graph offers that hop but the room does not; routing around it`);
+      }
+      this.leg = null; this.mark = null;
+      return { why: `no usable exit from ${here} toward ${next}` };
+    }
     // If the chosen exit's stand_on is unreachable and it has alternates, fall back to
     // the first reachable alternate.
     let standOn = exit.stand_on;
