@@ -216,6 +216,7 @@ export class ControllerMover {
       // The early returns, which the counters above cannot see and which are the difference
       // between "not moving because it cannot" and "not moving because it is waiting".
       + ` held=${s.held ?? 0} resync=${s.blockedResyncs ?? 0} rock=${s.rockDelegations ?? 0}`
+      + ` rockOff=${s.rockWalkedOff ?? 0}`
       + ` stale=${s.staleAims ?? 0} restQuiet=${s.restQuiet ?? 0}`
       + ` | ctl sent=${c.sent ?? 0} slid=${c.slid ?? 0} ctlBlocked=${c.blocked ?? 0} reconciled=${c.reconciled ?? 0} drift=${Math.round(c.drift_max ?? 0)}`
       + ` roomResyncs=${s.roomResyncs ?? 0}`);
@@ -520,7 +521,40 @@ export class ControllerMover {
     // coarse-grid artifact" was true of the square it was written about and not in general.
     // fineWalkable is what traceFineMoveClient enforces, so it is what may declare a body
     // stuck in rock.
+    // TRY TO WALK OFF IT BEFORE DECLARING IT ROCK.
+    //
+    // A coarse-walkable square the fine model refuses is ordinary terrain, not a rare
+    // accident: 155 of the 1,412 coarse-walkable squares in the King's Way are like that —
+    // 11% of the room — and a character chasing a quarry lands on one constantly. This
+    // branch handed straight to the legacy mover BEFORE the controller tried anything, on
+    // the strength of one case where "the fine tracer refuses too". That was true of the
+    // square it was written about and is not true in general, and the hand-off does not
+    // work either: Sasquatch, on (13,39) with a giant rat six squares away, delegated 9,670
+    // times, arrived ZERO times, and blinked every thirty seconds for an hour.
+    //
+    // So ask the tracer, which is the thing that actually decides. If any of the eight
+    // directions yields real movement then the body is not embedded in any sense that
+    // matters, and the ordinary plan-and-step below walks it off — navPath starts from the
+    // nearest free cell, so a start the clearance grid dislikes does not stop it planning.
+    // Only when every direction is refused is this genuinely rock, and only then is the
+    // legacy mover's escape fan worth the pass.
+    let stuckInRock = false;
     if (geo.fineWalkable && geo.fineWalkable(me.row, me.col) === false) {
+      stuckInRock = true;
+      if (this.ctl.x != null && typeof geo.traceFineMoveClient === 'function') {
+        const S = 256;
+        for (const [dx, dy] of [[S,0],[-S,0],[0,S],[0,-S],[181,181],[-181,-181],[181,-181],[-181,181]]) {
+          try {
+            const t = geo.traceFineMoveClient(this.ctl.x, this.ctl.y,
+                                              this.ctl.x + dx, this.ctl.y + dy, { slide: true });
+            const d = t && t.x != null ? Math.hypot(t.x - this.ctl.x, t.y - this.ctl.y) : 0;
+            if (t?.moved && d >= 32) { stuckInRock = false; break; }
+          } catch { /* a throwing direction is not a passable one */ }
+        }
+      }
+      if (!stuckInRock) this.stats.rockWalkedOff = (this.stats.rockWalkedOff || 0) + 1;
+    }
+    if (stuckInRock) {
       this.stats.rockDelegations = (this.stats.rockDelegations || 0) + 1;
       if (!this._warnedRock) {
         this._warnedRock = true;
