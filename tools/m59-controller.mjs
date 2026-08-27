@@ -81,6 +81,13 @@ export const STRANDED_ESCAPE_TURNS = [0, Math.PI / 8, -Math.PI / 8, Math.PI / 4,
 export const MOVE_INTERVAL_MS = 1000;
 export const MOVE_THRESHOLD_CLIENT = CLIENT_PER_SQUARE / 4;
 
+// How much nearer the current waypoint a BLOCKED tick must get before it counts as
+// progress rather than a dead leg. One client unit: the bar is deliberately almost
+// nothing, because the point is the SIGN of the movement, not its size. A slide that
+// carries the body along its route closes distance; a slide along a wall it is pressed
+// against does not, and used to reset the dead-leg counter anyway.
+export const MIN_CLOSING_CLIENT = 1;
+
 // WHAT COUNTS AS THE SERVER HAVING MOVED US, and why it is a big number.
 //
 // BP_MOVE is our own last report echoed back, and it lags: the round trip plus however long
@@ -234,11 +241,50 @@ export class CharacterController {
         // navPath stays as the last resort, because it can squeeze through a clearance seam
         // that the square planner refuses outright — that is what gets a body off a ledge —
         // and a plan that is hard to walk still beats no plan at all.
-        const sq = squarePlan(geo, from, to);
-        if (sq) { plan = sq; steeredBy = 'squares'; }
-        else {
-          plan = navPath(geo, from, to);
-          this.stats.trace_fellback = (this.stats.trace_fellback || 0) + 1;
+        // BUT FIRST: ASK AGAIN FROM WHERE THE BODY COULD LEGALLY STAND.
+        //
+        // A blocked trace is usually not a statement about the ROUTE, it is a statement
+        // about the ORIGIN. A body pressed into geometry inside an otherwise good square
+        // refuses every plan drawn from where it is pressed, while the same plan from that
+        // square's stand point is clean. Measured in room 150 to a target ONE SQUARE south:
+        // from the body's real point (70256,29440) tracePath is blocked with no waypoints;
+        // from the stand point (70144,29184) it returns 155 and walks.
+        //
+        // Falling straight through to a weaker planner is what made this fatal rather than
+        // slow. The fallbacks plan from the same jammed point, and to a target one square
+        // away they return a near-straight line — which aims the body back into the wall it
+        // is already against. It slides deeper, the next plan is refused for the same
+        // reason, and the body re-jams itself faster than the eight-tick resync can
+        // re-centre it. Kage, Lee and Sasquatch held (69,29) that way for over two hours,
+        // aim reading 10 to 15 units due south on every sample.
+        //
+        // So recover the origin before weakening the planner: re-ask from the stand point,
+        // and if that plans, make the stand point the first waypoint so the body walks out
+        // of the jam and then follows a route it can actually take. This is the same cure
+        // the blocked-resync applies, asked at plan time instead of eight ticks later, and
+        // it can only ever steer a body to the one position in its own square that the
+        // geometry calls clear.
+        const here = this.square();
+        const stand = { x: (here.col - 0.5) * CLIENT_PER_SQUARE,
+                        y: (here.row - 0.5) * CLIENT_PER_SQUARE };
+        let rescued = null;
+        if (Math.hypot(stand.x - from.x, stand.y - from.y) >= 1) {
+          try {
+            const t2 = tracePath(geo, stand, to);
+            if (t2 && !t2.blocked && t2.waypoints?.length) rescued = t2;
+          } catch { /* the rescue is best-effort; the fallbacks below still apply */ }
+        }
+        if (rescued) {
+          plan = { found: true, waypoints: [stand, ...rescued.waypoints] };
+          steeredBy = 'standpoint';
+          this.stats.trace_rescued = (this.stats.trace_rescued || 0) + 1;
+        } else {
+          const sq = squarePlan(geo, from, to);
+          if (sq) { plan = sq; steeredBy = 'squares'; }
+          else {
+            plan = navPath(geo, from, to);
+            this.stats.trace_fellback = (this.stats.trace_fellback || 0) + 1;
+          }
         }
       }
     } else plan = grid;
@@ -284,6 +330,12 @@ export class CharacterController {
   //
   // The fine pair is only trusted when it lands in the square the server named; a pair
   // that disagrees is a stale echo, and then the centre is the honest answer.
+  //
+  // AND OMITTING THE PAIR IS A REQUEST, NOT AN OVERSIGHT. The blocked-resync in
+  // `m59-controller-mover.mjs` calls this with the square alone on purpose: there the fine
+  // position is what has gone wrong -- the square is good and the body is pressed into
+  // geometry inside it -- and re-centring on the stand point is the whole cure. Do not
+  // "fix" that caller by handing it the fine coordinates; that re-adopts the jam.
   serverMovedPlayer(col, row, px, py) {
     if (!Number.isFinite(col) || !Number.isFinite(row)) return false;
     let fx = null, fy = null;
@@ -541,8 +593,26 @@ export class CharacterController {
     // reachable, because a path through free space rarely has two bad legs in a row — and
     // only give the plan up when skipping stops helping.
     if (blocked) {
-      const gained = Math.hypot(this.x - beforeX, this.y - beforeY);
-      if (gained < 1) {
+      // PROGRESS IS CLOSING ON THE WAYPOINT, NOT MOVING.
+      //
+      // This measured raw displacement against a threshold of ONE client unit, and a square
+      // is 1024 of them. Sliding along a wall is displacement: the body travels tens of
+      // units a tick and gets no nearer anything. So `gained` cleared the bar on every
+      // contact, `_deadLegs` reset on every tick, and the two escapes below — skip the
+      // waypoint, then give up the plan — could never fire. The body slid against the same
+      // wall for as long as the keeper lived.
+      //
+      // That is the whole of the fleet-wide freeze of 2026-08-27, and it is why the
+      // signature was identical in three different rooms with three different plans:
+      // `slid` ~= `ctlBlocked` ~= `ticks`, `sent` near zero, `arrived` exactly zero.
+      // Kage 2,425 blocked ticks, Lee 2,440, JayB 242, every one of them "making ground".
+      //
+      // Closing distance keeps the case this bar was written for — clipping a corner and
+      // sliding ALONG the route is ordinary, and it still closes on the waypoint — while
+      // refusing the case that hung the fleet, where the slide is sideways or backwards.
+      const closed = Math.hypot(wp.x - beforeX, wp.y - beforeY)
+                   - Math.hypot(wp.x - this.x, wp.y - this.y);
+      if (closed < MIN_CLOSING_CLIENT) {
         this._deadLegs = (this._deadLegs ?? 0) + 1;
         if (this._deadLegs >= 3) {
           this._deadLegs = 0;

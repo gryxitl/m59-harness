@@ -9,6 +9,7 @@
 // it leave. Then every trace refuses, it re-plans, it re-blocks, and it never sends a
 // packet. There is no correction loop to save it, on purpose (see the long note in
 // tick()), so the recoveries here are the only way out.
+import { readFileSync } from 'node:fs';
 import { ControllerMover } from './m59-controller-mover.mjs';
 
 let pass = 0, fail = 0;
@@ -477,6 +478,68 @@ console.log('\ncontroller mover: an aim is a claim, and a claim has to be renewe
   renewed.to(30, 2);
   ok('renewing the same aim revives it', renewed._aimIsStale() === false);
   ok('and does not force a replan', renewed._plannedFor === '30,2', String(renewed._plannedFor));
+}
+
+// THE TWO CALLERS OF serverMovedPlayer WANT OPPOSITE THINGS, AND ONLY ONE WANTS THE
+// FINE POSITION.
+//
+// Adopting a place the server genuinely put the body (a blink, a portal, a belief that
+// has fallen behind) should keep the fine coordinate: it is the truth, and the square
+// centre is a lossy approximation of it. But the blocked-resync exists precisely because
+// the fine position has gone wrong -- the square is good and the body is pressed into
+// geometry inside it -- and re-centring on the stand point is the entire cure.
+//
+// Collapsing the two broke the whole fleet on 2026-08-27: with the jammed fine position
+// re-adopted every eight ticks, five characters in three different rooms all froze with
+// `slid` climbing, `sent` at zero and `arrived` at zero.
+{
+  const CLIENT_PER_SQUARE = 1024;
+  const centreOf = (col, row) => ({ x: (col - 0.5) * CLIENT_PER_SQUARE,
+                                    y: (row - 0.5) * CLIENT_PER_SQUARE });
+  // A body in square (69,29) whose fine position is jammed against the south-east wall.
+  const jammed = { col: 69, row: 29, x: 4455, y: 1904 };   // protocol units
+  const protocolToClient = (v) => (v - 64) * 16;
+
+  // Stand in for the controller: record what it was asked to believe.
+  const mk = () => {
+    const ctl = {
+      x: null, y: null, stats: {},
+      serverMovedPlayer(col, row, px, py) {
+        let fx = null, fy = null;
+        if (Number.isFinite(px) && Number.isFinite(py)) {
+          const cx = protocolToClient(px), cy = protocolToClient(py);
+          if (Math.floor(cx / CLIENT_PER_SQUARE) + 1 === col
+              && Math.floor(cy / CLIENT_PER_SQUARE) + 1 === row) { fx = cx; fy = cy; }
+        }
+        this.x = fx != null ? fx : (col - 0.5) * CLIENT_PER_SQUARE;
+        this.y = fy != null ? fy : (row - 0.5) * CLIENT_PER_SQUARE;
+        return true;
+      },
+    };
+    return ctl;
+  };
+
+  const adopting = mk();
+  adopting.serverMovedPlayer(jammed.col, jammed.row, jammed.x, jammed.y);
+  const c = centreOf(jammed.col, jammed.row);
+  ok('adopting a real relocation keeps the fine position',
+     adopting.x !== c.x || adopting.y !== c.y, `${adopting.x},${adopting.y}`);
+
+  const recentring = mk();
+  recentring.serverMovedPlayer(jammed.col, jammed.row);   // the blocked-resync's call
+  ok('the blocked-resync re-centres on the stand point instead',
+     recentring.x === c.x && recentring.y === c.y, `${recentring.x},${recentring.y}`);
+  ok('and the two therefore disagree, which is the whole point',
+     recentring.x !== adopting.x || recentring.y !== adopting.y);
+
+  // The guard that would have caught this: the source line must not hand the fine pair
+  // to the blocked-resync.
+  const src = readFileSync(new URL('./m59-controller-mover.mjs', import.meta.url), 'utf8');
+  const resync = src.slice(src.indexOf('no square progress in'));
+  const call = resync.slice(0, resync.indexOf('\n', resync.indexOf('serverMovedPlayer(')));
+  ok('the blocked-resync calls serverMovedPlayer with the square alone',
+     /serverMovedPlayer\(sv\.col,\s*sv\.row\s*\)/.test(src),
+     call.trim().slice(0, 80));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

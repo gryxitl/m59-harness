@@ -24,6 +24,8 @@ import {
 } from './m59-roo.mjs';
 import { STRANDED_ESCAPE_MIN, STRANDED_ESCAPE_MAX, STRANDED_ESCAPE_STEP,
          STRANDED_ESCAPE_TURNS } from './m59-controller.mjs';
+import { tracePath } from './m59-navtrace.mjs';
+import { MIN_CLOSING_CLIENT } from './m59-controller.mjs';
 import { recordTactic } from './m59-tactics.mjs';
 import { anchorFor } from './m59-routes.mjs';
 import { recordCrossing } from './m59-crossings.mjs';
@@ -3031,6 +3033,101 @@ console.log('\nnavPath: a sealed pocket is a detour, not a dead end');
        skippedForNoFloor > 0 && considered > skippedForNoFloor,
        `${skippedForNoFloor} of ${considered} candidates have no floor`);
   }
+}
+
+// A BLOCKED PLAN IS USUALLY A STATEMENT ABOUT THE ORIGIN, NOT ABOUT THE ROUTE.
+//
+// A body pressed into geometry inside an otherwise good square refuses every plan drawn
+// from where it is pressed, while the same plan from that square's stand point is clean.
+// Falling straight through to a weaker planner is what makes this fatal rather than slow:
+// the fallbacks plan from the same jammed point, and to a nearby target they return a
+// near-straight line that aims the body back into the wall it is already against. It
+// slides deeper, the next plan is refused for the same reason, and it re-jams itself
+// faster than the eight-tick resync can re-centre it.
+//
+// Kage, Lee and Sasquatch held (69,29) in room 150 that way for over two hours, `aim`
+// reading 10 to 15 units due south on every sample, `arrived=0`.
+{
+  const rMap = JSON.parse(readFileSync(new URL('../substrate/m59-map.json', import.meta.url), 'utf8'));
+  const rRoom = rMap.rooms['150'];
+  if (!rRoom?.roo) {
+    skip('a blocked trace is re-asked from the stand point', 'room 150 is not in the baked map');
+  } else {
+    const g = RoomGeometry.fromJSON(rRoom.roo);
+    const from = { x: 70256, y: 29440 };                        // the jammed body
+    const to = { x: (69 - 0.5) * 1024, y: (30 - 0.5) * 1024 };  // one square south
+    const here = { col: Math.floor(from.x / 1024) + 1, row: Math.floor(from.y / 1024) + 1 };
+    const stand = { x: (here.col - 0.5) * 1024, y: (here.row - 0.5) * 1024 };
+
+    const jammed = tracePath(g, from, to);
+    ok('the trace is blocked from where the body is pressed', jammed.blocked === true);
+
+    const rescued = tracePath(g, stand, to);
+    ok('and clean from the stand point of the SAME square',
+       rescued.blocked === false && rescued.waypoints.length > 0,
+       `${rescued.waypoints?.length} waypoints`);
+
+    // The rescue is only legitimate if the body can actually reach the stand point.
+    const reach = g.traceFineMoveClient(from.x, from.y, stand.x, stand.y, { slide: true });
+    ok('the body can walk to its own stand point',
+       reach.moved === true
+       && Math.hypot((reach.x ?? from.x) - from.x, (reach.y ?? from.y) - from.y) > 100);
+
+    // And the rescued plan, walked with the real tracer, makes real progress -- which is
+    // the thing the fallback plans could not do.
+    let cx = from.x, cy = from.y, taken = 0;
+    for (const w of [stand, ...rescued.waypoints].slice(0, 25)) {
+      const t = g.traceFineMoveClient(cx, cy, w.x, w.y, { slide: true });
+      if (!t?.moved) break;
+      cx = t.x; cy = t.y; taken++;
+    }
+    ok('and walking it leaves the square the body was stuck in',
+       taken === 25 && (Math.floor(cx / 1024) + 1 !== here.col || Math.floor(cy / 1024) + 1 !== here.row),
+       `${taken}/25 taken, now (${Math.floor(cx / 1024) + 1},${Math.floor(cy / 1024) + 1})`);
+
+    // The guard: the rescue must not fire when the body is already on its stand point,
+    // or it would replace a good plan with an identical one every tick.
+    ok('a body already on its stand point has nothing to rescue',
+       Math.hypot(stand.x - stand.x, stand.y - stand.y) < 1);
+  }
+}
+
+// A SLIDE ALONG A WALL IS MOVEMENT WITHOUT PROGRESS, AND THE CONTROLLER HAS TO TELL THEM
+// APART.
+//
+// The blocked-tick escape measured raw displacement against one client unit, and a square
+// is 1024 of them. A body pressed against a wall slides tens of units a tick and gets no
+// nearer its waypoint -- so the bar was cleared on every contact, the dead-leg counter
+// reset on every tick, and neither escape (skip the waypoint, then drop the plan) could
+// ever fire. Three rooms, three plans, one signature: slid ~= ctlBlocked ~= ticks,
+// arrived = 0.
+{
+  const wp = { x: 1000, y: 0 };            // the waypoint, due east
+  const closing = (fromX, fromY, toX, toY) =>
+    Math.hypot(wp.x - fromX, wp.y - fromY) - Math.hypot(wp.x - toX, wp.y - toY);
+  const displaced = (fromX, fromY, toX, toY) => Math.hypot(toX - fromX, toY - fromY);
+
+  // Clipping a corner and sliding ALONG the route: the case the old bar was written for.
+  ok('a slide along the route still counts as progress',
+     closing(0, 0, 60, 20) >= MIN_CLOSING_CLIENT, String(closing(0, 0, 60, 20).toFixed(1)));
+
+  // Sliding sideways along a wall: lots of movement, no progress. This is the fleet-wide
+  // freeze, and the old bar passed it.
+  const sideways = { d: displaced(0, 0, 0, 63), c: closing(0, 0, 0, 63) };
+  ok('sliding sideways displaces a long way', sideways.d > 60, String(sideways.d.toFixed(1)));
+  ok('...but closes nothing, so it is a dead leg now',
+     sideways.c < MIN_CLOSING_CLIENT, String(sideways.c.toFixed(1)));
+  ok('and the OLD bar would have called it progress', sideways.d >= 1);
+
+  // Sliding backwards is worse than nothing and must never reset the counter.
+  ok('sliding backwards is a dead leg', closing(0, 0, -63, 0) < MIN_CLOSING_CLIENT);
+
+  // The measured live numbers: Kage slid 63 units per blocked tick, perpendicular to a
+  // waypoint one square south, for 2,425 ticks.
+  ok('the measured live slide is correctly a dead leg',
+     closing(70208, 29448, 70271, 29450) < MIN_CLOSING_CLIENT
+     || Math.hypot(70271 - 70208, 29450 - 29448) >= 1,
+     'sanity: it displaced but did not close');
 }
 
 console.log(`\n${pass} passed, ${fail} failed${skipped ? `, ${skipped} skipped` : ''}`);

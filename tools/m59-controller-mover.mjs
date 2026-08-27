@@ -227,7 +227,7 @@ export class ControllerMover {
       + ` | ctlAt=${this.ctl.x == null ? '-' : Math.round(this.ctl.x)},${Math.round(this.ctl.y)}`
       + ` stranded=${c.stranded ?? 0} fineAdopted=${c.fineAdopted ?? 0} fineRejected=${c.fineRejected ?? 0}`
       + ` offRoom=${c.offRoomRefused ?? 0} sideSteps=${c.sideSteps ?? 0}`
-      + ` traceBlocked=${c.trace_blocked ?? 0} fellback=${c.trace_fellback ?? 0}`
+      + ` traceBlocked=${c.trace_blocked ?? 0} fellback=${c.trace_fellback ?? 0} rescued=${c.trace_rescued ?? 0}`
       // WHAT IT IS STEERING AT. "blocked" says the step failed; it does not say the
       // step was aimed at a wall because the plan went missing.
       + ` | path=${this.ctl.path ? this.ctl.path.length : 'NONE'}@${this.ctl.pathIdx ?? 0}`
@@ -708,7 +708,14 @@ export class ControllerMover {
           console.error(`[ctlmover] ${this._agent} no square progress in ${BLOCKED_RESYNC_TICKS} ticks`
             + ` at believed (${after.col},${after.row}); the server says (${sv.col},${sv.row})`
             + ` — ${sameSquare ? 're-centring on the stand point' : 'adopting it'}`);
-        try { this.ctl.serverMovedPlayer(sv.col, sv.row, sv.x, sv.y); } catch { /* best effort */ }
+        // NO FINE POSITION HERE, DELIBERATELY. Every other caller of `serverMovedPlayer`
+        // is adopting a place the server genuinely put the body, and for those the fine
+        // coordinate is the truth and the square centre is a lossy approximation of it.
+        // THIS caller is the opposite: the fine position is the thing that has gone wrong.
+        // The square is fine, the body is pressed into geometry inside it, and re-centring
+        // on the stand point is the entire cure — see the note above. Passing `sv.x, sv.y`
+        // here re-adopts the jam it is trying to escape and the body never moves again.
+        try { this.ctl.serverMovedPlayer(sv.col, sv.row); } catch { /* best effort */ }
         this._plannedFor = null;        // the plan was made from somewhere we are not
         return { state: 'moving', to: this.dest, resynced: true };
       }
