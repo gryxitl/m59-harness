@@ -226,6 +226,14 @@ const BLINK_CAST_MS = Number(process.env.M59_BLINK_CAST_MS || 12000);
 // How long the character is held perfectly still for a cast. Any move or turn packet sent
 // while a spell is charging interrupts it, and the tick driver sends both at 10Hz. Slightly
 // under BLINK_CAST_MS so the hold ends before the goal is willing to ask again.
+// How far to rest before standing up again, once resting has started. Deliberately near
+// the top of the bar rather than at `restBelow`: see the hysteresis note in the loop.
+// Overridable per character with `restUntil`.
+export const REST_UNTIL_DEFAULT = 0.95;
+// The deadline on that latch. Three minutes is far longer than a real heal at this level
+// and short enough that a character which cannot fill its bar goes back to work instead of
+// sitting for ever.
+export const REST_LATCH_MAX_MS = 3 * 60_000;
 const CAST_HOLD_MS = Number(process.env.M59_CAST_HOLD_MS || 11000);
 
 export const INTENTS = {
@@ -670,6 +678,27 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
   let _stuckEscapes = 0;         // how many times we've escaped being stuck in this room
   let _stuckRoomKey = null;      // the room the escape count applies to
   let _resting = false;          // suppress stuck detection while resting
+  // RESTING NEEDS HYSTERESIS, BECAUSE ONE THRESHOLD IS NOT A STATE.
+  //
+  // `healthy` fired on `hurt`, and `hurt` is `HP < restBelow`. The same number therefore
+  // decided both when to sit down AND when to get up: a character rested from 13 of 20 to
+  // exactly 14 of 20, `hurt` went false, `healthy` stopped matching, and `hunt` -- which
+  // has no health gate at all -- took the very next tick and sent it out at 70%.
+  //
+  // 70% is 14 points, and the measured damage on 2026-08-27 was 5 to 15 points BETWEEN
+  // CONSECUTIVE SAMPLES ([20,15,5] and [15,12,10,11,10,8,3,2]). So the fleet was walking
+  // into fights with about one sample of margin, which is why three of them died in the
+  // King's Way inside 66 seconds. Resting is nearly free and health is the only thing
+  // being accumulated; there is no reason to stand up at the exact moment it stops being
+  // an emergency.
+  //
+  // So: sit down at restBelow, and stay down until `restUntil`. The latch is released by
+  // reaching that bar, by anything that makes resting the wrong answer (a target, an
+  // attack -- both still gate the goal), or by REST_LATCH_MAX_MS, which is the same
+  // argument RECOVER_MAX_MS makes: a bar that cannot be filled must release the character
+  // rather than retire it in a corner.
+  let _healLatch = false;        // resting until whole, not merely until out of danger
+  let _healLatchAt = 0;          // when the latch closed, for the deadline
   let _wasResting = false;       // was resting last tick (to send stand before moving)
   let _fighting = false;         // suppress stuck detection while fighting
   let _blacklist = new Set();    // unreachable target IDs
@@ -925,6 +954,23 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     const ws = evaluate({ client, session, policy, agent: session.name });
     // Expose the raw vigor value for the vigor_low goal.
     ws._vigor = client?.vitals?.()?.vigor?.value ?? null;
+
+    // Maintain the rest latch (see the note where it is declared). Entering is `hurt`;
+    // leaving is `restUntil`, the deadline, or an unreadable bar -- never `hurt` going
+    // false, which is the bug this exists to fix.
+    {
+      const h = client?.vitals?.()?.health;
+      const frac = (h?.value != null && h?.max) ? (h.value / h.max) : null;
+      const until = policy?.restUntil ?? REST_UNTIL_DEFAULT;
+      if (frac == null) {
+        _healLatch = false;                       // no bar to fill; do not pin anybody
+      } else if (!_healLatch) {
+        if (ws.hurt === true) { _healLatch = true; _healLatchAt = Date.now(); }
+      } else if (frac >= until || Date.now() - _healLatchAt > REST_LATCH_MAX_MS) {
+        _healLatch = false;
+      }
+      ws._still_recovering = _healLatch;
+    }
 
     // ── DEATH WATCH ──────────────────────────────────────────────────────────────────
     //
@@ -2016,7 +2062,8 @@ export const DEFAULT_GOALS = [
   //
   // The flee rungs above catch this once `under_attack` is true; this makes sure that
   // between them there is no state where the answer is "sit down and take it".
-  { goal: 'healthy',  when: ws => ws.hurt === true && ws.has_target !== true
+  { goal: 'healthy',  when: ws => (ws.hurt === true || ws._still_recovering === true)
+                                  && ws.has_target !== true
                                   && ws.under_attack !== true },
   // Rest when vigor is low. Vigor IS health regeneration —
   // keeping it high keeps HP topping up. Rest below 60 to

@@ -7,7 +7,8 @@
 // SYNCHRONOUS. Most of this file is that, plus the two failures that were watched live
 // on this fleet and must not come back: a plan that cannot be made counting as nothing,
 // and an action reporting success it did not have.
-import { makeDecider, intend, INTENTS, DEFAULT_GOALS } from './m59-decide.mjs';
+import { makeDecider, intend, INTENTS, DEFAULT_GOALS,
+         REST_UNTIL_DEFAULT, REST_LATCH_MAX_MS } from './m59-decide.mjs';
 import { Actuator, TickLoop } from './m59-tick.mjs';
 
 let pass = 0, fail = 0;
@@ -243,6 +244,52 @@ console.log('\na cast holds the character still, because the tick loop is what b
                     { client: b.client, session: b.session, ws: {}, policy: {} });
   ok('an unknown spell is refused without freezing anything',
      r2.sent === false && bFrozen === 0, `${JSON.stringify(r2)} frozen=${bFrozen}`);
+}
+
+// RESTING NEEDS HYSTERESIS: ONE THRESHOLD CANNOT BE BOTH "SIT DOWN" AND "STAND UP".
+//
+// `healthy` fired on `hurt` (HP < restBelow), so the same number decided both. A character
+// rested from 13 of 20 to exactly 14 and `hunt` -- which has no health gate -- took the
+// next tick. Measured damage on 2026-08-27 was 5 to 15 points between consecutive samples,
+// so 14 of 20 is about one sample of margin; three characters died in the King's Way
+// inside 66 seconds.
+{
+  const healthy = DEFAULT_GOALS.find(g => g.goal === 'healthy');
+  ok('the healthy goal exists', !!healthy);
+
+  // Entering is still `hurt`.
+  ok('sits down when hurt',
+     healthy.when({ hurt: true, has_target: false, under_attack: false }) === true);
+
+  // Leaving is NOT `hurt` going false -- that is the bug.
+  ok('STAYS down while still recovering, even once out of the hurt band',
+     healthy.when({ hurt: false, _still_recovering: true,
+                    has_target: false, under_attack: false }) === true);
+  ok('and stands up once recovery is done',
+     healthy.when({ hurt: false, _still_recovering: false,
+                    has_target: false, under_attack: false }) === false);
+
+  // The two things that must still break a rest, latch or no latch.
+  ok('a target breaks the rest',
+     healthy.when({ hurt: true, _still_recovering: true,
+                    has_target: true, under_attack: false }) === false);
+  ok('being attacked breaks the rest',
+     healthy.when({ hurt: true, _still_recovering: true,
+                    has_target: false, under_attack: true }) === false);
+
+  // The latch arithmetic itself, as the loop runs it.
+  const latch = (frac, was, since, now, until = REST_UNTIL_DEFAULT, restBelow = 0.7) => {
+    if (frac == null) return false;
+    if (!was) return frac < restBelow;
+    return !(frac >= until || now - since > REST_LATCH_MAX_MS);
+  };
+  ok('closes below restBelow', latch(13 / 20, false, 0, 0) === true);
+  ok('does not close at 15 of 20', latch(15 / 20, false, 0, 0) === false);
+  ok('stays closed at 15 of 20 once resting', latch(15 / 20, true, 0, 0) === true);
+  ok('opens at 19 of 20', latch(19 / 20, true, 0, 0) === false);
+  ok('opens on the deadline even if the bar never fills',
+     latch(15 / 20, true, 0, REST_LATCH_MAX_MS + 1) === false);
+  ok('an unreadable bar never pins a character', latch(null, true, 0, 0) === false);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
