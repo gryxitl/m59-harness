@@ -299,6 +299,46 @@ console.log('\nan entombed character must be able to pay the WHOLE price of the 
      unwedge.when({ entombed: true, has_mana: true, can_pay_blink: true }) === true);
 }
 
+console.log('\na tomb is what the MOVER refuses, not what a fabricated origin refuses');
+{
+  // JayB, 2026-08-27, r587 "Western border of the Twisted Wood" at (30,14). `entombed`
+  // traced eight rays from the CENTRE of his square -- a point he was not standing on --
+  // and got 0/8, while `moverStepLands`, the validator every actual step is checked
+  // against, allowed four of them: (29,13), (30,13), (31,13), (31,14). He cast blink at
+  // a wall that was not there, and `unwedge` outranks hunting, so he did nothing else
+  // for hours. Plan on the map the mover enforces (docs/m59-routing.md).
+  const lands = (set) => ({
+    moverStepLands: (fr, fc, tr, tc) => set.has(`${tr},${tc}`),
+  });
+  const at = (col, row, geo) => SYMBOLS.entombed.produce({
+    client: { self: { col, row } }, session: { world: { geometry: geo } } });
+
+  const jayb = lands(new Set(['13,29', '13,30', '13,31', '14,31']));
+  ok('four reachable neighbours is not a tomb', at(30, 14, jayb) === false);
+  ok('one reachable neighbour is not a tomb either',
+     at(30, 14, lands(new Set(['14,31']))) === false);
+  ok('no reachable neighbour still IS a tomb', at(30, 14, lands(new Set())) === true);
+  ok('and a geometry with no step validator abstains rather than burying anybody',
+     at(30, 14, {}) === null);
+  ok('as does an unreadable position',
+     SYMBOLS.entombed.produce({ client: { self: {} },
+                                session: { world: { geometry: jayb } } }) === null);
+}
+
+console.log('\nblink is 15 mana, not the 10 the generic cast floor asks for');
+{
+  // `blink.kod:40 viMana = 15` against `MIN_CAST_MANA = 10` (`create food`). At 10-14
+  // mana `has_mana` passed, the server refused with a SENTENCE (spell.kod:604), nothing
+  // was spent and nothing was learned, and the next tick asked again.
+  const pay = (mana, vigor) => SYMBOLS.can_pay_blink.produce({
+    client: { vitals: () => ({ mana: { value: mana }, vigor: { value: vigor } }) } });
+  ok('14 mana cannot pay for a 15-mana blink', pay(14, 61) === false);
+  ok('15 mana can', pay(15, 61) === true);
+  ok('and vigor is still the other half', pay(20, 4) === false);
+  ok('an unreadable pair abstains',
+     SYMBOLS.can_pay_blink.produce({ client: { vitals: () => ({}) } }) === null);
+}
+
 console.log('\nstarting a fight needs headroom; continuing one does not');
 {
   const mk = (hp, policy = {}) => evaluate({ client: fakeClient({ hp, hpMax: 20 }), policy });

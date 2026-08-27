@@ -22,6 +22,8 @@ import {
   RoomGeometry, WF, canCrossWallAt, parseRoo, protocolToClient, clientToProtocol, setWallHeights,
   sharedRoomGeometry,
 } from './m59-roo.mjs';
+import { STRANDED_ESCAPE_MIN, STRANDED_ESCAPE_MAX, STRANDED_ESCAPE_STEP,
+         STRANDED_ESCAPE_TURNS } from './m59-controller.mjs';
 import { recordTactic } from './m59-tactics.mjs';
 import { anchorFor } from './m59-routes.mjs';
 import { recordCrossing } from './m59-crossings.mjs';
@@ -2932,6 +2934,102 @@ console.log('\nnavPath: a sealed pocket is a detour, not a dead end');
     ok('a route with open space available squeezes nowhere',
        open.found === true && squeezedCells(open.waypoints) === 0,
        `${squeezedCells(open.waypoints ?? [])} squeezed of ${open.waypoints?.length}`);
+  }
+}
+
+// A BODY IN A FLOORLESS POCKET CANNOT MICROSTEP OUT OF IT.
+//
+// `allowNoStartFloor` forgives a floorless origin. It does not forgive a floorless
+// destination -- and must not, because landing a body on nothing is the bug it exists to
+// prevent. But the controller walks toward its aim in fractions of one tick's travel, and
+// inside a pocket every fraction lands in the pocket. Each is refused, the side-steps are
+// shorter still and refused for the same reason, and no packet is ever sent.
+//
+// JayB, 2026-08-27, room 587 (30,14), client (29728,13520): 17,938 ticks, `ctl sent=0`,
+// `ctlBlocked=10972`, `stranded` correctly true every tick and a plan that never once
+// failed. Measured along his own planned heading, every hop of 384 or less was refused
+// `destination_has_no_floor` and 448 arrived.
+{
+  const escMap = JSON.parse(readFileSync(new URL('../substrate/m59-map.json', import.meta.url), 'utf8'));
+  const escRoom = escMap.rooms['587'];
+  if (!escRoom?.roo) {
+    skip('a floorless pocket is escapable in one hop', 'room 587 is not in the baked map');
+  } else {
+    const g = RoomGeometry.fromJSON(escRoom.roo);
+    const X = 29728, Y = 13520;
+
+    ok('JayB\'s position really has no floor under it', g.leafAtClient(X, Y) == null);
+
+    // The pocket is wide: this is why the distance matters rather than the heading.
+    let floorless = 0, sampled = 0;
+    for (let dx = -512; dx <= 512; dx += 128) {
+      for (let dy = -512; dy <= 512; dy += 128) {
+        sampled++;
+        if (g.leafAtClient(X + dx, Y + dy) == null) floorless++;
+      }
+    }
+    ok('and it is a pocket, not a single bad point', floorless > sampled / 3,
+       `${floorless}/${sampled} sampled points have no leaf`);
+
+    // The heading his own plan asked for: the first waypoint of the collision path to the
+    // west exit staging square.
+    const plan = g.path(14, 30, 5, 2, { collision: true });
+    ok('the route out of the pocket plans fine -- the plan was never the problem',
+       plan?.found === true && plan.steps.length > 1);
+    const w = plan.steps[0];
+    const ax = (w.col - 0.5) * 1024, ay = (w.row - 0.5) * 1024;
+    const len = Math.hypot(ax - X, ay - Y);
+    const ux = (ax - X) / len, uy = (ay - Y) / len;
+
+    const hop = (d) => {
+      const t = g.traceFineMoveClient(X, Y, X + ux * d, Y + uy * d,
+                                      { slide: true, allowNoStartFloor: true });
+      return !!(t?.available && t.moved && Math.hypot((t.x ?? X) - X, (t.y ?? Y) - Y) >= 0.5);
+    };
+    ok('a microstep cannot leave the pocket', hop(128) === false && hop(256) === false);
+    ok('and neither can a side-step, which is shorter still', hop(MIN_SIDE_MOVE) === false);
+
+    // The escape search, exactly as `_step` runs it.
+    let escaped = null;
+    outer:
+    for (let r = STRANDED_ESCAPE_MIN; r <= STRANDED_ESCAPE_MAX; r += STRANDED_ESCAPE_STEP) {
+      for (const turn of STRANDED_ESCAPE_TURNS) {
+        const c = Math.cos(turn), sn = Math.sin(turn);
+        const hx = ux * c - uy * sn, hy = ux * sn + uy * c;
+        const tx = X + hx * r, ty = Y + hy * r;
+        if (g.leafAtClient(tx, ty) == null) continue;
+        const t = g.traceFineMoveClient(X, Y, tx, ty, { slide: true, allowNoStartFloor: true });
+        if (t?.available && t.moved && Math.hypot((t.x ?? X) - X, (t.y ?? Y) - Y) >= 0.5) {
+          escaped = { x: t.x, y: t.y, r }; break outer;
+        }
+      }
+    }
+    ok('the bounded escape hop finds a way out', escaped !== null);
+    ok('it lands on real floor, never on nothing',
+       escaped != null && g.leafAtClient(escaped.x, escaped.y) != null);
+    ok('one hop is enough -- the landing square can be walked from normally',
+       escaped != null && g.leafAtClient(escaped.x, escaped.y) != null
+       && escaped.r <= STRANDED_ESCAPE_MAX);
+    // A recovery, not a teleport: it may not cross the room.
+    ok('and it is bounded to a recovery, not a licence to travel',
+       escaped != null && Math.hypot(escaped.x - X, escaped.y - Y) <= STRANDED_ESCAPE_MAX);
+
+    // THE GUARD THAT KEEPS THIS FROM WIDENING WHAT THE FLEET MAY TRAVERSE: the search
+    // only ever considers a landing point the same BSP says has floor. Inside this very
+    // pocket there are candidate points at escape range with no leaf, and the search must
+    // skip every one of them rather than hop onto it.
+    let considered = 0, skippedForNoFloor = 0;
+    for (let r = STRANDED_ESCAPE_MIN; r <= STRANDED_ESCAPE_MAX; r += STRANDED_ESCAPE_STEP) {
+      for (const turn of STRANDED_ESCAPE_TURNS) {
+        const c = Math.cos(turn), sn = Math.sin(turn);
+        const tx = X + (ux * c - uy * sn) * r, ty = Y + (ux * sn + uy * c) * r;
+        considered++;
+        if (g.leafAtClient(tx, ty) == null) skippedForNoFloor++;
+      }
+    }
+    ok('floorless candidates exist at escape range and are skipped, not hopped onto',
+       skippedForNoFloor > 0 && considered > skippedForNoFloor,
+       `${skippedForNoFloor} of ${considered} candidates have no floor`);
   }
 }
 

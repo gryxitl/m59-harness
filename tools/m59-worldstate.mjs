@@ -61,6 +61,14 @@ const WEAPON_RE = /\b(mace|sword|axe|hammer|dagger|club|staff|halberd|spear|flai
 // blink.kod:41 viSpellExertion, and player.kod's HasVigor wants STRICTLY more than it.
 const BLINK_EXERTION = 20;
 
+// BOTH HALVES OF BLINK'S PRICE ARE SPECIFIC, and neither is the generic cast floor.
+// `blink.kod:40 viMana = 15` against `MIN_CAST_MANA = 10`, which is `create food`'s
+// price and the only cost the wire carries. So a character with 10-14 mana passes
+// `has_mana`, asks for a blink the server refuses (spell.kod:604, a SENTENCE and not
+// a wire error), and asks again on the next tick having spent nothing and learned
+// nothing. Ground the escape on what the escape actually costs.
+const BLINK_MANA = 15;
+
 // The fraction of health below which a character stops PICKING fights (it may still finish
 // one it is already in). Deliberately well above fleeBelow: the flee line is where you run,
 // and choosing a fight from just above it is choosing to run almost immediately. Override
@@ -340,13 +348,20 @@ export const SYMBOLS = {
   },
 
   can_pay_blink: {
-    describe: 'vigor is above blink\'s exertion cost, so the server will not refuse the cast',
+    describe: 'vigor AND mana both cover blink\'s price, so the server will not refuse the cast',
     whenUnknown: true,
-    why_unknown: 'an unreadable vigor must not be what keeps an entombed character buried',
+    why_unknown: 'an unreadable vital must not be what keeps an entombed character buried',
     produce: ({ client }) => {
-      const v = client?.vitals?.()?.vigor?.value;
-      if (v == null) return null;
-      return v > BLINK_EXERTION;
+      const vit = client?.vitals?.();
+      const v = vit?.vigor?.value;
+      const m = vit?.mana?.value;
+      // `HasVigor` is strictly greater (player.kod:1354); the mana check is a plain
+      // sufficiency. An unreadable half abstains rather than refusing -- whenUnknown
+      // is true here for the reason above, and a wrong true costs one refused packet.
+      if (v != null && !(v > BLINK_EXERTION)) return false;
+      if (m != null && m < BLINK_MANA) return false;
+      if (v == null && m == null) return null;
+      return true;
     },
   },
 
@@ -388,18 +403,32 @@ export const SYMBOLS = {
     describe: 'the body cannot take a legal step in any of the eight directions',
     whenUnknown: false,
     why_unknown: 'never claim a character is entombed on an unreadable position — blink is one-way and costs mana',
+    // ASK THE THING THAT ACTUALLY MOVES HIM. This used to trace `traceFineMoveClient`
+    // from the CENTRE of the occupied square — a point the body is not standing on and
+    // may not be able to stand on. When that fabricated origin lands inside geometry
+    // every one of the eight traces fails from the first microstep, and the predicate
+    // reports a sealed tomb around a character who can walk.
+    //
+    // JayB, 2026-08-27, r587 (30,14): `entombed` said 0/8 while `moverStepLands` — the
+    // validator the mover enforces on every step — said four neighbours were reachable
+    // ((29,13), (30,13), (31,13), (31,14)). He sat there casting blink at a wall that
+    // was not there, and because `unwedge` outranks hunting he did nothing else for
+    // hours. Same fixed-point bug as `_advanceSubLeg` planning from the lagging frame.
+    //
+    // This is the routing rule in the same words as `docs/m59-routing.md`: plan on the
+    // map the mover enforces. A tomb nobody but a synthetic origin can see is not a tomb.
     produce: ({ client, session }) => {
       const geo = session?.world?.geometry;
       const me = client?.self;
-      if (!geo?.traceFineMoveClient || !me || me.col == null) return null;
-      const x = (me.col - 0.5) * 1024, y = (me.row - 0.5) * 1024;
-      const STEP = 256;
-      for (const [dx, dy] of [[STEP,0],[-STEP,0],[0,STEP],[0,-STEP],
-                              [181,181],[-181,-181],[181,-181],[-181,181]]) {
-        try {
-          const t = geo.traceFineMoveClient(x, y, x + dx, y + dy, { slide: true });
-          if (t?.moved && Math.hypot((t.x ?? x) - x, (t.y ?? y) - y) >= 32) return false;
-        } catch { /* a throwing direction is not a passable one */ }
+      if (!me || me.col == null || me.row == null) return null;
+      if (typeof geo?.moverStepLands !== 'function') return null;
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          if (dr === 0 && dc === 0) continue;
+          try {
+            if (geo.moverStepLands(me.row, me.col, me.row + dr, me.col + dc)) return false;
+          } catch { /* a throwing direction is not a passable one */ }
+        }
       }
       return true;
     },

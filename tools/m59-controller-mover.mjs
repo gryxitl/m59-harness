@@ -219,7 +219,15 @@ export class ControllerMover {
       + ` rockOff=${s.rockWalkedOff ?? 0}`
       + ` stale=${s.staleAims ?? 0} restQuiet=${s.restQuiet ?? 0}`
       + ` | ctl sent=${c.sent ?? 0} slid=${c.slid ?? 0} ctlBlocked=${c.blocked ?? 0} reconciled=${c.reconciled ?? 0} drift=${Math.round(c.drift_max ?? 0)}`
-      + ` roomResyncs=${s.roomResyncs ?? 0}`);
+      + ` roomResyncs=${s.roomResyncs ?? 0}`
+      // WHERE THE CONTROLLER THINKS THE BODY IS, to the client unit, and whether the
+      // floor test under that point answered. `at=` above is the SQUARE, and a square is
+      // exactly the resolution at which this class of bug is invisible: a centre with no
+      // floor and a body with floor share one square number.
+      + ` | ctlAt=${this.ctl.x == null ? '-' : Math.round(this.ctl.x)},${Math.round(this.ctl.y)}`
+      + ` stranded=${c.stranded ?? 0} fineAdopted=${c.fineAdopted ?? 0} fineRejected=${c.fineRejected ?? 0}`
+      + ` offRoom=${c.offRoomRefused ?? 0} sideSteps=${c.sideSteps ?? 0}`
+      + ` traceBlocked=${c.trace_blocked ?? 0} fellback=${c.trace_fellback ?? 0}`);
   }
 
   // PHYSICS ON THE LOOP'S CLOCK, NOT THE DECIDER'S.
@@ -326,7 +334,7 @@ export class ControllerMover {
         if (this.stats.behindAdopted <= 5)
           console.error(`[ctlmover] ${this._agent} belief (${b.col},${b.row}) is ${lead.toFixed(1)}`
             + ` BEHIND the server (${here.col},${here.row}) — adopting it rather than waiting for it`);
-        try { this.ctl.serverMovedPlayer(here.col, here.row); } catch { /* best effort */ }
+        try { this.ctl.serverMovedPlayer(here.col, here.row, here.x, here.y); } catch { /* best effort */ }
         this._plannedFor = null;
         return false;              // not a hold: the body may move again this very tick
       }
@@ -472,7 +480,7 @@ export class ControllerMover {
         if (now - (this._divSince ?? 0) > 3000) this._divSince = now;   // start a fresh window
         else if (now - this._divSince >= 900) {
           this._divSince = 0;
-          this.ctl.serverMovedPlayer(me.col, me.row);
+          this.ctl.serverMovedPlayer(me.col, me.row, me.x, me.y);
           this._plannedFor = null;
           this.stats.resyncs = (this.stats.resyncs || 0) + 1;
           console.error(`[ctlmover] ${this._agent} believed (${believed.col},${believed.row}) but the server`
@@ -482,7 +490,7 @@ export class ControllerMover {
         this._divSince = 0;                       // back in agreement
       }
       if (gap > TELEPORT_SQUARES * CLIENT_PER_SQUARE) {
-        this.ctl.serverMovedPlayer(me.col, me.row);
+        this.ctl.serverMovedPlayer(me.col, me.row, me.x, me.y);
         this._plannedFor = null;
         this.stats.teleports = (this.stats.teleports || 0) + 1;
         console.error(`[ctlmover] ${this._agent} the server moved us to (${me.col},${me.row})`
@@ -696,7 +704,7 @@ export class ControllerMover {
           console.error(`[ctlmover] ${this._agent} no square progress in ${BLOCKED_RESYNC_TICKS} ticks`
             + ` at believed (${after.col},${after.row}); the server says (${sv.col},${sv.row})`
             + ` — ${sameSquare ? 're-centring on the stand point' : 'adopting it'}`);
-        try { this.ctl.serverMovedPlayer(sv.col, sv.row); } catch { /* best effort */ }
+        try { this.ctl.serverMovedPlayer(sv.col, sv.row, sv.x, sv.y); } catch { /* best effort */ }
         this._plannedFor = null;        // the plan was made from somewhere we are not
         return { state: 'moving', to: this.dest, resynced: true };
       }

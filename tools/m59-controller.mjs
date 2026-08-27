@@ -62,6 +62,20 @@ export const RUN_CLIENT_PER_MS = (CLIENT_PER_SQUARE / 2) / 100;
 // divisions of move_distance; the same three fractions expressed directly.
 export const WADE_FACTORS = [1, 3 / 4, 1 / 2, 1 / 4];
 
+// THE STRANDED ESCAPE HOP -- see the long note in `_step`. A body on a floorless point
+// cannot microstep out, because every fraction of a tick's travel lands in the same hole.
+// The floor of the search is just over a third of a square because that is where the
+// measured pocket ended (384 refused, 448 arrived, r587); the ceiling is a square and a
+// half, which is under `m59-game.mjs`'s own three-square recovery radius and far too
+// short to cross anything. Headings are tried nearest the planned one first, out to a
+// right angle either side, so the hop follows the route when it can and merely finds
+// floor when it cannot.
+export const STRANDED_ESCAPE_MIN = 384;
+export const STRANDED_ESCAPE_MAX = 1536;
+export const STRANDED_ESCAPE_STEP = 64;
+export const STRANDED_ESCAPE_TURNS = [0, Math.PI / 8, -Math.PI / 8, Math.PI / 4, -Math.PI / 4,
+                                      3 * Math.PI / 8, -3 * Math.PI / 8, Math.PI / 2, -Math.PI / 2];
+
 // move.c:57,58 — replication, and ONLY replication. INCOMING_PACKET_THROTTLE is 5
 // (user.kod:50), so this stays at 1Hz however fast the body moves.
 export const MOVE_INTERVAL_MS = 1000;
@@ -254,10 +268,34 @@ export class CharacterController {
   // latency and calling it error. That is what produced a believed position 2 to 46 squares
   // from the body, and with it 2,276 refused plans ("no free space at the start", "no route
   // through free space") and a third of all movement handed to the legacy mover.
-  serverMovedPlayer(col, row) {
+  //
+  // AND THE SNAP TAKES THE FINE POSITION WHEN THERE IS ONE. `ServerMovedPlayer`'s body is
+  // `server_x = motion.x`, and `motion.x` is a FINE coordinate — the square centre is our
+  // approximation of it, not the client's behaviour. The approximation is not free: a
+  // centre can be a point with no floor under it while the body's actual position, in the
+  // same square, has floor. Then every plan drawn from the centre answers
+  // `destination_has_no_floor`, the `stranded` allowance cannot help because the origin it
+  // is asked about is fabricated, and the blocked-resync path re-centres on the same dead
+  // point every time it fires.
+  //
+  // JayB, 2026-08-27, r587 (30,14): real position (29728,13520) steps to the first
+  // waypoint cleanly; the centre (30208,13824) refuses it. 243 resyncs, 10,972 blocked
+  // microsteps and ZERO packets sent — he had never moved once.
+  //
+  // The fine pair is only trusted when it lands in the square the server named; a pair
+  // that disagrees is a stale echo, and then the centre is the honest answer.
+  serverMovedPlayer(col, row, px, py) {
     if (!Number.isFinite(col) || !Number.isFinite(row)) return false;
-    this.x = (col - 0.5) * CLIENT_PER_SQUARE;
-    this.y = (row - 0.5) * CLIENT_PER_SQUARE;
+    let fx = null, fy = null;
+    if (Number.isFinite(px) && Number.isFinite(py)) {
+      const cx = protocolToClient(px), cy = protocolToClient(py);
+      if (Math.floor(cx / CLIENT_PER_SQUARE) + 1 === col
+          && Math.floor(cy / CLIENT_PER_SQUARE) + 1 === row) { fx = cx; fy = cy; }
+      else this.stats.fineRejected = (this.stats.fineRejected ?? 0) + 1;
+    }
+    if (fx != null) this.stats.fineAdopted = (this.stats.fineAdopted ?? 0) + 1;
+    this.x = fx != null ? fx : (col - 0.5) * CLIENT_PER_SQUARE;
+    this.y = fy != null ? fy : (row - 0.5) * CLIENT_PER_SQUARE;
     this.path = null; this.pathIdx = 0;      // the plan was made from somewhere we no longer are
     this._lastSentX = this.x; this._lastSentY = this.y;   // ServerMovedPlayer's whole job
     this._lastSentAt = Date.now();
@@ -345,7 +383,7 @@ export class CharacterController {
     // that reported zero of eight directions passable while standing somewhere the game was
     // perfectly happy with — JayB and Lee both immobilised in the Deep Forest of Farol, with
     // every downstream fix helpless because each one needed a legal step to exist.
-    const subs = Math.max(1, Math.min(STEPS_PER_MOVE,
+    let subs = Math.max(1, Math.min(STEPS_PER_MOVE,
       Math.round(NUM_STEPS_PER_SECOND * dt / 1000)));
     const beforeX = this.x, beforeY = this.y;
     let cx = this.x, cy = this.y, slid = false, blocked = false;
@@ -402,6 +440,58 @@ export class CharacterController {
       }
       return { x: nx, y: ny, slid: !!t.slid, blocked: !!t.blocked };
     };
+
+    // A MICROSTEP CANNOT CLIMB OUT OF A HOLE.
+    //
+    // `allowNoStartFloor` forgives a floorless ORIGIN; it does not forgive a floorless
+    // DESTINATION, and it should not — landing a body on nothing is the bug it exists to
+    // avoid. But the loop below walks toward the aim in `subs` fractions of one tick's
+    // travel, and inside a floorless pocket every one of those fractions lands in the
+    // pocket too. Each is refused `destination_has_no_floor`, the side-steps are shorter
+    // still and are refused for the same reason, and the body never sends a packet.
+    //
+    // JayB, 2026-08-27, r587 (30,14): 45 of 81 points sampled within ±512 of him had no
+    // leaf. Measured along his own planned heading, every step of 384 or less was refused
+    // and 448 arrived. He had ticked 17,938 times with `ctl sent=0`, `stranded` correctly
+    // true on every one of them, a plan that never failed, and no way to act on it.
+    //
+    // So when the origin is floorless, take the escape WHOLE. `m59-game.mjs` already
+    // reasons exactly this way for the mover's own validator -- one recovery hop, the
+    // destination checked for floor by the same BSP that refused, reported so the caller
+    // can see a move nothing validated. This is that rule for the controller:
+    //
+    //   * only when `stranded` -- with floor underfoot nothing here changes;
+    //   * the landing point must have a leaf, so it can only ever move ONTO floor;
+    //   * the search is bounded to STRANDED_ESCAPE_MAX and prefers the shortest hop
+    //     nearest the heading already planned, so it is a recovery and not a teleport;
+    //   * and it is counted, because a hop the microstepper did not make must be visible.
+    if (stranded && dist > 0) {
+      const ux = dx / dist, uy = dy / dist;
+      let escaped = null;
+      for (let radius = STRANDED_ESCAPE_MIN; radius <= STRANDED_ESCAPE_MAX && !escaped;
+           radius += STRANDED_ESCAPE_STEP) {
+        for (const turn of STRANDED_ESCAPE_TURNS) {
+          const c = Math.cos(turn), sn = Math.sin(turn);
+          const hx = ux * c - uy * sn, hy = ux * sn + uy * c;
+          const tx = this.x + hx * radius, ty = this.y + hy * radius;
+          let hasFloor = false;
+          try { hasFloor = geo.leafAtClient(tx, ty) != null; } catch { hasFloor = false; }
+          if (!hasFloor) continue;
+          const r = tryMove(cx, cy, tx, ty);
+          if (r) { escaped = r; break; }
+        }
+      }
+      if (escaped) {
+        // Land it and skip the microstepper for this tick: the hop IS the whole move, and
+        // re-walking it in fractions would only re-enter the pocket it just left.
+        cx = escaped.x; cy = escaped.y;
+        slid = true;
+        this.stats.strandedEscapes = (this.stats.strandedEscapes ?? 0) + 1;
+        subs = 0;
+      } else {
+        this.stats.strandedEscapeFailed = (this.stats.strandedEscapeFailed ?? 0) + 1;
+      }
+    }
 
     for (let i = 0; i < subs; i++) {
       const tx = this.x + (aimX - this.x) * ((i + 1) / subs);
