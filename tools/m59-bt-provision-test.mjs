@@ -321,7 +321,11 @@ console.log('\nprovision() refill-low gate:');
   const k = Object.create(Autopilot.prototype);
   k.policy = { buyFood: true, walkingMoney: 400, vigorCeiling: 200, restVigorCap: 0.4 };
   k.s = { client: {}, world: { room: { name: 'Market square in the city of Tos' } } };
-  k.larder = () => [{ food: { filling: 5, nutrition: 5, vigor: 5 } }];  // 1 mushroom, low
+  // EMPTY, not merely low. `provision` reaches for the cooking pot only when there is
+  // nothing left to eat (`if (!best)`) — with any food in hand it eats that instead, which
+  // is the right order and not what this scenario used to assume. One mushroom therefore
+  // took the eat-and-wait path and never touched cookSomething.
+  k.larder = () => [];
   k.fightFloor = () => 130;  // needs 130; resting cap 80 -> needs 50 above cap
   k.purseNow = () => 1;  // poor (purseNow, the real method name -- NOT purse)
   k.inTown = () => true;
@@ -329,13 +333,29 @@ console.log('\nprovision() refill-low gate:');
   k.buyFoodInTown = async () => { buyCalled++; return {}; };
   k.withdrawForFood = async () => { withdrawCalled++ };
   k.reagentCount = () => ({ elderberry: 1, herb: 1 });
+  // THE REAL STOMACH, not a stub. `provision` grew a stomach model after this test was
+  // written — it asks `roomFor` and `secondsUntilRoomFor` before deciding whether eating
+  // now is even possible — and the mock had no such property, so the whole refill-low path
+  // threw on `this.stomach.secondsUntilRoomFor` and all three assertions failed together.
+  // Using the genuine class keeps the test honest about what "there is room to eat" means
+  // rather than hard-coding an answer the real one might disagree with.
+  const { Stomach } = await import('./m59-skills.mjs');
+  k.stomach = new Stomach();
   k.warnedNoFood = false;
   k.note = () => {};
   let threw = false, res;
   try { res = await k.provision({ vigorCeiling: 200 }, { vigor: { value: 80, max: 200 } }); } catch (e) { threw = true; res = e; }
   check('refill-low path does not throw (purseNow, not purse)', !threw, threw ? String(res) : '');
-  check('low larder in town attempts a refill (cook)', cookCalled >= 1);
-  check('low larder in town with no money attempts a withdraw', withdrawCalled >= 1);
+  check('an empty larder in town reaches for the cooking pot', cookCalled >= 1);
+  // AND PROVISION DOES NOT GO TO THE BANK. This asserted that a broke character withdraws
+  // here; `provision` has no withdrawal in it and calls none. Fetching money for food is
+  // TOWN business — `_bankRunDoTownBusiness` runs withdrawForFood between selling and
+  // buying, and m59-bankrun-test pins that whole sequence — so asserting it here was
+  // asserting it in the wrong file. Keeping the division explicit is worth more than
+  // deleting the case: provision feeds a character from what it has or can cook, and a
+  // trip to the bank is a decision at a different clock.
+  check('and does not try to visit the bank — that is the town run\'s job',
+        withdrawCalled === 0, `withdrawForFood called ${withdrawCalled} time(s)`);
 }
 
 // THE BUG THIS TEST GUARDS: larderVigor read x.food?.vigor, a field that does not

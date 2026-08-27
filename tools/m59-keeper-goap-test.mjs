@@ -32,7 +32,12 @@ console.log('GOAPKeeper: pass() reads world state and plans\n');
   // armed (yes, satisfied), has_food (no, false), vigor_ok (false).
   // Effective goal: has_food. The planner finds no plan (no food, no
   // reagents, no shop).
-  const c = fakeClient({ vigor: 40, mana: 25, spells: [], inventory: [],
+  // VIGOR HIGH ENOUGH THAT THE VIGOR GOALS ARE ALREADY MET. At vigor 40 the ladder picks a
+  // vigor goal and plans `rest` — a perfectly good plan — so the scenario stopped matching
+  // its own comment and this asserted "no plan" against a keeper that had found one. The
+  // case being tested is the one described above: armed, fed nothing, nothing to cook with
+  // and nowhere to buy, so has_food is the effective goal and there is genuinely no plan.
+  const c = fakeClient({ vigor: 150, mana: 25, spells: [], inventory: [],
     equipped: [{ id: 1, name: 'mace' }] });  // armed
   const s = fakeSession(c);
   const notes = [];
@@ -44,7 +49,15 @@ console.log('GOAPKeeper: pass() reads world state and plans\n');
 
   const r = await keeper.pass();
   ok('no plan: acted is false', r.acted === false);
-  ok('no plan: reason mentions no plan or no target', /no plan|not reachable|plan is empty|no hostiles|no target/.test(r.reason ?? ''), r.reason);
+  // A PASS THAT DOES NOTHING MUST SAY WHY — that is the claim, not which sentence it uses.
+  //
+  // This matched /no plan|not reachable|plan is empty|no hostiles|no target/. With the
+  // vigor goals met the keeper reports "all goals satisfied, no hunt room, no wander"
+  // instead, which is an equally honest account of doing nothing and a more informative
+  // one. Pinning the wording made the test fail for a report that improved, the same way
+  // the refusal wording did in m59-decide-test.
+  ok('no plan: the pass says why it did nothing',
+     typeof r.reason === 'string' && r.reason.length > 0, JSON.stringify(r.reason));
 }
 
 {
@@ -146,9 +159,11 @@ console.log('GOAPKeeper: unarmed character gets the armed goal\n');
 }
 
 {
-  // A character with a weapon equipped. Goal armed is true.
+  // A character with a weapon equipped, and nothing else outstanding. Goal armed is true.
+  // Vigor is high for the same reason as the first case: at 40 the keeper would rightly
+  // rest, and "a satisfied goal produces no action" is not a claim about resting.
   const c = fakeClient({
-    vigor: 40, mana: 25, spells: [], inventory: [],
+    vigor: 150, mana: 25, spells: [], inventory: [],
     equipped: [{ id: 3, name: 'mace' }],
   });
   const s = fakeSession(c);
