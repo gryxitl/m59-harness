@@ -261,6 +261,14 @@ export class M59Client {
     // indistinguishable. Increment only when an appearance record is installed.
     this.appearanceRevision = 0;
     this.inventory = [];
+    // AN EMPTY PACK AND AN UNREAD PACK ARE NOT THE SAME STATE, and `inventory` alone
+    // cannot tell them apart -- both are `[]`. That ambiguity read as "we do not know
+    // what this character is carrying" right up until the first INVENTORY packet, which
+    // is correct, and then went on reading that way for a character genuinely carrying
+    // nothing, which is the state EVERY character is in immediately after it dies.
+    // `equipment()` has carried a `known` flag for this reason; this is the same flag
+    // for the other list.
+    this.inventoryKnown = false;
     this.spells = [];
     this.skills = [];
     this.trade = null;               // the open offer, if any
@@ -1590,6 +1598,7 @@ export class M59Client {
         const res = parseObjectList(body);
         if (!this.check('INVENTORY', res)) break;
         this.inventory = res.objects;
+        this.inventoryKnown = true;
         // A keepalive asks for the inventory purely to make noise on the socket.
         // Its reply is still worth keeping — it is a free refresh — but emitting
         // an event for it would put a heartbeat into the agent's event stream

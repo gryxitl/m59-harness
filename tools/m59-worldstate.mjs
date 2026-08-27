@@ -616,7 +616,20 @@ export const SYMBOLS = {
           return /shilling/i.test(name);
         })
         .reduce((t, o) => t + (o.amount || 1), 0);
-      if (!client?.inventory?.length) return null;
+      // AN EMPTY PACK IS AN ANSWER, ONCE THE PACK HAS BEEN READ.
+      //
+      // This returned `null` for any empty list, which conflates "the INVENTORY packet has
+      // not arrived" with "this character is carrying nothing" -- and the second is the
+      // state every character is in the moment after it dies, because everything it owned
+      // is on the floor where it fell. Unknown money keeps `buy` plannable (its `pre` is
+      // ['has_money','at_shop']), so a penniless character planned a purchase it could
+      // never make, every tick, for ever.
+      //
+      // Sasquatch, 2026-08-27: empty pack, no shillings, `armed -> buy (buy weapon)` and
+      // `buy in flight` alternating in his log while `cast create weapon` -- which he
+      // knows, and which the planner already carries as `{ pre: [], effects: ['armed'] }`
+      // -- sat unused behind `buy`'s earlier insertion order.
+      if (!client?.inventoryKnown && !client?.inventory?.length) return null;
       return purse >= (policy?.walkingMoney ?? 100);
     },
   },

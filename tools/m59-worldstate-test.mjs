@@ -396,5 +396,28 @@ console.log('\nstarting a fight needs headroom; continuing one does not');
      arm(mk([], [], 0)) === false);
 }
 
+// AN EMPTY PACK AND AN UNREAD PACK ARE NOT THE SAME STATE.
+//
+// `has_money` returned null for any empty list, conflating "the INVENTORY packet has not
+// arrived" with "this character is carrying nothing" -- and the second is the state every
+// character is in the moment after it dies. Unknown money keeps `buy` plannable (its pre
+// is ['has_money','at_shop']), so a penniless character planned a purchase it could never
+// make, every tick, for ever: `armed -> buy` and `buy in flight`, alternating, while
+// `cast create weapon` sat unused behind buy's earlier insertion order.
+{
+  const money = SYMBOLS.has_money.produce;
+  ok('an UNREAD pack still abstains', money({ client: { inventory: [] } }) === null);
+  ok('a READ pack that is empty means broke, not unknown',
+     money({ client: { inventory: [], inventoryKnown: true } }) === false);
+  ok('a read pack under the walking-money floor is broke',
+     money({ client: { inventory: [{ name: 'shilling', amount: 40 }], inventoryKnown: true } }) === false);
+  ok('a read pack over it is not',
+     money({ client: { inventory: [{ name: 'shilling', amount: 200 }], inventoryKnown: true } }) === true);
+  // The flag is only needed to disambiguate the EMPTY case: a non-empty pack answers on
+  // its own contents whether or not anybody set it.
+  ok('a non-empty pack does not need the flag',
+     money({ client: { inventory: [{ name: 'shilling', amount: 200 }] } }) === true);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
