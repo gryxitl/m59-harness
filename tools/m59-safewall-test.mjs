@@ -32,7 +32,8 @@
 // recorded held wall came back longer, worst +9 steps — 4.5 points against a proof bonus
 // of 20. The last section here is the guard against that returning.
 import { readFileSync, existsSync } from 'node:fs';
-import { safeSpots, exposureAt, lineOfSight, nearestSafeSpot, geometryFor, MAX_ATTACKERS }
+import { safeSpots, exposureAt, lineOfSight, nearestSafeSpot, geometryFor, MAX_ATTACKERS,
+         gridDisagreementAt, escapeRoom }
   from './m59-safespots.mjs';
 import { RoomGeometry } from './m59-roo.mjs';
 import { attachStepMasks } from './m59-routes.mjs';
@@ -139,10 +140,46 @@ console.log('\nthe model recognises the walls that actually held');
       floorCover += nominated.get(`${c},${r}`)?.back_cover ?? 0;
     }
   }
-  ok('EVERY square the fleet has held is still offered as a candidate',
-     missing.length === 0, `${missing.length} missing: ${missing.slice(0, 5).join(' ')}`);
+  // A DROPPED SQUARE MUST BE DROPPED BY A RULE SOMEBODY WROTE DOWN.
+  //
+  // This used to assert that EVERY held square is still nominated, and that stopped being
+  // true on purpose. `safeSpots` now requires the two grids to DISAGREE about a square —
+  // "a safe wall is the two grids disagreeing", which is the whole mechanic — so the open
+  // floor the fleet happened to survive on before that narrowing is no longer a wall by
+  // this model's definition. The book was written before it and still holds those squares.
+  //
+  // Asserting the old invariant would freeze a superseded definition; deleting the check
+  // would lose the thing it was guarding, which is the model quietly drifting away from
+  // the game until the fleet stops finding walls. So the claim becomes: every held square
+  // the model no longer offers is refused BY A STATED RULE, and none is refused for a
+  // reason nobody can name.
+  //
+  // Measured now: of 2,771 held-but-not-offered squares, 2,739 fail the grid-disagreement
+  // requirement, 31 fail escapeRoom (a shelter you cannot leave is a trap, not a wall) and
+  // 1 is on the boundary ring. Nothing unexplained.
+  const unexplained = [];
+  for (const key of missing) {
+    const [num, sq] = key.split(':');
+    const geometry = geometryFor(map.rooms[num]);
+    if (!geometry?.collisionReady) continue;
+    const [c, r] = sq.split(',').map(Number);
+    const coarseRefuses = geometry.walkable(r, c) !== true;
+    const disagree = gridDisagreementAt(geometry, r, c);
+    if (!coarseRefuses && !((disagree?.refused ?? 0) > 0)) continue;   // the wall rule
+    if (!geometry.standable(r, c)) continue;
+    if (r <= 1 || c <= 1 || r >= geometry.rows || c >= geometry.cols) continue;
+    const e = exposureAt(geometry, r, c);
+    if (e.our_ground === 0 || e.attackers >= MAX_ATTACKERS) continue;
+    if (!escapeRoom(geometry, r, c, 24)) continue;
+    unexplained.push(key);
+  }
+  ok('every held square the model drops is dropped by a rule it states',
+     unexplained.length === 0,
+     `${unexplained.length} unexplained of ${missing.length}: ${unexplained.slice(0, 5).join(' ')}`);
+  // The sample only has to be big enough for the separation below to mean something. It is
+  // a fraction of the book now rather than all of it, for the reason above.
   ok('and there are enough of them for the comparison to mean anything',
-     offered > 100 && floorN > 500, `${offered} held, ${floorN} floor`);
+     offered >= 25 && floorN > 500, `${offered} held, ${floorN} floor`);
   // Measured 2026-08-16 across 37 rooms and 256 squares: 3.24 against 1.49, and 3.46
   // against 0.85. The thresholds are deliberately well inside those, because the book is
   // written by a live fleet and grows between runs — this asserts the SEPARATION, which is
