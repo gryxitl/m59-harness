@@ -649,6 +649,24 @@ export const SYMBOLS = {
   // Fists are a real option here. The hunt band is explicitly halved when unarmed
   // (floor(level/4) against floor(level/2)) and skills.sellAll says as much: "you will fight
   // with your fists". So `armed` should only outrank fighting while it can be satisfied.
+  has_weapon: {
+    describe: 'a wieldable weapon is in the pack, so equipping is a thing that can succeed',
+    whenUnknown: true,
+    why_unknown: 'an unread pack must not stop a character trying to wield what it may be carrying',
+    // EQUIP DECLARED NO PRECONDITION AT ALL, so the planner treated "put a weapon in your
+    // hand" as something that always works. With an empty pack it is the cheapest action
+    // producing `armed`, so it won every plan, did nothing, and was planned again on the
+    // next tick -- while `cast create weapon`, which the character knew and could pay for,
+    // was never reached. Sasquatch, 2026-08-27.
+    produce: ({ client }) => {
+      const inv = client?.inventory;
+      if (!Array.isArray(inv)) return null;
+      if (!client?.inventoryKnown && !inv.length) return null;   // unread, not empty
+      return inv.some(o =>
+        WEAPON_RE.test(String(client?.rsc?.get?.(o.nameRsc) ?? o.name ?? '')));
+    },
+  },
+
   can_arm: {
     describe: 'a weapon can be had: one in the pack, money to buy one, or the mana to conjure one',
     whenUnknown: true,

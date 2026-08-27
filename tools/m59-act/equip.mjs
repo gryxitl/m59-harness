@@ -111,6 +111,12 @@ export const equipBest = (client, session, args = {}) => {
   if (!item) return { sent: false, reason: 'no weapon in the pack to equip' };
   return equip(client, session, { ...args, itemId: item.id });
 };
-equipBest.pre     = equip.pre;
+// EQUIPPING NEEDS SOMETHING TO EQUIP. `equip.pre` is empty because the bound form is
+// handed its target, but `equipBest` searches the pack -- and with an empty pack it is the
+// cheapest action producing `armed`, so the planner chose it every tick, it did nothing,
+// and the plan repeated. Requiring `has_weapon` lets the planner fall through to `buy`
+// (money) or `cast create weapon` (mana), which is how a character that died with nothing
+// ever holds a weapon again.
+equipBest.pre     = ['has_weapon'];
 equipBest.effects = equip.effects;
 equipBest.atomic  = 'equip';

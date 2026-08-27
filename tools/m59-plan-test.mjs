@@ -13,6 +13,7 @@
 // that must not.
 
 import { fakeClient, fakeSession } from './m59-fake-client.mjs';
+import { evaluate } from './m59-worldstate.mjs';
 import { planFor, actionsFor, stepPlan } from './m59-plan.mjs';
 import { plan as astar } from './m59-goap-planner.mjs';
 
@@ -172,6 +173,39 @@ console.log('\nthe action set is what the character HAS, not what exists');
      !actionsFor(fakeClient({ spells: [] })).some(a => String(a.name).startsWith('cast')));
   ok('every action carries a callable node',
      actionsFor(hungryCaster()).every(a => typeof a.node === 'function'));
+}
+
+// EQUIPPING NEEDS SOMETHING TO EQUIP.
+//
+// `equipBest` declared NO precondition, so the planner treated "put a weapon in your hand"
+// as an action that always works. With an empty pack it is the cheapest thing producing
+// `armed`, so it won every plan, did nothing, and was planned again on the next tick --
+// while `cast create weapon`, which the character knew and could pay for, was never
+// reached. Sasquatch, 2026-08-27: nine hours, zero kills, `armed -> buy` / `buy in flight`
+// alternating in his log once `buy` was reachable and `equip` once it was not.
+{
+  const mk = (inv, spells, mana) => ({
+    inventory: inv, inventoryKnown: true, spells,
+    equipment: () => ({ known: true, equipped: [] }),
+    vitals: () => ({ health: { value: 20, max: 20 }, mana: { value: mana, max: 21 },
+                     vigor: { value: 76 } }),
+    room: { num: 150, objects: new Map() } });
+  const cw = [{ name: 'create weapon' }];
+  const plan = (client) => {
+    const ws = evaluate({ client, policy: {}, session: { world: { room: { num: 150 } } } });
+    const p = planFor(client, { armed: true },
+                      { session: { world: { room: { num: 150 } } }, policy: {}, ws });
+    return p.found ? p.names : null;
+  };
+
+  ok('a weapon in the pack is equipped',
+     JSON.stringify(plan(mk([{ name: 'mace' }], cw, 21))) === JSON.stringify(['equip']));
+  ok('an empty pack conjures instead of equipping nothing',
+     JSON.stringify(plan(mk([], cw, 21))) === JSON.stringify(['cast create weapon']));
+  ok('and empty-handed with no spell and no money has no plan at all -- fists',
+     plan(mk([], [], 21)) === null);
+  ok('the conjure is still gated on being able to pay for it',
+     plan(mk([], cw, 3)) === null);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
