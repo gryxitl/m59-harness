@@ -363,5 +363,38 @@ console.log('\nstarting a fight needs headroom; continuing one does not');
      fight.when({ ...base, fit_to_engage: true, in_reach: false }) === true);
 }
 
+// A CORPSE HAS NEITHER A WEAPON NOR A PURSE, AND can_arm HAS TO KNOW THE THIRD WAY.
+//
+// `can_arm` asked two questions -- weapon in the pack, money to spend -- and a character
+// that has just died has neither: everything it owned is on the floor where it fell. The
+// `armed` goal is gated on this, so the answer `false` left it unarmed for ever; and
+// unarmed halves the hunt band, so it also stopped finding anything worth fighting, which
+// was the only route back to a purse. A closed loop.
+//
+// Sasquatch, 2026-08-27: empty pack, no purse, 21 mana and `create weapon` in his spell
+// list against its cost of 15 (creaweap.kod:41). Nine hours, zero kills.
+{
+  const mk = (inv, spells, mana) => ({
+    client: { inventory: inv, spells, vitals: () => ({ mana: { value: mana } }) } });
+  const cw = [{ name: 'create weapon' }, { name: 'blink' }];
+  const arm = SYMBOLS.can_arm.produce;
+
+  ok('an empty-handed caster who can conjure CAN arm', arm(mk([], cw, 21)) === true);
+  ok('...but not without the mana for it', arm(mk([], cw, 9)) === false);
+  ok('...and not if it never learned the spell', arm(mk([], [{ name: 'blink' }], 21)) === false);
+  ok('an unreadable mana bar does not condemn a caster',
+     SYMBOLS.can_arm.produce({ client: { inventory: [], spells: cw, vitals: () => ({}) } }) === true);
+
+  // The two original routes are untouched.
+  ok('a weapon in the pack still answers true', arm(mk([{ name: 'mace' }], [], 0)) === true);
+  ok('a purse still answers true', arm(mk([{ name: 'shilling', amount: 40 }], [], 0)) === true);
+  ok('and a weapon wins before the purse is even counted',
+     arm(mk([{ name: 'mace' }], [], 0)) === true);
+  ok('an unreadable inventory still abstains',
+     SYMBOLS.can_arm.produce({ client: {} }) === null);
+  ok('empty-handed, penniless and no spells is still false -- fists are the only way out',
+     arm(mk([], [], 0)) === false);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

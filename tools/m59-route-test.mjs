@@ -580,5 +580,24 @@ console.log('\nsub-waypoint chain: a fresh plan is trimmed too');
   ok('a window of real progress clears the pending strike', r3._lastOscAim === null);
 }
 
+// ROOM 0 IS NOT A ROOM, AND Number(null) IS 0.
+//
+// `to(null)` used to be accepted as room ZERO -- finite, numeric, and past every
+// `dest != null` guard downstream, because 0 is not null. The character then routed
+// forever toward a room that does not exist. Sasquatch spent nine hours in Cor Noth
+// reporting `no route from 150 to 0` with zero kills while the other four worked.
+{
+  const r = new Router({ session: { world: {}, client: {} }, map: { rooms: {} }, now: () => 0 });
+  ok('to(null) is refused, not read as room 0', r.to(null) === false && r.dest !== 0);
+  ok('to(undefined) is refused', r.to(undefined) === false);
+  ok('to(0) is refused', r.to(0) === false);
+  ok('to(-3) is refused', r.to(-3) === false);
+  ok('to("") is refused (Number("") is 0 too)', r.to('') === false);
+  ok('a real room is still accepted', r.to(575) === true && r.dest === 575);
+  ok('and a numeric string still works', r.to('150') === true && r.dest === 150);
+  ok('a refused destination does not clobber the current one',
+     (r.to(null), r.dest === 150), String(r.dest));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

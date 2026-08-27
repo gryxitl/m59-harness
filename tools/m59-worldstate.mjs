@@ -69,6 +69,11 @@ const BLINK_EXERTION = 20;
 // nothing. Ground the escape on what the escape actually costs.
 const BLINK_MANA = 15;
 
+// `create weapon`, the only way an empty-handed character with an empty purse ever holds
+// a weapon again. creaweap.kod:41. Same price as blink, and for the same reason it has to
+// be named rather than folded into the generic cast floor: MIN_CAST_MANA is `create food`.
+const CREATE_WEAPON_MANA = 15;
+
 // The fraction of health below which a character stops PICKING fights (it may still finish
 // one it is already in). Deliberately well above fleeBelow: the flee line is where you run,
 // and choosing a fight from just above it is choosing to run almost immediately. Override
@@ -632,9 +637,25 @@ export const SYMBOLS = {
   // (floor(level/4) against floor(level/2)) and skills.sellAll says as much: "you will fight
   // with your fists". So `armed` should only outrank fighting while it can be satisfied.
   can_arm: {
-    describe: 'there is a wieldable weapon in the pack, or money to buy one',
+    describe: 'a weapon can be had: one in the pack, money to buy one, or the mana to conjure one',
     whenUnknown: true,
     why_unknown: 'if we cannot tell, try to arm — the cost of a wasted trip is smaller than the cost of punching everything',
+    // A THIRD WAY TO GET A WEAPON, AND THE ONLY ONE A CORPSE HAS.
+    //
+    // This asked two questions -- is there a weapon in the pack, is there money -- and a
+    // character that has just died has neither: everything it owned is on the floor where
+    // it fell. `can_arm` then answered false, the `armed` goal is gated on it, and the
+    // character was left unarmed for ever. Unarmed halves the hunt band (floor(level/4)
+    // against floor(level/2)), so it also stops finding anything worth fighting, which is
+    // how it stops earning the money that was the only route out. A closed loop.
+    //
+    // Sasquatch, 2026-08-27: empty pack, no purse, 20/20 health, and `create weapon` in
+    // his spell list with 21 mana against its cost of 15 (creaweap.kod:41). He could have
+    // armed himself at any point in nine hours and was never asked to. Zero kills all day.
+    //
+    // The conjure is checked LAST because it is the most expensive of the three and the
+    // only one that can fail on the wire, and its mana bar is read the way blink's is --
+    // an unreadable one abstains rather than claiming the character is helpless.
     produce: ({ client }) => {
       const inv = client?.inventory;
       if (!Array.isArray(inv)) return null;
@@ -644,7 +665,16 @@ export const SYMBOLS = {
         if (/shilling/i.test(name)) { purse += (o.amount || 1); continue; }
         if (WEAPON_RE.test(name)) return true;      // something to wield already
       }
-      return purse > 0;                              // no weapon, but something to spend
+      if (purse > 0) return true;                   // no weapon, but something to spend
+      // Nothing to wield and nothing to spend: can we make one?
+      const spells = client?.spells;
+      if (!Array.isArray(spells)) return false;
+      const knows = spells.some(sp =>
+        String(client?.rsc?.get?.(sp.nameRsc) ?? sp.name ?? '').toLowerCase() === 'create weapon');
+      if (!knows) return false;
+      const mana = client?.vitals?.()?.mana?.value;
+      if (mana == null) return true;                // unreadable bar does not condemn him
+      return mana >= CREATE_WEAPON_MANA;
     },
   },
 

@@ -149,8 +149,22 @@ export class Router {
   }
 
   to(roomNum) {
+    // ROOM 0 IS NOT A ROOM, AND `Number(null)` IS 0.
+    //
+    // The finite check alone lets `to(null)` through as room ZERO: it is finite, it is a
+    // number, and nothing downstream disagrees. The destination then survives every
+    // `dest != null` guard in the decider -- 0 is not null -- so the character routes
+    // forever toward a room that does not exist, reporting `no route from 150 to 0` on
+    // every tick and never falling back to anything that would pick a real one.
+    //
+    // Sasquatch, 2026-08-27: nine hours in Cor Noth, `state: no-route`, `dest: 0`, zero
+    // kills, while the other four worked. Same shape as the sanctuary bug where an absent
+    // assignment read as "assigned to room 0" and walked a character out of safety.
+    //
+    // Reject the absent value BEFORE converting it, and reject non-positive rooms after.
+    if (roomNum == null) return false;
     const n = Number(roomNum);
-    if (!Number.isFinite(n)) return false;
+    if (!Number.isFinite(n) || n <= 0) return false;
     if (this.dest !== n) {
       this.dest = n; this.leg = null; this.mark = null; this.subWp = null; this._subWpReplans = 0;
       this._committedAim = null; this._lastOscAim = null;
