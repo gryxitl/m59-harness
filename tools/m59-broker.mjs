@@ -6377,6 +6377,26 @@ const TOOLS = [
           'time, as each character wakes in a town and walks to the best room it knows. Set this ' +
           'and it goes here instead. Still refused if the room cannot generate the prey. ' +
           'null clears it. `spread` sets these for a whole fleet at once' },
+      // THE PERSISTED POLICY SPELLS THIS `assignedRoom`, AND A ROUND TRIP MUST NOT DROP IT.
+      //
+      // Every setting here is snake_case on the way in and camelCase in `policy`, which is
+      // fine until a saved policy is handed BACK to this tool -- resuming a process-backed
+      // keeper does exactly that. `assignedRoom` is then an undeclared key, and undeclared
+      // keys are reported and discarded (deliberately: see the note by that check). So the
+      // assignment survived being set and did not survive being restored, and the fleet
+      // silently re-collapsed into one room on every restart while the roster still showed
+      // the rooms somebody had chosen.
+      //
+      // 2026-08-27: `[autopilot] unrecognised setting(s) ignored: assignedRoom` twice in the
+      // startup log, four characters back in room 575 with 534 in their roster entries, and
+      // every re-assignment I made undone by the next restart.
+      //
+      // Declaring the alias is the whole fix. It is NOT a second setting -- the handler
+      // folds it into the same field, and `assigned_room` wins if somebody passes both.
+      assignedRoom: { type: ['number', 'null'],
+        description: 'Alias of `assigned_room`, accepted because that is the spelling the ' +
+          'persisted policy uses and restoring a saved policy must not silently drop it. ' +
+          'Prefer `assigned_room` when setting this by hand.' },
       max_bots_per_safe_spot: { type: ['number', 'null'],
         description: 'maximum bots sharing one safe square when a fleet spread strategy is enabled. ' +
           'Default null means no occupancy-based spreading; 3 reproduces the historical keeper cap' },
@@ -7013,8 +7033,11 @@ const TOOLS = [
       }
       if (a.drop_junk !== undefined) p.policy.dropJunk = !!a.drop_junk;
       if (a.roam !== undefined) p.policy.roam = !!a.roam;
-      if (a.assigned_room !== undefined)
-        p.policy.assignedRoom = a.assigned_room == null ? null : Number(a.assigned_room);
+      // `assigned_room` wins when both are present; the alias exists for the restore path.
+      const assignedIn = a.assigned_room !== undefined ? a.assigned_room
+                       : (a.assignedRoom !== undefined ? a.assignedRoom : undefined);
+      if (assignedIn !== undefined)
+        p.policy.assignedRoom = assignedIn == null ? null : Number(assignedIn);
       if (a.max_bots_per_safe_spot !== undefined)
         p.policy.maxBotsPerSafeSpot = a.max_bots_per_safe_spot == null
           ? null : Math.max(1, Math.floor(Number(a.max_bots_per_safe_spot) || 1));
