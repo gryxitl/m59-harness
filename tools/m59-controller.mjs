@@ -364,6 +364,7 @@ export class CharacterController {
     const travel = Math.min(speed * dt, dist);
     const aimX = this.x + (dx / dist) * travel;
     const aimY = this.y + (dy / dist) * travel;
+    this._lastAim = { x: aimX, y: aimY };   // diagnostic only
 
     // COLLIDE AND SLIDE, THE WAY clientd3d/move.c ACTUALLY DOES IT.
     //

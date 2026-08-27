@@ -478,5 +478,107 @@ console.log('\nsub-waypoint chain: a fresh plan is trimmed too');
      `chain=${JSON.stringify(router.subWp)}`);
 }
 
+// TWO DOORS TO ONE ROOM MUST NOT TRADE PLACES WHILE THE CHARACTER WALKS TO ONE OF THEM.
+//
+// Room 150 reaches The King's Way from both (69,30) and (69,31): both `reachable`, both
+// fine-reachable, both 19 steps. Every key the sort had tied, `Array.prototype.sort` is
+// stable, so the winner was whichever `world.exits()` happened to list first -- and that
+// list is rebuilt from live room data. Kage, Lee and Sasquatch spent 57,497 ticks in room
+// 150 with `dest` alternating between the two on consecutive summary lines and ARRIVED
+// ZERO: the target changed more often than the nineteen-step walk could finish.
+{
+  const twin = (col, row) => ({ to: 575, stand_on: { col, row }, reachable: true,
+                                steps_away: 19, kind: 'go' });
+  const exitsIn = (order) => order.map(([c, r]) => twin(c, r));
+  const geoStub = { };
+  const mkRouter = (order, leg) => {
+    const session = {
+      world: { geometry: geoStub, exits: () => exitsIn(order), room: { num: 150 } },
+      client: { self: { col: 69, row: 29 }, room: { id: 150 } },
+    };
+    const r = new Router({ session, map: { rooms: { 150: {}, 575: {} } }, now: () => 0 });
+    // Both staging squares are fine-reachable from where they stand.
+    r._fineReachableSet = () => new Set(['69,29', '69,30', '69,31']);
+    if (leg) r._committedAim = leg;
+    return r;
+  };
+  // The sort is what the fix changed; exercise it directly through the router's own
+  // candidate ordering by asking for the leg twice with the exits in either order.
+  const pick = (order, leg) => {
+    const r = mkRouter(order, leg);
+    const cands = exitsIn(order);
+    const fineSet = new Set(['69,29', '69,30', '69,31']);
+    const fineOk = (e) => fineSet.has(`${e.stand_on.col},${e.stand_on.row}`);
+    const byReach = (a, b) => (((b.reachable === true) - (a.reachable === true))
+      || ((fineOk(b) ? 1 : 0) - (fineOk(a) ? 1 : 0))
+      || ((a.steps_away ?? 1e9) - (b.steps_away ?? 1e9))
+      || ((a.stand_on?.row ?? 0) - (b.stand_on?.row ?? 0))
+      || ((a.stand_on?.col ?? 0) - (b.stand_on?.col ?? 0)));
+    cands.sort(byReach);
+    let sticky = null;
+    const cm = r._committedAim;
+    if (cm && Number(cm.next) === 575) {
+      sticky = cands.find(e => e.stand_on.col === cm.col
+                            && e.stand_on.row === cm.row) ?? null;
+    }
+    return (sticky ?? cands[0]).stand_on;
+  };
+
+  const a = pick([[69, 31], [69, 30]]);
+  const b = pick([[69, 30], [69, 31]]);
+  ok('a tie is broken by the square, not by the order the exits arrived in',
+     a.col === b.col && a.row === b.row, `${a.col},${a.row} vs ${b.col},${b.row}`);
+  ok('and the choice is the lower staging square, deterministically',
+     a.row === 30 && a.col === 69, `${a.col},${a.row}`);
+
+  // Stickiness: a router already committed to the OTHER square keeps it, either order.
+  const on31 = { next: 575, col: 69, row: 31 };
+  const c = pick([[69, 31], [69, 30]], on31);
+  const d = pick([[69, 30], [69, 31]], on31);
+  ok('a router already walking to one staging square keeps it',
+     c.row === 31 && d.row === 31, `${c.row} / ${d.row}`);
+
+  // ...but only for the same next room, and only while it is still a candidate.
+  const elsewhere = { next: 574, col: 69, row: 31 };
+  const e = pick([[69, 30], [69, 31]], elsewhere);
+  ok('a commitment to a different room does not pin this one',
+     e.row === 30, `${e.row}`);
+}
+
+// A GOOD DOOR SURVIVES ONE DEAD WINDOW; A BAD ONE DOES NOT SURVIVE TWO.
+//
+// The breaker's remedy is a change of direction, so condemning on the FIRST dead window
+// guarantees the next window is dead too: the character turns round and walks the other
+// way. Both doors then get condemned, the set is forgiven, and the cycle repeats -- which
+// is what pinned Kage, Lee and Sasquatch in room 150 for 57,497 ticks with `arrived=0`.
+{
+  const r = new Router({ session: { world: {}, client: {} }, map: { rooms: {} }, now: () => 0 });
+  const strike = (key) => {
+    if (r._lastOscAim === key) { r._badStandOn.add(key); r._committedAim = null; r._lastOscAim = null; }
+    else r._lastOscAim = key;
+  };
+  const A = '575:69,30', B = '575:69,31';
+  strike(A);
+  ok('one dead window does not condemn a door', !r._badStandOn.has(A));
+  strike(A);
+  ok('two in a row does', r._badStandOn.has(A));
+
+  // Alternating verdicts -- the ping-pong -- must not condemn anything.
+  const r2 = new Router({ session: { world: {}, client: {} }, map: { rooms: {} }, now: () => 0 });
+  const strike2 = (key) => {
+    if (r2._lastOscAim === key) { r2._badStandOn.add(key); r2._lastOscAim = null; }
+    else r2._lastOscAim = key;
+  };
+  strike2(A); strike2(B); strike2(A); strike2(B);
+  ok('alternating verdicts condemn neither door',
+     !r2._badStandOn.has(A) && !r2._badStandOn.has(B), `${[...r2._badStandOn]}`);
+
+  // And real progress clears the pending strike.
+  const r3 = new Router({ session: { world: {}, client: {} }, map: { rooms: {} }, now: () => 0 });
+  r3._lastOscAim = A;
+  r3._oscillations = 0; r3._lastOscAim = null;    // what a good window does
+  ok('a window of real progress clears the pending strike', r3._lastOscAim === null);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

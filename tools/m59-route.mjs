@@ -144,6 +144,8 @@ export class Router {
     this._progress = [];      // [{ t, col, row }] position samples, newest last
     this._oscillations = 0;   // consecutive oscillation verdicts for this route
     this._badStandOn = new Set();  // `${nextRoom}:${col},${row}` squares to stop aiming at
+    this._committedAim = null;     // the staging square this router is walking to
+    this._lastOscAim = null;       // the aim that used up its one free dead window
   }
 
   to(roomNum) {
@@ -151,6 +153,7 @@ export class Router {
     if (!Number.isFinite(n)) return false;
     if (this.dest !== n) {
       this.dest = n; this.leg = null; this.mark = null; this.subWp = null; this._subWpReplans = 0;
+      this._committedAim = null; this._lastOscAim = null;
       this._progress = []; this._oscillations = 0; this._badStandOn.clear();
     }
     return true;
@@ -158,6 +161,7 @@ export class Router {
 
   clear() {
     this.dest = null; this.leg = null; this.mark = null; this.subWp = null; this._subWpReplans = 0;
+    this._committedAim = null; this._lastOscAim = null;
     this._progress = []; this._oscillations = 0; this._badStandOn.clear();
     this.lastState = 'idle';
   }
@@ -231,11 +235,49 @@ export class Router {
     }
     const fineOk = (e) => fineSet != null && e.stand_on != null
       && fineSet.has(`${e.stand_on.col},${e.stand_on.row}`);
+    // AND A TIE IS BROKEN BY THE SQUARE, NEVER BY THE ORDER THE EXITS ARRIVED IN.
+    //
+    // The three keys above tie whenever a room offers the same destination through two
+    // adjacent staging squares, which is common: room 150 reaches The King's Way from
+    // both (69,30) and (69,31), both `reachable`, both fine-reachable, both 19 steps.
+    // `Array.prototype.sort` is stable, so a perfect tie preserves INPUT order — and the
+    // input is `world.exits()`, rebuilt from live room data whose order is not guaranteed
+    // across refreshes. So the pick flipped between the two, and a flip is not a cosmetic
+    // difference: the leg changes, the plan drawn for it is dropped, and the walk starts
+    // again from the top.
+    //
+    // Kage, Lee and Sasquatch, 2026-08-27, room 150: `dest` alternating (69,30)/(69,31)
+    // on consecutive summary lines, 57,497 ticks, 18,458 of them "moving", ARRIVED ZERO.
+    // Nineteen steps they never got to walk, because the target changed more often than
+    // the walk could finish.
     const byReach = (a, b) => (((b.reachable === true) - (a.reachable === true))
       || ((fineOk(b) ? 1 : 0) - (fineOk(a) ? 1 : 0))
-      || ((a.steps_away ?? 1e9) - (b.steps_away ?? 1e9)));
+      || ((a.steps_away ?? 1e9) - (b.steps_away ?? 1e9))
+      || ((a.stand_on?.row ?? 0) - (b.stand_on?.row ?? 0))
+      || ((a.stand_on?.col ?? 0) - (b.stand_on?.col ?? 0)));
     cands.sort(byReach);
-    const exit = cands.find(e => e.reachable !== false && (!fineSet || fineOk(e)
+    // AND HAVING CHOSEN ONE, WALK TO IT. A deterministic tie-break alone is not enough:
+    // `steps_away` is measured from where the character is standing NOW, so the ordering
+    // legitimately changes as it walks, and two staging squares one apart trade places
+    // partway there. Keep the staging square this leg already committed to for as long as
+    // it remains a candidate for the SAME next room — it drops out of `cands` by itself if
+    // it becomes unreachable or the oscillation breaker condemns it, and that is the only
+    // thing that should be able to change our mind mid-approach.
+    // THE COMMITMENT CANNOT LIVE ON THE LEG, BECAUSE THE THING IT DEFENDS AGAINST KILLS
+    // THE LEG. The oscillation breaker below condemns the current standOn and sets
+    // `this.leg = null` in the same breath, so a stickiness keyed on `this.leg` is always
+    // reading null exactly when it is needed. Keep the committed aim on the router.
+    let sticky = null;
+    const committed = this._committedAim;
+    if (committed && Number(committed.next) === Number(next)) {
+      sticky = cands.find(e => e.stand_on.col === committed.col
+                            && e.stand_on.row === committed.row
+                            && e.reachable !== false
+                            && (!fineSet || fineOk(e))) ?? null;
+      if (sticky) this._stickyLegs = (this._stickyLegs ?? 0) + 1;
+    }
+
+    const exit = sticky ?? cands.find(e => e.reachable !== false && (!fineSet || fineOk(e)
       // No fine-reachable candidate at all: keep the coarse pick rather than no leg —
       // the sub-leg planner and the mover's raw-door-push still have a chance.
       || !cands.some(x => x.reachable !== false && fineOk(x)))) ?? cands[0];
@@ -332,6 +374,10 @@ export class Router {
         }
       }
     }
+
+    // Record what this router is now committed to, so a leg torn down by the oscillation
+    // breaker is rebuilt aiming at the SAME square rather than the other one.
+    this._committedAim = { next: Number(next), col: standOn?.col, row: standOn?.row };
 
     // Compute an edge target if the exit doesn't provide one.
     // The edge target is one square beyond the staging square,
@@ -753,8 +799,37 @@ export class Router {
         if (net < PROGRESS_MIN_NET) {
           this._oscillations++;
           const aim = this.leg?.standOn;
-          if (aim && this.leg?.next != null)
-            this._badStandOn.add(`${this.leg.next}:${aim.col},${aim.row}`);
+          // CONDEMN ON THE SECOND VERDICT, NOT THE FIRST — and only against the SAME aim.
+          //
+          // Condemning immediately is right when the door is the problem (the Raza
+          // Mausoleum case: a standOn the coarse grid promises and the fine model refuses,
+          // which never becomes walkable however long you look at it). It is wrong when
+          // the door is fine and the character merely had a bad window, because the remedy
+          // IS a change of direction: the re-plan picks the other staging square, the
+          // character turns round and walks the other way, and the next window is dead for
+          // exactly that reason. The breaker then condemns that square too, both are
+          // condemned, the set is forgiven, and the cycle repeats.
+          //
+          // Kage, Lee and Sasquatch, 2026-08-27, room 150: two good doors to The King's
+          // Way at (69,30) and (69,31), both reachable, both 19 steps. They ping-ponged
+          // between (68,29) and (69,29) for 57,497 ticks — walking west, being turned
+          // round, walking east — and ARRIVED ZERO. Every individual verdict was correct;
+          // the remedy was the thing keeping them there.
+          //
+          // So a door has to fail twice IN A ROW to be condemned. A genuinely unreachable
+          // one still is, one window later; a good one survives a single bad window and
+          // the commitment above keeps the character walking to it.
+          const aimKey = aim && this.leg?.next != null
+            ? `${this.leg.next}:${aim.col},${aim.row}` : null;
+          if (aimKey) {
+            if (this._lastOscAim === aimKey) {
+              this._badStandOn.add(aimKey);
+              this._committedAim = null;      // it is condemned; stop steering back to it
+              this._lastOscAim = null;
+            } else {
+              this._lastOscAim = aimKey;      // one free window, then it goes
+            }
+          }
           const osc = this._oscillations;
           this.leg = null;
           this.mark = null;
@@ -774,8 +849,10 @@ export class Router {
         }
         // Real net movement happened within the window: not oscillating. A single
         // window of progress forgives earlier verdicts — the counter is for CONSECUTIVE
-        // dead windows, not a lifetime total.
+        // dead windows, not a lifetime total. That includes the pending first-strike
+        // above: a door that has since been walked toward is not on its second strike.
         this._oscillations = 0;
+        this._lastOscAim = null;
       }
     }
 

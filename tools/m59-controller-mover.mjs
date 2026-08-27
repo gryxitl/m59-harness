@@ -227,7 +227,11 @@ export class ControllerMover {
       + ` | ctlAt=${this.ctl.x == null ? '-' : Math.round(this.ctl.x)},${Math.round(this.ctl.y)}`
       + ` stranded=${c.stranded ?? 0} fineAdopted=${c.fineAdopted ?? 0} fineRejected=${c.fineRejected ?? 0}`
       + ` offRoom=${c.offRoomRefused ?? 0} sideSteps=${c.sideSteps ?? 0}`
-      + ` traceBlocked=${c.trace_blocked ?? 0} fellback=${c.trace_fellback ?? 0}`);
+      + ` traceBlocked=${c.trace_blocked ?? 0} fellback=${c.trace_fellback ?? 0}`
+      // WHAT IT IS STEERING AT. "blocked" says the step failed; it does not say the
+      // step was aimed at a wall because the plan went missing.
+      + ` | path=${this.ctl.path ? this.ctl.path.length : 'NONE'}@${this.ctl.pathIdx ?? 0}`
+      + ` aim=${this.ctl._lastAim ? `${Math.round(this.ctl._lastAim.x)},${Math.round(this.ctl._lastAim.y)}` : '-'}`);
   }
 
   // PHYSICS ON THE LOOP'S CLOCK, NOT THE DECIDER'S.
