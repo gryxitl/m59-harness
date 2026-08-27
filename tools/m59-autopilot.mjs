@@ -1865,6 +1865,137 @@ export class Autopilot {
     return !!r?.worn?.length;
   }
 
+  // ── The behaviour-tree seam ────────────────────────────────────────
+  //
+  // m59-bt-farm.mjs and m59-bt-flee.mjs call these sixteen methods on the keeper, and they
+  // read the module tables through `this.constructor` rather than reaching into module
+  // scope — so the class has to expose them as statics. All of it landed in real commits
+  // (3cffecb, 3ec3d13, fd77c39) and was lost in a later rewrite of this file, which left
+  // every BT node that touched one throwing a ReferenceError that tickAsync swallowed.
+  //
+  // That is what m59-keeper-bt-test was reporting, and it is not only a test failure: the
+  // behaviour-tree keeper cannot farm or flee without them. It is a separate driver that
+  // nothing currently runs, which is exactly why nobody noticed — a subsystem with no live
+  // caller fails silently and stays failed.
+  //
+  // The original `_btFarmStrategy` also destructured an undeclared `require_cache` as "a
+  // placeholder"; that WAS the ReferenceError fd77c39 fixed, and it is not restored here.
+  static STRATEGIES = STRATEGIES;
+  static SPAWN_FILE = SPAWN_FILE;
+  static farmRoomDenials = farmRoomDenials;
+  static shouldRelocateToAssignedRoom = shouldRelocateToAssignedRoom;
+  static _combatSkills = { findCreature: skills.findCreature, fight: skills.fight };
+
+  _btFarmStrategy() {
+    const STRATS = this.constructor.STRATEGIES;
+    return STRATS?.[this.policy.strategy] || STRATS?.baseline || {};
+  }
+
+  _btFarmSpawnFile() {
+    return this.constructor.SPAWN_FILE || 'substrate/spawns.json';
+  }
+
+  _btFarmDeniedRooms() {
+    const farmRoomDenials = this.constructor.farmRoomDenials;
+    return farmRoomDenials ? farmRoomDenials(this.noWallRooms, this.cappedRooms) : new Map();
+  }
+
+  _btFarmShouldRelocate(room, denied) {
+    const shouldRelocate = this.constructor.shouldRelocateToAssignedRoom;
+    return shouldRelocate ? shouldRelocate(this.policy, room, denied) : false;
+  }
+
+  _btFarmFindCreature(name) {
+    const { findCreature } = this.constructor._combatSkills;
+    return findCreature ? findCreature(this.s, name) : [];
+  }
+
+  _btFarmFoundTargets() {
+    const { findCreature } = this.constructor._combatSkills;
+    if (!findCreature || !this.policy.hunt) return [];
+    return findCreature(this.s, this.policy.hunt);
+  }
+
+  _btFarmFight(engageName, found, room, safe) {
+    const { fight } = this.constructor._combatSkills;
+    const holding = !!this.hold;
+    const REACH = 3;
+    const f = fight(this.s, {
+      target: engageName,
+      preferId: this.foeId,
+      rounds: this.policy.fightRounds ?? 30,
+      disengageAt: safe.fleeAt, loot: true,
+      holdPosition: holding, reach: REACH,
+      weaponPriority: this.weaponPriorityNow(),
+    });
+    return f;
+  }
+
+  _btFleeNear() {
+    const c = this.s.client;
+    const me = c.self;
+    if (!me) return [];
+    const { OF } = this.constructor._combatSkills || {};
+    if (!OF) return [];
+    return [...c.room.objects.values()].filter(o =>
+      o.id !== c.selfId && (o.flags & OF.ATTACKABLE) && !(o.flags & OF.PLAYER) &&
+      Math.hypot(o.col - me.col, o.row - me.row) <= 2
+    );
+  }
+
+  _btFleeHostiles() {
+    const c = this.s.client;
+    const { OF } = this.constructor._combatSkills || {};
+    if (!OF) return [];
+    return [...c.room.objects.values()].filter(o =>
+      o.id !== c.selfId && (o.flags & OF.ATTACKABLE) && !(o.flags & OF.PLAYER)
+    );
+  }
+
+  _btFleeStrategy() {
+    const STRATS = this.constructor.STRATEGIES;
+    return STRATS?.[this.policy.strategy] || STRATS?.baseline || {};
+  }
+
+  _btFleeRestAndCook() {
+    const { skills } = this.constructor._combatSkills;
+    return (async () => {
+      await skills?.restUntil?.(this.s, { health: 0.95, vigor: 0.4, maxSeconds: 90 }).catch(() => {});
+      await this.cookSomething('got out of a bad room and need food before going back').catch(() => {});
+    })();
+  }
+
+  _btFleeTurnInPlace() {
+    const { skills } = this.constructor._combatSkills;
+    return skills?.turnInPlace?.(this.s) ?? Promise.resolve({ turned: false });
+  }
+
+  _btFleeNudge() {
+    const { skills } = this.constructor._combatSkills;
+    return skills?.nudge?.(this.s) ?? Promise.resolve({ moved: false });
+  }
+
+  _btFleeReturnToSpot() {
+    const { skills } = this.constructor._combatSkills;
+    if (!skills?.returnToSpot || !this.hold) return Promise.resolve({ arrived: false });
+    return skills.returnToSpot(
+      this.s,
+      { col: this.hold.col, row: this.hold.row, x: this.hold.x, y: this.hold.y },
+      { maxSteps: 12 }
+    );
+  }
+
+  _btFleeHealUp(target) {
+    const { skills } = this.constructor._combatSkills;
+    return skills?.healUp?.(this.s, { target }) ?? Promise.resolve({ healed: false });
+  }
+
+  _btFleeRestUntil() {
+    const { skills } = this.constructor._combatSkills;
+    return skills?.restUntil?.(this.s, { health: 0.98, vigor: 0.4, maxSeconds: 120 })
+      ?? Promise.resolve(null);
+  }
+
   async provision(plan, v) {
     const p = this.policy;
     const floor = this.fightFloor(plan);
