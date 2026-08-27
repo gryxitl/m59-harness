@@ -208,5 +208,42 @@ console.log('\nthe action set is what the character HAS, not what exists');
      plan(mk([], cw, 3)) === null);
 }
 
+// NOTHING COULD REACH A SHOP, SO EVERY PLAN THAT NEEDED ONE WAS UNREACHABLE.
+//
+// `travelTo` was imported into m59-plan.mjs, given `pre: []`, `effects: ['at_shop']` and a
+// comment beginning "THE PLANNER USES IT LIKE THIS" -- and then left out of ALWAYS, so the
+// planner never had it. `buy.pre` is ['has_money','at_shop'] and `sell.pre` is
+// ['at_shop','has_loot']; with no action producing `at_shop`, both were dead ends.
+//
+// Lee, 2026-08-27: no weapon, 77 shillings, no `create weapon` in his spell list, standing
+// in a hunt room logging `armed — exhausted 2 nodes without finding a plan` on repeat.
+{
+  const mk = (inv, spells) => ({
+    inventory: inv, inventoryKnown: true, spells,
+    equipment: () => ({ known: true, equipped: [] }),
+    vitals: () => ({ health: { value: 21, max: 21 }, mana: { value: 20, max: 20 },
+                     vigor: { value: 184 } }),
+    room: { num: 534, objects: new Map() } });
+  const plan = (c, policy = { walkingMoney: 40 }) => {
+    const ws = evaluate({ client: c, policy, session: { world: { room: { num: 534 } } } });
+    const p = planFor(c, { armed: true },
+                      { session: { world: { room: { num: 534 } } }, policy, ws });
+    return p.found ? p.names : null; };
+
+  ok('money but no weapon plans a trip to a shop and a purchase',
+     JSON.stringify(plan(mk([{ name: 'shilling', amount: 77 }], [{ name: 'blink' }])))
+       === JSON.stringify(['travel_to', 'buy']));
+
+  // The cheaper answers still win where they apply -- travelTo is last in ALWAYS so a
+  // character that can act where it stands never walks instead.
+  ok('a weapon in the pack is still just equipped',
+     JSON.stringify(plan(mk([{ name: 'mace' }], []))) === JSON.stringify(['equip']));
+  ok('a caster with no money still conjures rather than shopping',
+     JSON.stringify(plan(mk([], [{ name: 'create weapon' }])))
+       === JSON.stringify(['cast create weapon']));
+  ok('and with no money, no spell and nothing to sell there is still no plan -- fists',
+     plan(mk([], [])) === null);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

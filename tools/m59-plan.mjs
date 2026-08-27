@@ -74,7 +74,23 @@ import { groundedCasts } from './m59-act/cast.mjs';
 // character unable to act when there was no buy intent in the tick decider). Buying
 // is only right when the pack is empty; `equipBest` returns {sent:false, no weapon}
 // in that case and the planner falls through to `buy` on the next plan.
-const ALWAYS = [rest, stand, equipBest, buy, eatSomething];
+// `travelTo` is LAST, and it is here at all because nothing else produces `at_shop`.
+//
+// It was imported into this file, given `pre: []`, `effects: ['at_shop']` and a comment
+// beginning "THE PLANNER USES IT LIKE THIS" -- and then left out of this array, so the
+// planner never had it. `buy.pre` is ['has_money', 'at_shop'] and `sell.pre` is
+// ['at_shop', 'has_loot'], so with no way to REACH a shop, every plan that needed one was
+// unreachable: the search expanded `equip` (refused, nothing to wield) and `buy` (refused,
+// not at a shop) and stopped.
+//
+// Lee, 2026-08-27: no weapon, 77 shillings, no `create weapon` in his spell list —
+// `armed — exhausted 2 nodes without finding a plan`, over and over, while standing in a
+// hunt room with the money to buy one. The chain the planner can now find is
+// travel_to -> buy -> armed.
+//
+// Last in the array on purpose: ties break by insertion order, so anything that can be
+// done where the character already stands is preferred over walking somewhere.
+const ALWAYS = [rest, stand, equipBest, buy, eatSomething, travelTo];
 
 /**
  * actionsFor(client) -> [action]
