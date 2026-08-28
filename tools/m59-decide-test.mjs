@@ -9,6 +9,8 @@
 // and an action reporting success it did not have.
 import { makeDecider, intend, INTENTS, DEFAULT_GOALS,
          REST_UNTIL_DEFAULT, REST_LATCH_MAX_MS } from './m59-decide.mjs';
+import { readFileSync } from 'node:fs';
+import { SYMBOLS } from './m59-worldstate.mjs';
 import { Actuator, TickLoop } from './m59-tick.mjs';
 
 let pass = 0, fail = 0;
@@ -385,6 +387,35 @@ console.log('\na cast holds the character still, because the tick loop is what b
   ok('a mixed pack prefers the smith, because only he buys the gear half',
      dest(['mace', 'elderberry']) === 374);
   ok('an empty pack falls back to the smith', dest([]) === 374);
+}
+
+// THE REST HANDLER'S GUARD MUST MATCH THE GOAL'S OWN CONDITION.
+//
+// `healthy` latches from `hurt` (< 0.7) up to `restUntil` (0.95). The handler that
+// actually sends the rest still asked only about `hurt`, so in the 70-95% band the goal
+// was active and no handler ran — and the fall-through plans for the SYMBOL `healthy`,
+// which is `HP >= 0.7` and already true there. `[tick] t5 healthy — no plan`, a goal
+// failure counted against a goal that had nothing left to do. Sasquatch, 2026-08-27.
+{
+  const src = readFileSync(new URL('./m59-decide.mjs', import.meta.url), 'utf8');
+  const guard = /active\?\.goal === 'healthy' && \(ws\.hurt === true \|\| ws\._still_recovering === true\)/;
+  ok('the rest handler fires for the whole latched band', guard.test(src));
+
+  // And the two really do disagree in that band, which is why the guard matters.
+  const healthySym = SYMBOLS.healthy.produce;
+  const hurtSym = SYMBOLS.hurt.produce;
+  const at = (v) => ({ client: { vitals: () => ({ health: { value: v, max: 20 } }) },
+                       policy: { restBelow: 0.7 } });
+  ok('at 17 of 20 the character is NOT hurt', hurtSym(at(17)) === false);
+  ok('...and the healthy SYMBOL is already satisfied', healthySym(at(17)) === true);
+  ok('...so planning for it would find nothing — hence the guard, not the planner',
+     hurtSym(at(17)) === false && healthySym(at(17)) === true);
+
+  // The goal itself is still active there, which is the whole point of the latch.
+  const healthyGoal = DEFAULT_GOALS.find(g => g.goal === 'healthy');
+  ok('the goal is still active at 17 of 20 while recovering',
+     healthyGoal.when({ hurt: false, _still_recovering: true,
+                        has_target: false, under_attack: false }) === true);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

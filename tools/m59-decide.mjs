@@ -1621,7 +1621,21 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // neighbor, sit back down) the first time we rest for HP in a room, to
     // set the flag. After that the server regens on its own and we just rest.
     // Throttled to 30s so a botched poke (blocked step) retries without spamming.
-    if (active?.goal === 'healthy' && ws.hurt === true) {
+    // THIS GUARD MUST MATCH THE GOAL'S OWN CONDITION, or the goal fires and nothing acts.
+    //
+    // The `healthy` goal latches: it starts at `hurt` (HP < restBelow, 0.7) and stays on
+    // until `restUntil` (0.95) so a character does not stand up the instant being hurt
+    // stops being an emergency. This guard still asked only about `hurt`, so between 70%
+    // and 95% the goal was active and this branch was skipped -- and the fall-through
+    // plans for the SYMBOL `healthy`, which is `HP >= 0.7` and therefore ALREADY TRUE in
+    // exactly that band. The planner was handed a goal with nothing left to achieve and
+    // answered `healthy — no plan`, which counts as a goal failure and eventually gets the
+    // goal skipped altogether.
+    //
+    // Sasquatch, 2026-08-27: `[tick] t5 healthy — no plan` while sitting hurt after a
+    // death, doing nothing at all in the band the latch was written to keep him resting
+    // through. Introduced by the latch itself; the latch is right and the guard was stale.
+    if (active?.goal === 'healthy' && (ws.hurt === true || ws._still_recovering === true)) {
       const hp = client.vitals?.()?.health?.value ?? 0;
       const maxHp = client.vitals?.()?.health?.max ?? 20;
       const now2 = now();
