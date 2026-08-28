@@ -503,7 +503,7 @@ async function readAbilitiesOnce(s, { why = 'read', kinds = 'both' } = {}) {
 // the last of those were superseded before they were sent, and the ones that did go out
 // interrupted each other. The newest cast is the current intent — an older queued one is a
 // decision the keeper has already moved on from.
-const COALESCE_KINDS = new Set(['rest', 'stand', 'move', 'cast']);
+const COALESCE_KINDS = new Set(['rest', 'stand', 'move', 'cast', 'go']);
 // The backstop depth. Far above any legitimate burst; low enough that the tail of the
 // queue is still packets from this minute rather than this morning.
 const MAX_QUEUE_DEPTH = Number(process.env.M59_PACER_MAX_QUEUE || 300);

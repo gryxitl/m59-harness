@@ -486,6 +486,10 @@ export class TickLoop {
     this._livenessFlagged = false;
     this.stats = { ticks: 0, skipped: 0, errors: 0, awaited: 0, frozen_ticks: 0,
                    longest_decide_ms: 0, lastError: null, stale_sessions: 0 };
+    // Request equipment data every 30 seconds so the worldstate's `armed` and
+    // other equipment-dependent symbols are not stuck on the known:false fallback
+    // forever. 30s is well above the pacer budget for a character.
+    this.inventoryEveryMs = 30_000;
   }
 
   // HOLD THE CHARACTER STILL FOR AT MOST `ms`, AND SAY WHY.

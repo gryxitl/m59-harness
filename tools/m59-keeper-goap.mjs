@@ -975,6 +975,11 @@ export class GOAPKeeper {
       // as the planning target, so the planner chains eat actions until
       // vigor reaches the ideal fight threshold.
       { goal: 'vigor_comfortable', when: ws.has_food === true && ws.vigor_comfortable === false },
+      // ARMED (above _fight): an unarmed character should get a weapon before
+      // fighting, not fight unarmed for 40 ticks. `can_arm !== false` means the
+      // character CAN'T get one (no reagents, no money) — in that case,
+      // fall through to punching (documented in m59-act/attack.mjs).
+      { goal: 'armed',         when: ws.armed === false && ws.can_arm !== false },
       // FIGHT: if there's a target in band, fight it.
       // Vigor requirements:
       //   - Hurt + in-band target: fight regardless of vigor (defend)
@@ -993,11 +998,6 @@ export class GOAPKeeper {
       // HEALTHY: if the character is hurt, stop what it's doing,
       // flee from combat if there's a target, and rest to recover.
       { goal: 'healthy',       when: ws.hurt === true },
-      // ARMED: try to get a weapon, but don't block combat or food.
-      // An unarmed character can still punch, scavenge for money,
-      // and buy a weapon later. This is a convenience goal, not a
-      // hard prerequisite.
-      { goal: 'armed',         when: ws.armed === false },
       // has_food: only try when the character CAN get food (has
       // reagents to cast create food, or has money to buy).
       // Higher priority when vigor is low — a tired character with
@@ -1019,8 +1019,21 @@ export class GOAPKeeper {
       { goal: this.goal,       when: ws[this.goal] !== true && (this.goal !== 'vigor_ok' || ws.has_food === true) },
     ];
     // Goal-skip: if a goal's action has failed 5+ times in a row,
-    // skip it for 30 passes. This prevents infinite loops when the
-    // shop is empty or the action is otherwise impossible.
+    // skip it for 30 passes, then let it try again. The 30-pass reset
+    // was documented but never implemented — once a goal failed 5 times
+    // it was skipped for the lifetime of the keeper process.
+    if (this._goalFailCount) {
+      for (const g of Object.keys(this._goalFailCount)) {
+        if (this._goalFailCount[g] >= 5 && (this._passCount - this._goalFailLastPass?.[g] ?? 0) >= 30) {
+          delete this._goalFailCount[g];
+          delete this._goalFailLastPass?.[g];
+        }
+      }
+      this._goalFailLastPass = this._goalFailLastPass ?? {};
+      for (const g of Object.keys(this._goalFailCount)) {
+        this._goalFailLastPass[g] = this._passCount;
+      }
+    }
     const active = goalStack.find(g => g.when && (this._goalFailCount?.[g.goal] ?? 0) < 5);
 
     if (!active) {
