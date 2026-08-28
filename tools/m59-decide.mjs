@@ -916,7 +916,19 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
 
     // 0. STUCK DETECTION. If the character hasn't moved in
     // STUCK_MS, escape the geometry pocket. Blink teleports
-    // in the facing direction, so if the character is facing
+    // NOT in the facing direction — that claim is wrong and cost a session. `blink.kod:21`
+    // says "Teleports you to a central location in the room", and CastSpell does
+    // `send(owner,@Teleport,#what=who)`: it asks the ROOM to relocate the body, with two
+    // special cases (Hall of Heroes -> Tos Forget, Bazman's -> Forgotten Too). There is no
+    // direction anywhere in it.
+    //
+    // What follows for a POCKET: blink cannot be relied on to escape one. JayB, room 50 at
+    // (2,48), cast it repeatedly — mana 25 -> 11, so it fired — and stayed exactly where
+    // he was, because wherever that room's Teleport puts a body it is not outside his
+    // 340-square region. Blink is the cure for being ENTOMBED, where any relocation is
+    // progress; it is not the cure for being trapped with no reachable exit.
+    //
+    // The original note read: blink teleports
     // a wall it does nothing. Instead: find an open
     // neighbor square and walk there. Fall back to blink if
     // no neighbor is open. Suppressed while resting: a

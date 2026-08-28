@@ -353,6 +353,15 @@ Wire, kod and the shape of a reply — [`docs/m59-protocol-traps.md`](docs/m59-p
 - The server's own safety flag already refuses ordinary players and allows murderers — leave it on.
 - Self-defence needs a grudge AND a live flag AND the safety; the grudge book is fleet-wide and gitignored.
 - One or two of the five Underworld portals are unlit at any moment, not all of them, and an unlit one is silent.
+- **Blink is NOT directional.** `blink.kod:21` — "Teleports you to a central location in the
+  room" — and `CastSpell` does `send(owner,@Teleport,#what=who)`, asking the ROOM to relocate
+  the body. The comment claiming it fires in the facing direction was wrong and cost a
+  session. It follows that blink CANNOT be relied on to escape a pocket: it cures being
+  ENTOMBED, where any relocation is progress, not being trapped where the reachable region
+  contains no exit.
+- **Zap needs no weapon.** It is `persench/touchatk` and creates an enchantment that acts AS
+  the weapon, so a caster with zap and blue mushrooms fights without one. 6 mana, one blue
+  mushroom per cast (`zap.kod`).
 
 Money, merchants and supply — [`docs/m59-economy.md`](docs/m59-economy.md):
 
