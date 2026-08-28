@@ -434,10 +434,36 @@ export class Router {
       else if (standOn.col <= 2) dir = 'west';
       else if (cols && standOn.col >= cols - 1) dir = 'east';
     }
+    // THE CROSSING IS TRIGGERED BY COORDINATES OUTSIDE THE ROOM, NOT BY ONE STEP.
+    //
+    // `room.kod`'s SomethingMoved picks the edge from the coordinates against the CURRENT
+    // room's bounds: `new_row > piRows` leaves south, `< 1` leaves north, `new_col > piCols`
+    // east, `< 1` west. So the target has to be PAST the boundary. One step beyond the
+    // staging square is the same thing only when the staging square is already ON the
+    // boundary — and it often is not.
+    //
+    // Room 546 is 50x49 and its exit to 547 stages on (22,48). One step south is (22,49),
+    // which is still inside a 49-row room, so walking there crossed nothing: the mover
+    // reported "arrived", the router stayed in `crossing`, and the character stood on the
+    // edge target indefinitely. Gountrug and Lee were both parked on that square on
+    // 2026-08-27, one of them for forty minutes, on the way to the smith.
+    //
+    // The other coordinate is kept from the staging square, because that is the part the
+    // exit actually chose. Without geometry we cannot know the bound, so the old one-step
+    // guess stays as the fallback rather than inventing a number.
     if (!edgeTarget && dir) {
       const dx = dir === 'east' ? 1 : dir === 'west' ? -1 : 0;
       const dy = dir === 'south' ? 1 : dir === 'north' ? -1 : 0;
-      if (dx || dy) edgeTarget = { col: standOn.col + dx, row: standOn.row + dy };
+      if (dx || dy) {
+        const geo = this._geo?.();
+        const rows = geo?.rows, cols = geo?.cols;
+        let col = standOn.col + dx, row = standOn.row + dy;
+        if (dir === 'north') row = 0;
+        else if (dir === 'west') col = 0;
+        else if (dir === 'south' && Number.isFinite(rows)) row = rows + 1;
+        else if (dir === 'east' && Number.isFinite(cols)) col = cols + 1;
+        edgeTarget = { col, row };
+      }
     }
 
     return { leg: { fromRoom: here, next, standOn,

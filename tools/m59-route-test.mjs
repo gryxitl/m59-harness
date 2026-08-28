@@ -7,6 +7,8 @@
 // under test is that it is STATE: each tick sends at most one square and returns, and
 // progress is observed between ticks rather than assumed within a call.
 import { Router, routeIntent } from './m59-route.mjs';
+import { sharedRoomGeometry, buildAllRoomGeometry } from './m59-roo.mjs';
+import { readFileSync } from 'node:fs';
 import { Actuator } from './m59-tick.mjs';
 
 let pass = 0, fail = 0;
@@ -597,6 +599,65 @@ console.log('\nsub-waypoint chain: a fresh plan is trimmed too');
   ok('and a numeric string still works', r.to('150') === true && r.dest === 150);
   ok('a refused destination does not clobber the current one',
      (r.to(null), r.dest === 150), String(r.dest));
+}
+
+// AN EDGE TARGET MUST BE OUTSIDE THE ROOM, NOT ONE STEP PAST THE STAGING SQUARE.
+//
+// `room.kod`'s SomethingMoved picks the edge from coordinates against the CURRENT room's
+// bounds: new_row > piRows leaves south, < 1 north, new_col > piCols east, < 1 west. One
+// step beyond the staging square is the same thing ONLY when that square already sits on
+// the boundary — and it often does not.
+//
+// Room 546 is 50x49 and its exit to 547 stages on (22,48). One step south is (22,49),
+// still inside a 49-row room, so walking there crossed nothing: the mover reported
+// "arrived", the router stayed in `crossing`, and the character stood on its edge target
+// indefinitely. Gountrug and Lee were both parked there on 2026-08-27, one for forty
+// minutes, on the way to the smith.
+{
+  const realMap = JSON.parse(readFileSync(new URL('../substrate/m59-map.json', import.meta.url), 'utf8'));
+  buildAllRoomGeometry(realMap);
+  const geo = sharedRoomGeometry(realMap.rooms['546']);
+  if (!geo) {
+    skip?.('edge targets clear the room boundary', 'room 546 is not in the baked map');
+  } else {
+    const leg = (standOn, direction) => {
+      const session = {
+        world: { geometry: geo, room: { num: 546 },
+                 exits: () => [{ to: 547, kind: 'edge', direction,
+                                 stand_on: standOn, reachable: true, steps_away: 3 }] },
+        client: { self: { ...standOn }, room: { id: 546 } } };
+      const r = new Router({ session, map: realMap, now: () => 0 });
+      r.to(374);
+      return r._planLeg(546)?.leg ?? null;
+    };
+
+    ok('room 546 really is 49 rows', geo.rows === 49, String(geo.rows));
+
+    const south = leg({ col: 22, row: 48 }, 'south');
+    ok('a south edge target clears the last row',
+       south?.edgeTarget?.row === geo.rows + 1, JSON.stringify(south?.edgeTarget));
+    ok('and keeps the staging column', south?.edgeTarget?.col === 22);
+    ok('the OLD one-step answer would have stayed inside the room',
+       48 + 1 <= geo.rows);
+
+    const north = leg({ col: 22, row: 3 }, 'north');
+    ok('a north edge target is row 0', north?.edgeTarget?.row === 0,
+       JSON.stringify(north?.edgeTarget));
+
+    const east = leg({ col: geo.cols - 3, row: 20 }, 'east');
+    ok('an east edge target clears the last column',
+       east?.edgeTarget?.col === geo.cols + 1, JSON.stringify(east?.edgeTarget));
+
+    const west = leg({ col: 4, row: 20 }, 'west');
+    ok('a west edge target is col 0', west?.edgeTarget?.col === 0,
+       JSON.stringify(west?.edgeTarget));
+
+    // A staging square already ON the boundary gives the same answer as before, which is
+    // what makes this a fix rather than a change of behaviour.
+    const onEdge = leg({ col: 22, row: geo.rows }, 'south');
+    ok('a staging square already on the boundary is unaffected',
+       onEdge?.edgeTarget?.row === geo.rows + 1, JSON.stringify(onEdge?.edgeTarget));
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
