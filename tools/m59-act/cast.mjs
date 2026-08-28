@@ -121,4 +121,11 @@ export const SPELL_EFFECTS = {
   // error, so nothing is spent and nothing is learned and the next tick tries again.
   // creaweap.kod:41 viMana = 15; it needs no reagents (plReagents = $).
   'create weapon': { pre: ['can_pay_create_weapon'], effects: ['armed'] },
+  // BLINK CURES BEING ENTOMBED, NOT BEING TRAPPED. It asks the ROOM to relocate the body
+  // ("a central location in the room", blink.kod:21) — which frees a character wedged in
+  // geometry, and does nothing for one whose whole reachable region has no exit, because
+  // the central location is inside that region. Gating it on `entombed` is what stops the
+  // planner offering it to a pocketed character for ever; `escape_pocket` is offered
+  // instead. Measured on JayB, room 50: repeated casts, mana spent, never moved.
+  'blink': { pre: ['entombed', 'can_pay_blink'], effects: ['can_leave'] },
 };

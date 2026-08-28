@@ -146,6 +146,15 @@ Not by kills, which move for many reasons. By these:
 - `stalled` stays false without the supervisor having to do anything.
 - `m59-supervise.mjs` unsticks nobody, because there is nobody to unstick.
 
+## Known suboptimality, not a blocker
+
+With `can_leave` as the goal, an ENTOMBED character is planned `escape_pocket` (a
+reconnect, cost 20) rather than `cast blink` (cost 1.05) even though blink's preconditions
+are all satisfied and it is nineteen times cheaper. Both free the character, so this is a
+cost-ordering question in `m59-goap-planner.mjs`, not a modelling error — the actions and
+their preconditions are right. Worth chasing when the planner is next opened; not worth
+blocking a character's escape on.
+
 ## Log
 
 - 2026-08-28 — opened.

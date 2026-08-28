@@ -667,6 +667,29 @@ export const SYMBOLS = {
     },
   },
 
+  can_leave: {
+    describe: 'the body can both move and reach a way out of this room',
+    whenUnknown: true,
+    why_unknown: 'never declare a character unable to leave on missing information — the cures are expensive',
+    // THE GOAL `unwedge` ACTUALLY WANTS, and it is two different failures.
+    //
+    // `entombed` is "cannot take a step". `pocket_has_exit` is "can walk, but nowhere that
+    // leaves". Blink cures the first and demonstrably not the second — JayB cast it
+    // repeatedly in room 50 (mana 25 -> 11, so it fired) and stayed at (2,48), because
+    // blink asks the ROOM to relocate you (blink.kod: "a central location in the room")
+    // and that location was inside his 340-square pocket.
+    //
+    // Naming the goal as one state lets the planner choose the cure that fits: blink is
+    // only plannable while entombed, so a pocketed character is offered the reconnect
+    // instead. See docs/m59-goap-repayment.md.
+    produce: ({ ws }) => {
+      if (ws?.entombed === true) return false;
+      if (ws?.pocket_has_exit === false) return false;
+      if (ws?.entombed == null && ws?.pocket_has_exit == null) return null;
+      return true;
+    },
+  },
+
   pocket_has_exit: {
     describe: 'at least one of this room\'s exits can actually be walked to from here',
     whenUnknown: true,

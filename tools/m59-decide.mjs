@@ -346,12 +346,32 @@ function merchantStandPoint(session, me, merchant) {
 // one so far; phase 3 adds `_fight`. See docs/m59-goap-repayment.md.
 const GOAL_STATE = {
   hunt: { has_target: true },
+  // `unwedge` is two different failures with two different cures: entombed (blink frees
+  // it) and trapped in a pocket (only a reconnect does). Naming the STATE lets the planner
+  // choose — blink is gated on `entombed`, so a pocketed character is offered
+  // `escape_pocket` instead of casting into a wall for ever. See JayB, room 50.
+  unwedge: { can_leave: true },
 };
 
 export const INTENTS = {
   // THE TWO HALVES OF HUNTING, as planner actions rather than one hand-written branch.
   // `travel_to_hunt_room` only steers; the room was chosen by policy above. Its
   // precondition (`route_reachable`) is what makes a hunt refusable.
+  // Reconnecting is the escape of last resort and the only one that frees a pocket. It is
+  // async and multi-second, so it is fired once and guarded, exactly like the other
+  // in-flight errands.
+  escape_pocket: (f, act, ctx) => {
+    const s = ctx.session;
+    if (s?._escapeInFlight) return { sent: false, why: 'a reconnect is already in flight' };
+    if (typeof s?.rejoin !== 'function') return { sent: false, why: 'this session cannot rejoin' };
+    s._escapeInFlight = true;
+    import('./m59-act/escape-pocket.mjs')
+      .then(({ escapePocket }) => escapePocket(ctx.client, s))
+      .then(r => console.error(`[escape] ${s?.name ?? 'keeper'}: ${r?.what ?? r?.reason}`))
+      .catch(e => console.error(`[escape] ${s?.name ?? 'keeper'} err: ${e.message}`))
+      .finally(() => { s._escapeInFlight = false; });
+    return { sent: true, what: 'reconnecting — this room has no reachable exit' };
+  },
   travel_to_hunt_room: (f, act, ctx) => {
     const s = ctx.session;
     const router = s?._router;

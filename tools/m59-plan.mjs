@@ -43,6 +43,7 @@ import { drop }          from './m59-act/drop.mjs';
 import { deposit, withdraw } from './m59-act/bank.mjs';
 import travelTo      from './m59-act/travel-to.mjs';
 import { travelToHuntRoom, acquireTarget } from './m59-act/hunt-room.mjs';
+import { escapePocket } from './m59-act/escape-pocket.mjs';
 import { groundedCasts } from './m59-act/cast.mjs';
 
 // The atomics that are always available -- they need no per-character grounding.
@@ -98,7 +99,7 @@ import { groundedCasts } from './m59-act/cast.mjs';
 // See docs/m59-goap-repayment.md, phase 2. They sit before `travelTo`, the generic
 // last-resort walk, because a named destination beats "keep moving and hope".
 const ALWAYS = [rest, stand, equipBest, buy, eatSomething,
-                travelToHuntRoom, acquireTarget, travelTo];
+                travelToHuntRoom, acquireTarget, escapePocket, travelTo];
 
 /**
  * actionsFor(client) -> [action]
