@@ -2214,7 +2214,16 @@ export const DEFAULT_GOALS = [
   // entombed at 19/19 mana and vigor 4, asking for a blink the server refused with a
   // sentence, unable to rest for the vigor because this rung outranks rest. See
   // `can_pay_blink`.
-  { goal: 'unwedge', when: ws => ws.entombed === true && ws.has_mana === true
+  // TRAPPED COUNTS TOO, NOT JUST ENTOMBED.
+  //
+  // `entombed` asks whether the body can take a step. A character with eight open
+  // directions and hundreds of squares to walk in can still be unable to LEAVE, because
+  // the region it can reach contains no exit — and every route out is then correctly
+  // refused, for ever, by planners doing their job. JayB spent a day in a 340-square
+  // pocket of room 50 one square from an exit whose step was refused. See
+  // `pocket_has_exit`. Blink is the same cure and it was never offered.
+  { goal: 'unwedge', when: ws => (ws.entombed === true || ws.pocket_has_exit === false)
+                                 && ws.has_mana === true
                                  && ws.can_pay_blink !== false },
   // FLEE first: if an out-of-band mob is IN REACH (actually threatening us), run before
   // anything else. The old condition fired on ANY out-of-band target (has_target &&

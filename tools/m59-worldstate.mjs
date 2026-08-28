@@ -667,6 +667,42 @@ export const SYMBOLS = {
     },
   },
 
+  pocket_has_exit: {
+    describe: 'at least one of this room\'s exits can actually be walked to from here',
+    whenUnknown: true,
+    why_unknown: 'never declare a character trapped on missing information — blink is one-way and costs mana',
+    // TRAPPED IS NOT THE SAME AS ENTOMBED, AND ONLY ONE OF THEM WAS NAMED.
+    //
+    // `entombed` means the body cannot take a single step. A character can fail to be
+    // entombed — eight directions open, hundreds of squares to walk in — and still be
+    // unable to LEAVE, because the region it can reach contains no exit.
+    //
+    // JayB, 2026-08-28, room 50 at (2,48): a 340-square pocket of a 2,898-square room,
+    // spanning cols 1-14 and rows 1-48. All twelve exit staging squares lie outside it.
+    // The nearest, the Graveyard's (2,49), is ONE ROW south; both squares are `standable`
+    // and `fineWalkable`, and `moverStepLands` refuses the step between them. He walked
+    // 938,856 side-steps against that wall.
+    //
+    // No routing fix reaches this: every route out is correctly refused because there is
+    // no way out. The cure is the one the keeper already owns for being stuck — blink —
+    // and it was never offered because nothing asked this question.
+    produce: ({ session }) => {
+      const router = session?._router;
+      const geo = session?.world?.geometry;
+      const me = session?.client?.self;
+      if (!router?._fineReachableSet || !geo || !me || me.col == null) return null;
+      let exits = null;
+      try { exits = session?.world?.exits?.(); } catch { return null; }
+      if (!Array.isArray(exits) || !exits.length) return null;
+      const staged = exits.filter(e => e?.stand_on?.col != null);
+      if (!staged.length) return null;
+      let reach = null;
+      try { reach = router._fineReachableSet(geo, me.col, me.row); } catch { return null; }
+      if (!reach || !reach.size) return null;
+      return staged.some(e => reach.has(`${e.stand_on.col},${e.stand_on.row}`));
+    },
+  },
+
   in_hunt_room: {
     describe: 'the character is standing in the room it should be hunting in',
     whenUnknown: true,
@@ -724,6 +760,28 @@ export const SYMBOLS = {
         if (!reach || !reach.size) return null;      // no answer is not a refusal
         return reach.has(`${stand.col},${stand.row}`);
       } catch { return null; }
+    },
+  },
+
+  can_pay_create_weapon: {
+    describe: 'mana covers create weapon\'s price, so the server will not refuse the cast',
+    whenUnknown: true,
+    why_unknown: 'an unreadable mana bar must not stop an empty-handed character trying to arm itself',
+    // THE GENERIC CAST FLOOR IS `create food`'s PRICE, AND THIS SPELL COSTS MORE.
+    //
+    // `groundedCasts` gives every spell `pre: ['has_mana']`, and `has_mana` is
+    // MIN_CAST_MANA = 10 — the price of `create food`, the only cost the wire carries.
+    // `create weapon` is viMana = 15 (creaweap.kod:41). So between 10 and 14 mana the
+    // planner plans a conjure, the server refuses it with a SENTENCE rather than an error
+    // (spell.kod:604), nothing is spent and nothing is learned, and the next tick plans it
+    // again. Exactly the shape already fixed for blink; the spell table simply never
+    // carried the costs.
+    //
+    // It needs no reagents — `plReagents = $` — so mana is the whole of its price.
+    produce: ({ client }) => {
+      const m = client?.vitals?.()?.mana?.value;
+      if (m == null) return null;
+      return m >= CREATE_WEAPON_MANA;
     },
   },
 

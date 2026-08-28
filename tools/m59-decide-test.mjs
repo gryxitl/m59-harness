@@ -696,5 +696,32 @@ console.log('\na cast holds the character still, because the tick loop is what b
      SYMBOLS.in_hunt_room.whenUnknown === true);
 }
 
+// NEVER PLAN A CAST YOU CANNOT PAY FOR.
+//
+// `groundedCasts` gives every spell `pre: ['has_mana']`, and `has_mana` is MIN_CAST_MANA =
+// 10 — the price of `create food`, the only cost the wire carries. `create weapon` is
+// viMana = 15 (creaweap.kod:41). Between 10 and 14 mana the planner planned a conjure the
+// server refuses with a SENTENCE rather than an error, so nothing was spent, nothing was
+// learned, and the next tick planned it again. The same shape already fixed for blink.
+//
+// It needs no reagents — `plReagents = $` — so mana is the whole of its price, unlike
+// `create food`, which is correctly gated on `has_reagents`.
+{
+  const pay = SYMBOLS.can_pay_create_weapon.produce;
+  const at = (m) => ({ client: { vitals: () => ({ mana: { value: m } }) } });
+  ok('14 mana cannot pay for a 15-mana conjure', pay(at(14)) === false);
+  ok('15 can', pay(at(15)) === true);
+  ok('an unreadable bar abstains rather than blocking',
+     pay({ client: { vitals: () => ({}) } }) === null);
+  ok('...and abstaining must not strand an empty-handed character',
+     SYMBOLS.can_pay_create_weapon.whenUnknown === true);
+
+  const csrc = readFileSync(new URL('./m59-act/cast.mjs', import.meta.url), 'utf8');
+  ok('the spell table carries the price as a precondition',
+     /'create weapon': \{ pre: \['can_pay_create_weapon'\]/.test(csrc));
+  ok('and create food is still gated on its reagents, which it does need',
+     /'create food':  \{ pre: \['has_reagents'\]/.test(csrc));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

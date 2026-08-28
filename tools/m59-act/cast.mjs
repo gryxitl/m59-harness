@@ -116,5 +116,9 @@ export function groundedCasts(client, table = SPELL_EFFECTS) {
 // per-character minimum of the pair and never the sum.
 export const SPELL_EFFECTS = {
   'create food':  { pre: ['has_reagents'], effects: ['has_food', '!has_reagents'] },
-  'create weapon': { pre: [], effects: ['armed'] },
+  // PER-SPELL PRICES, because the generic `has_mana` floor is `create food`'s 10 and
+  // these cost more. A spell planned below its own price is refused by a SENTENCE, not an
+  // error, so nothing is spent and nothing is learned and the next tick tries again.
+  // creaweap.kod:41 viMana = 15; it needs no reagents (plReagents = $).
+  'create weapon': { pre: ['can_pay_create_weapon'], effects: ['armed'] },
 };
