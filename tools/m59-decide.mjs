@@ -2217,7 +2217,12 @@ export const DEFAULT_GOALS = [
   // between them there is no state where the answer is "sit down and take it".
   { goal: 'healthy',  when: ws => (ws.hurt === true || ws._still_recovering === true)
                                   && ws.has_target !== true
-                                  && ws.under_attack !== true },
+                                  && ws.under_attack !== true
+                                  // Same reason as `vigor_low` below: `has_target` and
+                                  // `under_attack` both go false a couple of squares into an
+                                  // escape, and the latch would otherwise stop the character
+                                  // there. A flee finishes before anybody sits down.
+                                  && ws.fleeing !== true },
   // Rest when vigor is low. Vigor IS health regeneration —
   // keeping it high keeps HP topping up. Rest below 60 to
   // maintain a buffer, but this is lower priority than
@@ -2226,6 +2231,19 @@ export const DEFAULT_GOALS = [
   { goal: 'vigor_low', when: ws => {
       const v = ws._vigor;
       if (v == null || ws.in_reach === true) return false;
+      // AND NEVER SIT DOWN IN THE MIDDLE OF AN ESCAPE.
+      //
+      // `in_reach` goes false as soon as the character has put a couple of squares between
+      // itself and the thing it is running from — which is exactly when a flee is least
+      // finished. Before the latch this rarely mattered, because vigor climbed past the
+      // trigger and the goal stopped matching; the latch holds it on all the way to 80, so
+      // it started winning the tick mid-flight.
+      //
+      // Sasquatch, 2026-08-27, room 583: `flee_danger -> travel (flee to room 593)` then
+      // `vigor_low -> rest` two ticks later, sitting down in the open with a soldier of the
+      // Princess' army in the room. Observed from outside as "ran a couple of steps away
+      // from a rat and then stopped moving". That is this line missing.
+      if (ws.fleeing === true) return false;
       // Latched: enter below the trigger, stay until the rest ceiling. See the note where
       // `_vigor_recovering` is maintained.
       return v < VIGOR_REST_BELOW || ws._vigor_recovering === true;

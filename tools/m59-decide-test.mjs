@@ -510,5 +510,42 @@ console.log('\na cast holds the character still, because the tick loop is what b
      !/^\s*ws\.target_in_band\s*=\s*true\s*;/m.test(code));
 }
 
+// NOBODY SITS DOWN IN THE MIDDLE OF AN ESCAPE.
+//
+// `in_reach`, `has_target` and `under_attack` all go false a couple of squares into a flee
+// — which is exactly when the flee is least finished. Before the rest latches this rarely
+// mattered, because the vital climbed past its trigger and the goal stopped matching. The
+// latches hold the goal on all the way to the ceiling, so they started winning the tick
+// mid-flight.
+//
+// Sasquatch, 2026-08-27, room 583: `flee_danger -> travel (flee to room 593)` and then
+// `vigor_low -> rest` two ticks later, sitting down in the open with a soldier of the
+// Princess' army in the room. Seen from outside as "ran a couple of steps away from a rat
+// and then stopped moving".
+{
+  const v = DEFAULT_GOALS.find(g => g.goal === 'vigor_low');
+  const h = DEFAULT_GOALS.find(g => g.goal === 'healthy');
+  const fleeing = (extra) => ({ in_reach: false, has_target: false, under_attack: false,
+                                fleeing: true, ...extra });
+  const settled = (extra) => ({ ...fleeing(extra), fleeing: false });
+
+  ok('vigor_low does not rest mid-escape',
+     v.when(fleeing({ _vigor: 45, _vigor_recovering: true })) === false);
+  ok('healthy does not rest mid-escape',
+     h.when(fleeing({ hurt: true, _still_recovering: true })) === false);
+
+  ok('vigor_low rests once the flee is over',
+     v.when(settled({ _vigor: 45, _vigor_recovering: true })) === true);
+  ok('healthy rests once the flee is over',
+     h.when(settled({ hurt: true, _still_recovering: true })) === true);
+
+  // The escape itself still outranks both, so this is belt and braces rather than the
+  // only thing keeping a fleeing character moving.
+  const order = DEFAULT_GOALS.map(g => g.goal);
+  ok('flee_danger is ranked above both rest goals',
+     order.indexOf('flee_danger') < order.indexOf('healthy')
+     && order.indexOf('flee_danger') < order.indexOf('vigor_low'));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
