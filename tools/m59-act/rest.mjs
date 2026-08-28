@@ -70,7 +70,24 @@ export async function rest(client, session, { waitMs = 400 } = {}) {
 }
 
 rest.pre     = [];
-rest.effects = ['healthy', 'can_rest_higher', 'vigor_rested'];  // resting heals and restores vigor to the rest cap
+// WAITING IS HOW AN UNAFFORDABLE SPELL BECOMES AFFORDABLE.
+//
+// Mana is NOT restored by resting — `ManaTimer` (player.kod:2664) gains one point per
+// tick on its own clock whether the character rests, walks or fights. But resting is the
+// SAFE way to let that clock run, and it is the only action that does nothing else, so in
+// planning terms it is how a character waits.
+//
+// Declaring the mana preconditions as effects is what lets A* chain "wait, then cast": a
+// character holding `create weapon` at 11 of 25 mana now plans [rest, cast create weapon]
+// instead of having the goal silently decline because it cannot pay today. Same for the
+// blink an entombed or pocketed character needs.
+//
+// The effects are honest about direction, not about mechanism: resting does not CAUSE
+// mana, it is the action during which mana arrives. Nothing downstream cares which, and
+// the alternative — a planner that cannot express waiting — is how a character with a
+// spell it will be able to afford in twenty seconds does nothing at all.
+rest.effects = ['healthy', 'can_rest_higher', 'vigor_rested',
+                'has_mana', 'can_pay_create_weapon', 'can_pay_blink'];
 rest.atomic  = 'rest';
 
 export async function stand(client, session, { waitMs = 400 } = {}) {

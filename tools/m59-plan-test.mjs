@@ -64,8 +64,17 @@ console.log('\nAND THE PLANS IT REFUSES — each is a rule that cannot be outbid
                                         { id: 2, name: 'elderberry', amount: 1 }] }),
              { vigor_ok: true }) === null);
 
-  // 3. Mana is a precondition, so no amount of wanting the goal invents it.
-  ok('no mana, no plan', namesOf(hungryCaster({ mana: 2 }), { vigor_ok: true }) === null);
+  // 3. Mana is a precondition — but an unaffordable spell is a reason to WAIT, not to
+  //    give up. `rest` declares the mana preconditions it lets time satisfy (mana arrives
+  //    on its own timer, player.kod:2664, and resting is the safe way to let that clock
+  //    run), so a hungry caster short of mana now plans to wait and then cast rather than
+  //    producing nothing and going hungry beside its own reagents.
+  //
+  //    The reagent case above is different and still plans NOTHING: no amount of waiting
+  //    turns 94 herbs and 1 elderberry into a casting, because the shortage is not time.
+  ok('no mana is a reason to wait, not to give up',
+     namesOf(hungryCaster({ mana: 2 }), { vigor_ok: true })
+       === 'rest -> cast create food -> eat');
 
   // 4. THE ENGAGEMENT CEILING. attack.pre carries target_in_band, so a planner
   //    asked to remove a faction soldier CANNOT produce a swing at it. This is the
@@ -204,8 +213,8 @@ console.log('\nthe action set is what the character HAS, not what exists');
      JSON.stringify(plan(mk([], cw, 21))) === JSON.stringify(['cast create weapon']));
   ok('and empty-handed with no spell and no money has no plan at all -- fists',
      plan(mk([], [], 21)) === null);
-  ok('the conjure is still gated on being able to pay for it',
-     plan(mk([], cw, 3)) === null);
+  ok('a caster short of mana waits for it rather than giving up',
+     JSON.stringify(plan(mk([], cw, 3))) === JSON.stringify(['rest', 'cast create weapon']));
 }
 
 // NOTHING COULD REACH A SHOP, SO EVERY PLAN THAT NEEDED ONE WAS UNREACHABLE.
@@ -243,6 +252,11 @@ console.log('\nthe action set is what the character HAS, not what exists');
        === JSON.stringify(['cast create weapon']));
   ok('and with no money, no spell and nothing to sell there is still no plan -- fists',
      plan(mk([], [])) === null);
+  // WAITING IS A PLAN. A caster short of mana used to produce nothing here, which meant
+  // punching things while the mana it needed arrived on its own clock. `rest` now declares
+  // the mana preconditions it lets time satisfy, so the answer is "wait, then conjure".
+  // A character with NO create weapon still gets nothing and still fights with its fists,
+  // which is the case CLAUDE.md protects: it is the only way one ever earns a weapon.
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

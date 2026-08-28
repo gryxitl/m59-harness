@@ -12,6 +12,8 @@ import { makeDecider, intend, INTENTS, DEFAULT_GOALS,
          VIGOR_REST_BELOW, VIGOR_REST_CEILING,
          creatureLevelOf, levelInBand } from './m59-decide.mjs';
 import { readFileSync } from 'node:fs';
+import { evaluate } from './m59-worldstate.mjs';
+import { planFor } from './m59-plan.mjs';
 import { SYMBOLS } from './m59-worldstate.mjs';
 import { Actuator, TickLoop } from './m59-tick.mjs';
 
@@ -721,6 +723,47 @@ console.log('\na cast holds the character still, because the tick loop is what b
      /'create weapon': \{ pre: \['can_pay_create_weapon'\]/.test(csrc));
   ok('and create food is still gated on its reagents, which it does need',
      /'create food':  \{ pre: \['has_reagents'\]/.test(csrc));
+}
+
+// A SPELL YOU CANNOT AFFORD YET IS A REASON TO WAIT, NOT A REASON TO GIVE UP.
+//
+// Gating a cast on its real price (previous commit) stops a character asking for a spell
+// the server will refuse. On its own that is only half an answer: a character holding
+// `create weapon` at 11 of 25 mana would simply decline to arm, for ever, while the mana
+// it needed arrived on its own.
+//
+// Mana is NOT restored by resting — `ManaTimer` (player.kod:2664) gains a point per tick
+// whether the character rests, walks or fights. Resting is the SAFE way to let that clock
+// run, and the only action that does nothing else, so in planning terms it is how a
+// character waits. Declaring the mana preconditions as rest's effects is what lets A*
+// chain "wait, then cast".
+{
+  const mk = (mana) => ({
+    inventory: [], inventoryKnown: true,
+    spells: [{ name: 'create weapon' }, { name: 'blink' }],
+    equipment: () => ({ known: true, equipped: [] }),
+    vitals: () => ({ health: { value: 20, max: 20 }, mana: { value: mana, max: 25 },
+                     vigor: { value: 150 } }),
+    room: { num: 50, objects: new Map() } });
+  const plan = (mana, goal) => {
+    const c = mk(mana);
+    const ws = evaluate({ client: c, policy: {}, session: { world: { room: { num: 50 } } } });
+    const p = planFor(c, goal, { session: { world: { room: { num: 50 } } }, policy: {}, ws });
+    return p.found ? p.names : null;
+  };
+
+  ok('with the mana in hand it just casts',
+     JSON.stringify(plan(25, { armed: true })) === JSON.stringify(['cast create weapon']));
+  ok('short of the price it waits and then casts',
+     JSON.stringify(plan(11, { armed: true })) === JSON.stringify(['rest', 'cast create weapon']));
+  ok('and from nearly empty, the same plan',
+     JSON.stringify(plan(2, { armed: true })) === JSON.stringify(['rest', 'cast create weapon']));
+
+  const rsrc = readFileSync(new URL('./m59-act/rest.mjs', import.meta.url), 'utf8');
+  ok('rest declares the mana preconditions it lets time satisfy',
+     /can_pay_create_weapon/.test(rsrc) && /can_pay_blink/.test(rsrc));
+  ok('...and still declares what it genuinely restores',
+     /'healthy'/.test(rsrc) && /'vigor_rested'/.test(rsrc));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
