@@ -667,6 +667,43 @@ export const SYMBOLS = {
     },
   },
 
+  route_reachable: {
+    describe: 'the current leg\'s staging square can actually be walked to from here',
+    whenUnknown: true,
+    why_unknown: 'without geometry or a leg there is nothing to refuse, and refusing to travel on no information strands a character',
+    // THE FACT THAT MAKES A TRAVEL IMPOSSIBLE, WHICH NOTHING WAS CONSULTING.
+    //
+    // A leg stages on a square chosen from the room's exit table. That square is
+    // sometimes not in the pocket the body is standing in — room 50 offers exactly one
+    // exit to 586, staging on (3,57), and JayB was in a 340-square region that does not
+    // contain it. `geo.path(collision)` answers `found: false` and every planner
+    // correctly refuses, so the travel action ran for ever and achieved nothing:
+    // 231,626 ticks, 358,787 blocked steps, 938,856 side-steps, ARRIVED ZERO, across
+    // seven hours with `stalled_count: 0` on the board.
+    //
+    // In GOAP an action that cannot work should be UNPLANNABLE rather than merely
+    // unsuccessful — then the goal yields on its own and the ladder falls to something
+    // that does work, which at the bottom is always resting. This is that precondition.
+    // See docs/m59-goap-repayment.md.
+    //
+    // It reuses the router's own cached reachable set, so it costs nothing that was not
+    // already being computed for the exit sort.
+    produce: ({ session }) => {
+      const router = session?._router;
+      const leg = router?.leg;
+      const stand = leg?.standOn;
+      if (!router || !leg || !stand || stand.col == null) return null;   // nothing to judge
+      const geo = session?.world?.geometry;
+      const me = session?.client?.self;
+      if (!geo || !me || me.col == null) return null;
+      try {
+        const reach = router._fineReachableSet(geo, me.col, me.row);
+        if (!reach || !reach.size) return null;      // no answer is not a refusal
+        return reach.has(`${stand.col},${stand.row}`);
+      } catch { return null; }
+    },
+  },
+
   can_arm: {
     describe: 'a weapon can be had: one in the pack, money to buy one, or the mana to conjure one',
     whenUnknown: true,

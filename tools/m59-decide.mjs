@@ -2122,6 +2122,30 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       }
       // If the router already has a destination, let it travel.
       if (router?.dest != null) {
+        // YIELD RATHER THAN RE-ISSUE AN IMPOSSIBLE TRAVEL.
+        //
+        // `route_reachable` is false only on a positive finding that the leg's staging
+        // square is outside the region the body can walk in. Continuing to steer at it is
+        // the livelock this whole plan exists to remove: the goal keeps succeeding at
+        // sending a packet and never achieves anything, and because `hunt` holds the tick
+        // nothing below it — resting included — ever runs.
+        //
+        // Returning WITHOUT deciding lets the ladder fall to the next goal on this very
+        // tick, which is the GOAP-shaped answer: an unachievable goal simply is not the
+        // one we act on. The router's own oscillation breaker still condemns the square
+        // and re-plans; this only stops us walking into it in the meantime.
+        if (ws.route_reachable === false) {
+          // DROP THE LEG, DO NOT STEER AT IT. Clearing it makes the router re-plan on the
+          // next tick — choosing a different staging square, or, once its breaker has
+          // condemned them all twice, routing around the hop entirely. Until then the
+          // ladder gets the tick, and the bottom of the ladder is resting, so there is
+          // always something to do.
+          try { router.leg = null; router._committedAim = null; } catch { /* best effort */ }
+          onDecision?.({ ticks, goal: 'hunt', action: null, sent: false,
+            what: 'leg staging square is unreachable — dropped it and yielded',
+            why: 'route_reachable=false' });
+          return;
+        }
         const r = routeIntent(router)(frame, act);
         onDecision?.({ ticks, goal: 'hunt', action: 'travel',
           what: r.what ?? r.why, sent: r.sent, why: r.why ?? null });
@@ -2135,6 +2159,15 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     if (!active) { onDecision?.({ ticks, goal: null, why: 'nothing to do' }); return; }
 
     // 3. PLAN. Synchronous A* over an action set built from what this character has.
+    // The floor of the ladder: rest. Handled here rather than planned, because it has no
+    // precondition to satisfy and asking A* to rediscover "rest" every tick is waste.
+    if (active.goal === 'idle_rest') {
+      const r = intend('rest', frame, act, { client, session, ws });
+      note(active.goal, r.sent);
+      onDecision?.({ ticks, goal: 'idle_rest', action: 'rest', sent: r.sent,
+        what: r.what ?? 'nothing else applies — resting', why: r.why ?? null });
+      return;
+    }
     const p = planFor(client, { [active.goal]: true }, { session, policy, ws });
     const first = p.found ? (p.names?.[0] ?? null) : null;
 
@@ -2401,8 +2434,32 @@ export const DEFAULT_GOALS = [
   // combat, not while idle. If vigor is truly too low to fight, the
   // _fight goal's vigor_floor check prevents engagement, and vigor_low
   // (above) handles resting. Eating while idle just delays the hunt.
-  { goal: 'hunt',     when: ws => ws.has_target === false || ws.target_in_band === false },
+  // AN UNACHIEVABLE GOAL IS NOT THE ONE WE ACT ON. `route_reachable` is false only on a
+  // positive finding that the leg's staging square lies outside the region the body can
+  // walk in; while that holds, hunting cannot make progress and holding the tick for it
+  // starves everything below — including resting, which always works. See
+  // docs/m59-goap-repayment.md. The handler drops the stale leg, after which this reads
+  // null (no leg) and hunting is available again on the next plan.
+  { goal: 'hunt',     when: ws => (ws.has_target === false || ws.target_in_band === false)
+                                 && ws.route_reachable !== false },
   { goal: 'vigor_ok', when: ws => ws.vigor_ok === false && ws.has_food === true
                                  && ws.has_target !== true },
   { goal: 'has_food', when: ws => ws.has_food === false && ws.has_reagents === true },
+  // THE FLOOR. THERE IS ALWAYS SOMETHING TO DO, EVEN IF IT IS RESTING.
+  //
+  // Every goal above this one can decline: hurt but with a target, hunting but with an
+  // unreachable route, wanting food with no reagents. When they all decline the ladder
+  // used to run out and the character did NOTHING — `onDecision({ goal: null, why:
+  // 'nothing to do' })` — which is the same outcome as a stall and, from outside,
+  // indistinguishable from one.
+  //
+  // Resting is never wrong when nothing else applies: it converts idle time into health
+  // and vigor, both of which everything above needs. Gated only on the two things that
+  // make sitting down dangerous, which are the same gates `healthy` uses; if either
+  // holds, a goal far above this one has already claimed the tick.
+  //
+  // This is what makes the GOAP repayment safe: a goal that becomes unplannable can
+  // simply decline, because something below it always accepts. See
+  // docs/m59-goap-repayment.md.
+  { goal: 'idle_rest', when: ws => ws.has_target !== true && ws.under_attack !== true },
 ];

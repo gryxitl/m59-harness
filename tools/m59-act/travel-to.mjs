@@ -62,7 +62,14 @@ export default function travelTo(client, session, opts = {}) {
 // plan travel_to when at_shop (or whatever the destination symbol is)
 // is false. We don't have a generic "at_room_N" symbol, so the pre is
 // empty and the planner's goal determines when travel is planned.
-travelTo.pre = [];
+// AN ACTION THAT CANNOT WORK MUST BE UNPLANNABLE, NOT MERELY UNSUCCESSFUL.
+//
+// With no precondition the planner would always offer a travel, so a leg staged on a
+// square the body cannot reach was re-issued for ever — JayB, room 50, 231,626 ticks and
+// zero arrivals. `route_reachable` abstains (null -> true) when there is no leg, no
+// geometry or no answer, so this only ever refuses on a POSITIVE finding that the staging
+// square is outside the reachable set. See docs/m59-goap-repayment.md, phase 1.
+travelTo.pre = ['route_reachable'];
 
 // Effect: optimistically, we are now at the destination. This is wrong
 // most of the time (one hop is not the whole route), but it gives the

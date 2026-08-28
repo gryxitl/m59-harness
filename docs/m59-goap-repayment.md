@@ -60,12 +60,22 @@ thing holding the fleet up. Keep it, do not rely on it.
 
 The facts that make an action impossible already exist and are not consulted.
 
-- [ ] `route_reachable` — the current leg's `standOn` is in the fine-reachable set from
-      where the body stands. Sourced from the same BFS `_planLeg` already runs for its
-      candidate sort, so no new cost.
-- [ ] `travel.pre` gains it, so a leg to an unreachable staging square is unplannable.
-- [ ] `hunt` yields when travel is unplannable, instead of re-issuing it.
-- [ ] Verify against JayB's exact position: (2,48) in room 50 with `standOn (3,57)`.
+- [x] `route_reachable` — the current leg's `standOn` is in the fine-reachable set from
+      where the body stands. Reuses the router's cached BFS, so no new cost. Abstains
+      (null) with no leg, no geometry or no answer, so it only ever refuses on a positive
+      finding.
+- [x] `travel.pre` gains it, so a leg to an unreachable staging square is unplannable.
+- [x] `hunt` declines while the fact holds, and DROPS the stale leg so the router
+      re-plans rather than steering at it again.
+- [x] **A floor: `idle_rest`.** Found while doing this — the goals below `hunt` were only
+      `vigor_ok` and `has_food`, so a healthy character with an unreachable route matched
+      NOTHING and idled, which is indistinguishable from the stall being fixed. Declining
+      is only safe if something always accepts. `idle_rest` is last, always available,
+      gated on the same two things `healthy` uses.
+- [x] Verified: (2,48) in room 50 with `standOn (3,57)` now yields to `idle_rest`.
+
+**Phase 1 done, 2026-08-28.** +14 assertions in m59-decide-test. unattended (55) and
+travelling (90) stayed green, so the boundary is intact.
 
 **Done when:** a character whose route is impossible rests instead of side-stepping, and
 the goal below `hunt` gets the tick. No new timers, no failure counting.
@@ -130,4 +140,8 @@ Not by kills, which move for many reasons. By these:
 
 ## Log
 
-- 2026-08-28 — opened. Phase 1 starting.
+- 2026-08-28 — opened.
+- 2026-08-28 — phase 1 landed. The floor (`idle_rest`) was not in the original plan and
+  turned out to be the load-bearing half: without something that always accepts, making a
+  goal decline just moves the stall one rung down. Worth remembering for phases 2 and 3 —
+  every goal made declinable needs the floor underneath it, and the floor is now there.

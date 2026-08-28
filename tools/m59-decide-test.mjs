@@ -585,5 +585,62 @@ console.log('\na cast holds the character still, because the tick loop is what b
      !cands.some(c => c.col === merchant.col && c.row === merchant.row));
 }
 
+// PHASE 1 OF THE GOAP REPAYMENT: AN UNACHIEVABLE GOAL DECLINES, AND SOMETHING ALWAYS
+// ACCEPTS.
+//
+// The decider is a priority ladder with one planFor call site and nine hand-written
+// goals. A handler has no precondition and no plan, so `hunt` re-issued a travel to a
+// staging square the body could not reach — JayB, room 50 at (2,48), 231,626 ticks,
+// 358,787 blocked steps, 938,856 side-steps, ARRIVED ZERO, over seven hours, with
+// `stalled_count: 0` on the board. See docs/m59-goap-repayment.md.
+{
+  const pick = (ws) => (DEFAULT_GOALS.find(g => g.when(ws)) ?? { goal: null }).goal;
+  const healthy = { has_target: false, under_attack: false, hurt: false,
+                    _vigor: 150, has_food: true, vigor_ok: true };
+
+  // The precondition itself.
+  const rr = SYMBOLS.route_reachable.produce;
+  const sess = (set, stand = { col: 3, row: 57 }) => ({ session: {
+    _router: { leg: { standOn: stand }, _fineReachableSet: () => set },
+    world: { geometry: {} }, client: { self: { col: 2, row: 48 } } } });
+  ok('a reachable staging square answers true', rr(sess(new Set(['2,48', '3,57']))) === true);
+  ok('an unreachable one answers false', rr(sess(new Set(['2,48', '2,47']))) === false);
+  ok('an empty reachable set abstains rather than refusing',
+     rr(sess(new Set())) === null);
+  ok('and no leg at all abstains',
+     SYMBOLS.route_reachable.produce({ session: { _router: {} } }) === null);
+  ok('an unreadable answer must not strand anybody',
+     SYMBOLS.route_reachable.whenUnknown === true);
+
+  // The goal declines while the fact holds.
+  ok('hunt declines when the staging square is unreachable',
+     pick({ ...healthy, route_reachable: false }) === 'idle_rest');
+  ok('...and hunts normally when it is reachable',
+     pick({ ...healthy, route_reachable: true }) === 'hunt');
+  ok('...and hunts when the answer is unknown',
+     pick({ ...healthy, route_reachable: null }) === 'hunt');
+
+  // THE FLOOR. This is the property that makes declining safe.
+  ok('the ladder ends in something that always accepts',
+     DEFAULT_GOALS[DEFAULT_GOALS.length - 1].goal === 'idle_rest');
+  ok('a character with nothing else to do rests', pick(healthy) !== null);
+  ok('the floor still stands aside for a target',
+     pick({ ...healthy, has_target: true, target_in_band: true }) === '_fight');
+  ok('and for an attack', pick({ ...healthy, under_attack: true, has_target: true,
+                                 in_reach: true, target_in_band: false }) === 'flee_danger');
+
+  // Survival still outranks everything, which the plan says must not change.
+  const order = DEFAULT_GOALS.map(g => g.goal);
+  ok('survival still outranks work',
+     order.indexOf('flee_danger') < order.indexOf('hunt')
+     && order.indexOf('healthy') < order.indexOf('hunt')
+     && order.indexOf('idle_rest') === order.length - 1);
+
+  // travel_to is now unplannable without the precondition.
+  const src = readFileSync(new URL('./m59-act/travel-to.mjs', import.meta.url), 'utf8');
+  ok('travelTo declares route_reachable as a precondition',
+     /travelTo\.pre = \['route_reachable'\]/.test(src));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
