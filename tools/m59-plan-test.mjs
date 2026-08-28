@@ -16,6 +16,7 @@ import { fakeClient, fakeSession } from './m59-fake-client.mjs';
 import { evaluate } from './m59-worldstate.mjs';
 import { planFor, actionsFor, stepPlan } from './m59-plan.mjs';
 import { plan as astar } from './m59-goap-planner.mjs';
+import { Action } from './m59-bt.mjs';
 
 let pass = 0, fail = 0;
 const ok = (name, cond, extra = '') => {
@@ -257,6 +258,41 @@ console.log('\nthe action set is what the character HAS, not what exists');
   // the mana preconditions it lets time satisfy, so the answer is "wait, then conjure".
   // A character with NO create weapon still gets nothing and still fights with its fists,
   // which is the case CLAUDE.md protects: it is the only way one ever earns a weapon.
+}
+
+// COST-ORDERING: when two actions both achieve `can_leave` -- `cast blink` (cost 1.05)
+// and `escape_pocket` (cost 20) -- the cheaper one must be planned. The bug: astar used
+// to return the moment a GOAL-MATCHING action was seen in its inner loop, so the result
+// was "the first one tried", not "the cheapest". Re-ordering the fixture so the cheap
+// cure comes first would hide the bug -- that is why assertion r1 puts the expensive
+// cure first, forcing a fix to be by cost (pop order), not by array position.
+{
+  const mk = (k) => new Action(() => 'SUCCESS', { key: k, name: k });
+  const castBlink = (node) => ({ pre: ['has_mana', 'entombed', 'can_pay_blink'],
+                                    effects: ['!has_mana', 'can_leave'],
+                                    cost: 1.05, node });
+  const escapePocket = (node) => ({ pre: [], effects: ['can_leave'], cost: 20, node });
+  const ws = { has_mana: true, entombed: true, can_pay_blink: true, can_leave: false };
+
+  const cheap = mk('cast_blink'), dear = mk('escape_pocket');
+
+  // THE BUG'S FIRING POSITION. Escape first -- the old planner returned here regardless
+  // of cost. The cost-ordered fix pops by f = g + h, so the cheap cure wins.
+  const r1 = astar([escapePocket(dear), castBlink(cheap)], ws, { can_leave: true });
+  ok('entombed + affordable, cheaper listed last: blink still wins by cost',
+     r1.found && r1.steps.length === 1 && r1.steps[0] === cheap,
+     r1.found === false ? r1.reason : ('picked ' + (r1.steps[0]?.key ?? 'none')));
+
+  // Regression-safety: the other order. Must still pick cheap.
+  const r2 = astar([castBlink(cheap), escapePocket(dear)], ws, { can_leave: true });
+  ok('entombed + affordable, cheaper listed first: cheap still wins',
+     r2.found && r2.steps.length === 1 && r2.steps[0] === cheap);
+
+  // When cheap is unpayable (can_pay_blink) the expensive one is the only answer.
+  const ws2 = { has_mana: true, entombed: true, can_pay_blink: false, can_leave: false };
+  const r3 = astar([castBlink(cheap), escapePocket(dear)], ws2, { can_leave: true });
+  ok('entombed, blink unpayable: escape is planned (the only cure)',
+     r3.found && r3.steps[0] === dear);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

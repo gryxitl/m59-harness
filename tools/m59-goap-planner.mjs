@@ -103,6 +103,18 @@ export function plan(actions, initialWs, goal, { maxNodes = 4000 } = {}) {
     const cur = open.shift();
     explored++;
 
+    // THE MIN-F HEAP CAM IT THE GOAL REACHED, so this is its g. The outer
+    // while loop popped nodes by f = g + h and every node it's already popped
+    // was at least as good as any node still open, so the FIRST POP that
+    // satisfies the goal is the cheapest satisfying path. This is what
+    // "greedy to a random neighbour first" in the inner loop used to get
+    // wrong: it returned at the moment a GOAL-MATCHING action was seen, which
+    // made the result depend on the order the caller happened to pass the
+    // actions in, not on their cost. Reported for the entombed+affordable
+    // case where `cast blink` and `escape_pocket` both cure `can_leave` and
+    // the two costs differ by 19x.
+    if (satisfies(cur.ws, goal)) return { found: true, steps: cur.steps };
+
     const key = wsKey(cur.ws, relevantKeys);
     const best = visited.get(key);
     if (best !== undefined && best <= cur.g) continue;
@@ -117,8 +129,10 @@ export function plan(actions, initialWs, goal, { maxNodes = 4000 } = {}) {
       const h       = heuristic(nextWs);
       const steps   = [...cur.steps, action.node];
 
-      if (satisfies(nextWs, goal)) return { found: true, steps };
-
+      // NO EARLY RETURN HERE. The action may be the only g-1 or g+10 one that
+      // satisfies, and the cheapest satisfying one is the one the POP ORDER says
+      // will land next. Pushing keeps that order, and the check above returns
+      // at the right moment.
       const prevBest = visited.get(nextKey);
       if (prevBest !== undefined && prevBest <= g) continue;
 
