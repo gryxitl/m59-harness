@@ -1916,39 +1916,19 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     }
 
     // 2a0. ENTOMBED: blink, the only thing that moves a body out of geometry.
-    if (active?.goal === 'unwedge') {
-      const spell = knownSpells(client).find(sp => /^blink$/i.test(String(sp.name)));
-      if (!spell) {
-        onDecision?.({ ticks, goal: 'unwedge', action: null,
-          why: 'entombed and does not know blink — needs an operator, or a logoff' });
-        note(active.goal, false);
-        return;
-      }
-      // A BLINK TAKES ABOUT TEN SECONDS. ASKING TEN TIMES A SECOND IS NOT ASKING HARDER.
-      //
-      // This re-issued the cast on every tick. Casts are urgent in the pacer — they jump the
-      // queue and are never shed — so they were the one kind that could grow without bound:
-      // Lee, entombed in the Deep Forest of Farol, had 1,791 blinks queued with the oldest
-      // THREE MINUTES old, produced at 9.67/s against 1/s sent. Every one of them was
-      // superseded before it was sent, and the few that went out interrupted each other, so
-      // the character never actually blinked and never got out.
-      //
-      // Wait for the cast to have had its chance before asking again. The keeper is not idle
-      // meanwhile: it is entombed, so standing still IS the correct behaviour.
-      const sinceCast = now() - (session._blinkCastAt ?? 0);
-      if (sinceCast < BLINK_CAST_MS) {
-        onDecision?.({ ticks, goal: 'unwedge', action: null, sent: false,
-          what: `blinking out (cast in flight, ${Math.round((BLINK_CAST_MS - sinceCast) / 1000)}s)` });
-        note(active.goal, true);
-        return;
-      }
-      session._blinkCastAt = now();
-      const r = intend('cast blink', frame, act, { client, session, ws, policy });
-      note(active.goal, r.sent);
-      onDecision?.({ ticks, goal: 'unwedge', action: 'cast blink', sent: r.sent,
-        what: 'entombed — blinking out', why: r.why ?? null });
-      return;
-    }
+    // THE UNWEDGE HANDLER IS GONE — the planner owns this now.
+    //
+    // It cast blink unconditionally, because it was written when `entombed` was the only
+    // way to be stuck. Blink asks the ROOM to relocate the body (blink.kod:21, "a central
+    // location in the room") and therefore cures being wedged in geometry and NOT being
+    // trapped in a pocket, where that central location is inside the pocket. JayB spent a
+    // day proving it: repeated casts in room 50, mana spent every time, never moved off
+    // (2,48).
+    //
+    // `unwedge` now maps to the state `can_leave` (GOAL_STATE), which is false for either
+    // failure, and the two cures are actions with honest preconditions: `cast blink` is
+    // gated on `entombed`, and `escape_pocket` — a reconnect — has none and costs more.
+    // The planner picks. See docs/m59-goap-repayment.md.
 
     // 2a1. GRADUATE OUT OF RAZA. Same shape as the Underworld escape above: a directional
     // decision the planner has no transition for, and the only way out of the zone.
@@ -2254,9 +2234,19 @@ export const DEFAULT_GOALS = [
   // refused, for ever, by planners doing their job. JayB spent a day in a 340-square
   // pocket of room 50 one square from an exit whose step was refused. See
   // `pocket_has_exit`. Blink is the same cure and it was never offered.
-  { goal: 'unwedge', when: ws => (ws.entombed === true || ws.pocket_has_exit === false)
-                                 && ws.has_mana === true
-                                 && ws.can_pay_blink !== false },
+  // THE GOAL ASKS WHETHER WE ARE STUCK. WHETHER WE CAN AFFORD A CURE IS THE PLANNER'S
+  // QUESTION, NOT THIS ONE.
+  //
+  // These used to carry `has_mana` and `can_pay_blink`, from when blink was the only cure —
+  // gating the GOAL on one cure's price. `escape_pocket` (a reconnect) costs no mana, so a
+  // pocketed character with an empty bar was declining to try the escape that was free.
+  // JayB, room 50, all day: unwedge declined on mana, `armed` took the tick, and he
+  // conjured weapons in a room he could not leave.
+  //
+  // Now the goal states the problem and the planner answers it. If no cure is affordable
+  // there is no plan, and the ladder falls through to `idle_rest` — which is exactly right,
+  // because waiting is what makes a cure affordable.
+  { goal: 'unwedge', when: ws => ws.entombed === true || ws.pocket_has_exit === false },
   // FLEE first: if an out-of-band mob is IN REACH (actually threatening us), run before
   // anything else. The old condition fired on ANY out-of-band target (has_target &&
   // !target_in_band), which made the character FLEE from a passive mummy just because it

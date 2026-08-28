@@ -292,8 +292,28 @@ console.log('\nan entombed character must be able to pay the WHOLE price of the 
   const unwedge = G.find(g => g.goal === 'unwedge');
   ok('unwedge fires when entombed and able to pay',
      unwedge.when({ entombed: true, has_mana: true, can_pay_blink: true }) === true);
-  ok('and stands down when too tired, so rest can win',
-     unwedge.when({ entombed: true, has_mana: true, can_pay_blink: false }) === false);
+  // WHERE THAT FALL-THROUGH NOW LIVES. It used to be a `can_pay_blink` clause on the goal
+  // itself — gating the GOAL on one cure's price. That was wrong once blink stopped being
+  // the only cure: `escape_pocket` (a reconnect) costs no mana, so a pocketed character
+  // with an empty bar was declining the escape that was free. JayB spent a day doing
+  // exactly that.
+  //
+  // The goal now states the problem and the PLANNER answers affordability. When no cure is
+  // affordable there is no plan, and the ladder falls to `idle_rest` — the same outcome
+  // this assertion always protected (rest wins), reached the GOAP way. See
+  // docs/m59-goap-repayment.md.
+  ok('unwedge fires on being stuck, whatever it can afford',
+     unwedge.when({ entombed: true, has_mana: false, can_pay_blink: false }) === true);
+  ok('...and on being trapped with a full bar',
+     unwedge.when({ entombed: false, pocket_has_exit: false }) === true);
+  ok('...and not at all when it can leave',
+     unwedge.when({ entombed: false, pocket_has_exit: true }) === false);
+  {
+    const { DEFAULT_GOALS: G2 } = await import('./m59-decide.mjs');
+    const order = G2.map(g => g.goal);
+    ok('and the ladder still ends in something that always accepts, so rest wins',
+       order[order.length - 1] === 'idle_rest');
+  }
   // An unreadable vital must not be what keeps a body buried.
   ok('unknown ability to pay still tries', 
      unwedge.when({ entombed: true, has_mana: true, can_pay_blink: true }) === true);
