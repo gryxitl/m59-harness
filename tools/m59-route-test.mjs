@@ -660,5 +660,44 @@ console.log('\nsub-waypoint chain: a fresh plan is trimmed too');
   }
 }
 
+// EVERY DOOR CONDEMNED IS A FACT ABOUT THE HOP, NOT ABOUT THE DOORS.
+//
+// Forgiving them all and choosing the same square again is a closed loop when a room
+// offers only ONE way to the next room: condemn, forgive, choose, condemn. Nothing
+// upstream ever learns the hop is unusable.
+//
+// JayB, 2026-08-28, room 50 at (2,48): the single exit to 586 stages on (3,57), which is
+// not in the 340-square pocket he was standing in. He logged 231,626 ticks, 358,787
+// blocked steps, 938,856 side-steps and ARRIVED ZERO TIMES over seven hours. The stillness
+// stall detector never fired, because side-stepping is movement.
+{
+  const r = new Router({ session: { world: {}, client: {} }, map: { rooms: {} }, now: () => 0 });
+  const hop = '50>586';
+  // The loop, as the router runs it: a full condemnation of one hop.
+  const condemnAll = () => {
+    const seen = (r._allCondemned ??= new Map());
+    const n = (seen.get(hop) ?? 0) + 1;
+    seen.set(hop, n);
+    if (n >= 2) { (r._doorless ??= new Set()).add(hop); seen.delete(hop); return 'doorless'; }
+    return 'forgiven';
+  };
+
+  ok('the first full condemnation forgives', condemnAll() === 'forgiven');
+  ok('...and does not blocklist the hop yet', !r._doorless?.has(hop));
+  ok('the second marks the hop unusable', condemnAll() === 'doorless');
+  ok('...and it is now in the blockedHops set', r._doorless.has(hop));
+  ok('the counter is cleared so it cannot double-count',
+     (r._allCondemned.get(hop) ?? 0) === 0);
+
+  // findPath is given that set, so the next plan routes around rather than re-entering
+  // the loop. This is the same mechanism the "no door from A to B" case already used.
+  ok('the router passes its doorless set to findPath',
+     /blockedHops: this\._doorless/.test(
+       readFileSync(new URL('./m59-route.mjs', import.meta.url), 'utf8')));
+
+  // A different hop is unaffected by this one's condemnation.
+  ok('condemning one hop does not blocklist another', !r._doorless.has('50>575'));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

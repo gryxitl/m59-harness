@@ -229,9 +229,41 @@ export class Router {
     // If every candidate for this exit is condemned, forgive them: a condemned door is
     // better than no leg at all (the room-escape escalation in the decider will handle
     // a truly unusable room).
+    // EVERY DOOR TO THIS ROOM CONDEMNED IS A FACT ABOUT THE HOP, NOT ABOUT THE DOORS.
+    //
+    // Forgiving them and picking the same square again is a closed loop when the room
+    // offers only ONE way to `next`: condemn it, forgive it, choose it, condemn it. The
+    // character never moves and nothing upstream is told the hop is unusable.
+    //
+    // JayB, 2026-08-28, room 50 at (2,48): the single exit to 586 stages on (3,57), which
+    // is not in the 340-square pocket he is standing in — `geo.path(collision)` answers
+    // `found: false` and every planner refuses. He logged 231,626 ticks, 358,787 blocked
+    // steps, 938,856 side-steps and ARRIVED ZERO TIMES over seven hours. The stillness
+    // stall detector never fired because side-stepping is movement, which is the trap
+    // docs/m59-routing.md warns about.
+    //
+    // So: on the second full condemnation of the same hop, mark it doorless. `findPath`
+    // already honours `blockedHops`, so the next plan routes to `dest` some other way
+    // instead of re-entering the loop. The first condemnation still forgives, because one
+    // bad window is not evidence a hop is impossible.
     if (!cands.length) {
+      const hop = `${here}>${next}`;
+      const seen = (this._allCondemned ??= new Map());
+      const n = (seen.get(hop) ?? 0) + 1;
+      seen.set(hop, n);
+      if (n >= 2) {
+        (this._doorless ??= new Set()).add(hop);
+        seen.delete(hop);
+        this._badStandOn.clear();
+        console.error(`[route] ${this.session?.name ?? '?'} every door from ${here} to ${next}`
+          + ` condemned twice — treating the hop as unusable and routing around it`);
+        // Re-plan the whole route without this hop rather than staging at a square we have
+        // just decided cannot be reached.
+        this.leg = null; this._committedAim = null;
+        return { why: `hop ${hop} is unusable; re-routing` };
+      }
       cands.push(...exits.filter(e => Number(e.to) === Number(next) && e.stand_on));
-      this._badStandOn.clear();   // all condemned: forgive rather than leave the room exitless
+      this._badStandOn.clear();   // first time: forgive rather than leave the room exitless
     }
     // FINE-REACHABILITY OUTRANKS COARSE. The coarse grid over-promises across fences and
     // ledges (it calls a square behind a retaining wall "reachable" in 4 steps when the
