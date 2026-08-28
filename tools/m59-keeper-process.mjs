@@ -505,6 +505,7 @@ const server = createServer(async (req, res) => {
         // decider is reached once every couple of hundred ticks.
         frozen_ticks: L.stats?.frozen_ticks ?? null,
         not_in_game: L.stats?.not_in_game ?? null,
+        slow_ticks: L.stats?.slow ?? null,
         not_in_game_why: session._notInGame ?? null,
         stale_returns: L.stats?.stale_returns ?? null,
         frozen_why: L._frozenWhy ?? null,

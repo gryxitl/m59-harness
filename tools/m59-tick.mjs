@@ -703,7 +703,18 @@ export class TickLoop {
     } finally {
       const ms = Date.now() - t0;
       if (ms > this.stats.longest_decide_ms) this.stats.longest_decide_ms = ms;
-      if (ms > 2000) console.error(`[slow-tick] tick ${this.stats.ticks + 1} took ${ms}ms`);
+      // NAME THE GOAL. A four-second synchronous tick is 40 lost ticks, and "tick 13103
+      // took 4026ms" says nothing about which decision paid for it. The keeper stashes the
+      // last decision on the session; read it here rather than guessing.
+      if (ms > 2000) {
+        const d = this.session?._tickDecision;
+        const slow = (this.stats.slow ??= {});
+        const key = `${d?.goal ?? '?'}/${d?.action ?? '-'}`;
+        const e = (slow[key] ??= { n: 0, worst: 0, total: 0 });
+        e.n++; e.total += ms; if (ms > e.worst) e.worst = ms;
+        console.error(`[slow-tick] tick ${this.stats.ticks + 1} took ${ms}ms — ${key}`
+          + ` (${d?.what ?? d?.why ?? ''})`);
+      }
       this.stats.ticks++;
       this.busy = false;
     }
