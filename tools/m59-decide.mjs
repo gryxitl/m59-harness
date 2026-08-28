@@ -1947,7 +1947,11 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       const fighting = r.kind === 'swing' || r.kind === 'walk' || r.kind === 'cast'
         || r.kind === 'loot' || r.kind === 'stand' || r.kind === 'idle';
       note(active.goal, fighting);
-      onDecision?.({ ticks, goal: '_fight', action: r.kind,
+      // `sent` was omitted here, so every _fight action read as sent=0 in /tickstats and
+      // a fight that was swinging perfectly well looked dead. The wire disagreed:
+      // totalSwingsSent matched the swing count exactly. Report what the step actually
+      // said rather than leaving the field undefined.
+      onDecision?.({ ticks, goal: '_fight', action: r.kind, sent: r.sent ?? fighting,
         what: r.what ?? null, why: r.why ?? null });
       // Loot after a kill: the target died, its drops are on the floor.
       // lootFloor is async and multi-second, so kick it off
