@@ -310,6 +310,37 @@ export function levelInBand(level, ceiling) {
   return level <= ceiling;
 }
 
+// How near the merchant has to be before the shop will open. The note in the buy intent
+// says "within ~2 squares"; 2.5 gives a diagonal-adjacent square (1.41) and an
+// orthogonally-adjacent-plus-one (2.0) room to count, without letting a character try to
+// trade from across the shop.
+const BUY_REACH = 2.5;
+
+// The square to stand on to trade: the nearest one ADJACENT to the merchant that the mover
+// says it can actually land on. Aiming at the merchant's own square asks the body to walk
+// into an occupied tile, which never completes.
+function merchantStandPoint(session, me, merchant) {
+  if (!merchant || merchant.col == null) return null;
+  const geo = session?.world?.geometry;
+  const cands = [];
+  for (let dc = -1; dc <= 1; dc++) {
+    for (let dr = -1; dr <= 1; dr++) {
+      if (!dc && !dr) continue;
+      const col = merchant.col + dc, row = merchant.row + dr;
+      if (col < 1 || row < 1) continue;
+      if (geo?.cols && (col > geo.cols || row > geo.rows)) continue;
+      // Prefer squares the geometry will actually accept. With no geometry, take them all
+      // rather than refuse to approach at all.
+      if (geo?.standable && geo.standable(row, col) === false) continue;
+      cands.push({ col, row });
+    }
+  }
+  if (!cands.length) return null;
+  cands.sort((a, b) => Math.hypot(a.col - me.col, a.row - me.row)
+                     - Math.hypot(b.col - me.col, b.row - me.row));
+  return cands[0];
+}
+
 export const INTENTS = {
   rest:  (f, act, ctx) => {
     // Resting recovers HP and vigor. At an inn it's fast;
@@ -561,10 +592,26 @@ export const INTENTS = {
       const distToNearest = me
         ? Math.min(...merchants.map(o => Math.hypot((o.col ?? 0) - me.col, (o.row ?? 0) - me.row)))
         : Infinity;
-      if (distToNearest > 1.5) {
+      // WALK BESIDE THE MERCHANT, NOT ONTO HIM, AND STOP WHEN THE SERVER WOULD SERVE US.
+      //
+      // This aimed at the merchant's OWN square and required getting within 1.5 of it. A
+      // merchant is standing on that square, so it can never be reached; the distance never
+      // closed, and the goal re-issued the same approach on every tick. The note above says
+      // the shop opens "within ~2 squares" and the gate asked for 1.5, so even arriving
+      // diagonally adjacent (1.41) was marginal.
+      //
+      // Lee, 2026-08-27: at (14,11) with the merchant at (13,13) — distance 2.24 — for over
+      // ninety minutes, 2,130 identical `approach merchant at (13,13)` sends, 77 shillings
+      // in his pack and no weapon in his hand. South of him was `geometry_blocked`, so the
+      // straight line was refused as well.
+      //
+      // So: aim at the reachable square NEXT to the merchant, and accept BUY_REACH, which
+      // is what the server actually enforces.
+      if (distToNearest > BUY_REACH) {
         const target = [...merchants].sort((a, b) =>
           Math.hypot((a.col ?? 0) - me.col, (a.row ?? 0) - me.row)
           - Math.hypot((b.col ?? 0) - me.col, (b.row ?? 0) - me.row))[0];
+        const stand = merchantStandPoint(ctx.session, me, target) ?? target;
         // Mark the buy as active so the hunt goal yields for the whole approach (not just
         // the async phase). Without this, `hunt -> travel` resets the mover's destination
         // to the hunt room on its ticks, fighting the approach and leaving JayB bouncing
@@ -572,13 +619,14 @@ export const INTENTS = {
         if (s) s._buyingActive = true;
         const mv = s._mover;
         if (mv) {
-          mv.to(target.col, target.row);
+          mv.to(stand.col, stand.row);
           // Drive the mover this tick so it actually steps toward the merchant (the
           // router is not involved — same-room approach, and the tick loop does not
           // call mover.tick on its own; the intent must).
           mv.tick({ col: me.col, row: me.row, x: me.x, y: me.y });
         }
-        return { sent: true, what: `approach ${target.name ?? 'merchant'} at (${target.col},${target.row})` };
+        return { sent: true, what: `approach ${target.name ?? 'merchant'} at (${target.col},${target.row})`
+                                 + ` via (${stand.col},${stand.row})` };
       }
     }
     if (s) { s._buyInFlight = true; s._buyingActive = true; }

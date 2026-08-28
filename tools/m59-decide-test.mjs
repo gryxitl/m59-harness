@@ -547,5 +547,43 @@ console.log('\na cast holds the character still, because the tick loop is what b
      && order.indexOf('flee_danger') < order.indexOf('vigor_low'));
 }
 
+// YOU CANNOT WALK ONTO THE MERCHANT.
+//
+// The buy approach aimed at the merchant's OWN square and required getting within 1.5 of
+// it. Something is standing on that square — the merchant — so it can never be reached,
+// the distance never closed, and the goal re-issued the same approach every tick.
+//
+// Lee, 2026-08-27: at (14,11) with the merchant at (13,13), distance 2.24, for over ninety
+// minutes and 2,130 identical sends, carrying 77 shillings with no weapon in his hand.
+{
+  const src = readFileSync(new URL('./m59-decide.mjs', import.meta.url), 'utf8');
+  ok('the approach no longer aims at the merchant square',
+     !/mv\.to\(target\.col, target\.row\)/.test(src));
+  ok('it aims at a stand point beside him', /mv\.to\(stand\.col, stand\.row\)/.test(src));
+  ok('and the gate matches what the server enforces, not 1.5',
+     /distToNearest > BUY_REACH/.test(src) && /const BUY_REACH = 2\.5/.test(src));
+
+  // The geometry of Lee's actual stall.
+  const me = { col: 14, row: 11 }, merchant = { col: 13, row: 13 };
+  const d = Math.hypot(merchant.col - me.col, merchant.row - me.row);
+  ok('his real distance was outside the old gate', d > 1.5 && +d.toFixed(2) === 2.24);
+  ok('...and inside the new one only after stepping beside the merchant', d > 2.5 === false);
+
+  // Adjacent squares are what the approach should choose from, nearest first.
+  const cands = [];
+  for (let dc = -1; dc <= 1; dc++) for (let dr = -1; dr <= 1; dr++) {
+    if (!dc && !dr) continue;
+    cands.push({ col: merchant.col + dc, row: merchant.row + dr });
+  }
+  cands.sort((a, b) => Math.hypot(a.col - me.col, a.row - me.row)
+                     - Math.hypot(b.col - me.col, b.row - me.row));
+  ok('the nearest adjacent square is one step away',
+     cands[0].col === 14 && cands[0].row === 12);
+  ok('and standing there puts him inside BUY_REACH of the merchant',
+     Math.hypot(cands[0].col - merchant.col, cands[0].row - merchant.row) <= 2.5);
+  ok('the merchant square itself is never a candidate',
+     !cands.some(c => c.col === merchant.col && c.row === merchant.row));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
