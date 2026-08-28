@@ -291,7 +291,30 @@ export class CharacterController {
     this.stats[`steered_${steeredBy}`] = (this.stats[`steered_${steeredBy}`] || 0) + 1;
 
     if (!plan.found) { this.clear(); return { ok: false, reason: plan.reason }; }
-    this.path = plan.waypoints;
+    // DROP THE WAYPOINTS WE ARE ALREADY STANDING ON.
+    //
+    // `navPath` plans through free-space cells of 256 units, so its first waypoints are
+    // routinely a fraction of a square from the body — and the last resort is exactly when
+    // it gets used, because `tracePath` is blocked and `squarePlan` found nothing. Aiming
+    // at a point two units away asks the stepper for a two-unit move, which slides along
+    // whatever wall the body is already against and arrives nowhere.
+    //
+    // JayB, 2026-08-28, room 50 at (2,48) with one open neighbour: `ctlAt=1783,48775` and
+    // `aim=1782,48777` — a two-unit aim — with 36,189 side-steps, 12,694 blocked steps and
+    // `arrived=0`. The plan was 40 waypoints long and he never left the first one.
+    //
+    // A waypoint inside the arrival threshold is already reached by the controller's own
+    // definition (`pathIdx++` uses the same test below), so starting there wastes ticks.
+    // At least one waypoint is always kept: a plan trimmed to nothing would clear the
+    // destination and look like an arrival.
+    const wps = plan.waypoints;
+    let start = 0;
+    while (start < wps.length - 1
+           && Math.hypot(wps[start].x - this.x, wps[start].y - this.y) <= MOVE_THRESHOLD_CLIENT) {
+      start++;
+    }
+    if (start > 0) this.stats.waypointsPreDropped = (this.stats.waypointsPreDropped ?? 0) + start;
+    this.path = start > 0 ? wps.slice(start) : wps;
     this.pathIdx = 0;
     this.dest = to;
     return { ok: true, waypoints: plan.waypoints.length, planner: steeredBy };

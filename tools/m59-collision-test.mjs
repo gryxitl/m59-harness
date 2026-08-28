@@ -23,7 +23,7 @@ import {
   sharedRoomGeometry,
 } from './m59-roo.mjs';
 import { STRANDED_ESCAPE_MIN, STRANDED_ESCAPE_MAX, STRANDED_ESCAPE_STEP,
-         STRANDED_ESCAPE_TURNS } from './m59-controller.mjs';
+         STRANDED_ESCAPE_TURNS, MOVE_THRESHOLD_CLIENT } from './m59-controller.mjs';
 import { tracePath } from './m59-navtrace.mjs';
 import { MIN_CLOSING_CLIENT } from './m59-controller.mjs';
 import { recordTactic } from './m59-tactics.mjs';
@@ -3188,6 +3188,47 @@ console.log('\nnavPath: a sealed pocket is a detour, not a dead end');
     // it still goes through the ordinary trace.
     ok('the rule is scoped to a floorless origin', g.leafAtClient(X, Y) == null);
   }
+}
+
+// A PLAN MUST NOT START WHERE THE BODY ALREADY IS.
+//
+// `navPath` plans through free-space cells of 256 units, so its leading waypoints are
+// routinely a fraction of a square from the body — and it is the LAST RESORT, reached
+// exactly when `tracePath` is blocked and `squarePlan` found nothing. Aiming at a point
+// two units away asks the stepper for a two-unit move, which slides along whatever wall
+// the body is against and arrives nowhere.
+//
+// JayB, 2026-08-28, room 50 at (2,48) with one open neighbour: ctlAt=1783,48775 against
+// aim=1782,48777 — two units — with 36,189 side-steps, 12,694 blocked steps and arrived=0
+// on a forty-waypoint plan he never left the front of.
+{
+  const trim = (me, wps) => {
+    let start = 0;
+    while (start < wps.length - 1
+           && Math.hypot(wps[start].x - me.x, wps[start].y - me.y) <= MOVE_THRESHOLD_CLIENT) start++;
+    return wps.slice(start);
+  };
+  const me = { x: 1783, y: 48775 };
+
+  const jayb = trim(me, [{ x: 1782, y: 48777 }, { x: 1790, y: 48800 },
+                         { x: 2100, y: 48900 }, { x: 3000, y: 49000 }]);
+  ok('the two sub-square waypoints are dropped', jayb.length === 2);
+  ok('and the new first aim is beyond the arrival threshold',
+     Math.hypot(jayb[0].x - me.x, jayb[0].y - me.y) > MOVE_THRESHOLD_CLIENT);
+
+  // A plan whose points are all within the threshold must still keep one, or clearing the
+  // path would read as an arrival.
+  const tiny = trim(me, [{ x: 1782, y: 48777 }, { x: 1783, y: 48776 }]);
+  ok('a wholly-reached plan keeps exactly one waypoint', tiny.length === 1);
+
+  // A plan that already starts far away is untouched.
+  const far = [{ x: 5000, y: 50000 }, { x: 6000, y: 51000 }];
+  ok('a plan starting beyond the threshold is unchanged',
+     trim(me, far).length === far.length);
+
+  // The trim uses the SAME test the controller uses to advance pathIdx, so a waypoint it
+  // drops is one the controller would have counted as reached on its first tick anyway.
+  ok('the threshold is the controller\'s own arrival test', MOVE_THRESHOLD_CLIENT === 256);
 }
 
 console.log(`\n${pass} passed, ${fail} failed${skipped ? `, ${skipped} skipped` : ''}`);
