@@ -3130,5 +3130,65 @@ console.log('\nnavPath: a sealed pocket is a detour, not a dead end');
      'sanity: it displaced but did not close');
 }
 
+// FROM A FLOORLESS ORIGIN, THE TRACE REFUSES DESTINATIONS THAT DEMONSTRABLY HAVE FLOOR.
+//
+// Gountrug, 2026-08-27, room 556, standing on the exact centre of (25,34): every one of
+// the four squares `moverStepLands` approves came back `destination_has_no_floor` from
+// `traceFineMoveClient`, while `leafAtClient` called all four solid ground. Reasoning
+// about a journey from an origin the model itself calls invalid produces answers like
+// that. He logged 3,919 blocked steps and ZERO packets sent.
+//
+// `m59-game.mjs` resolved this for the legacy mover — which is why /movecheck reports
+// `recovered_from_no_floor` on the very steps the controller refused. This pins the same
+// rule for the controller.
+{
+  const gMap = JSON.parse(readFileSync(new URL('../substrate/m59-map.json', import.meta.url), 'utf8'));
+  const gRoom = gMap.rooms['556'];
+  if (!gRoom?.roo) {
+    skip('a floorless origin trusts the destination leaf', 'room 556 is not in the baked map');
+  } else {
+    const g = RoomGeometry.fromJSON(gRoom.roo);
+    const X = 25088, Y = 34304;              // the exact centre of (25,34)
+
+    ok('the origin really has no floor', g.leafAtClient(X, Y) == null);
+    ok('and it IS the square centre, so re-centring cannot help',
+       X === (25 - 0.5) * 1024 && Y === (34 - 0.5) * 1024);
+
+    // The disagreement, on every square the mover approves.
+    let approved = 0, refusedByTrace = 0, haveFloor = 0;
+    for (const [c, r] of [[24, 33], [25, 33], [26, 33], [26, 34]]) {
+      if (!g.moverStepLands(34, 25, r, c)) continue;
+      approved++;
+      const tx = (c - 0.5) * 1024, ty = (r - 0.5) * 1024;
+      if (g.leafAtClient(tx, ty) != null) haveFloor++;
+      const t = g.traceFineMoveClient(X, Y, tx, ty, { slide: true, allowNoStartFloor: true });
+      if (!t?.moved) refusedByTrace++;
+    }
+    ok('the mover approves four neighbours', approved === 4);
+    ok('...all four have floor under them', haveFloor === 4);
+    ok('...and the trace refuses all four anyway', refusedByTrace === 4);
+
+    // With the trace refusing everything, only trusting the leaf gets him out.
+    let escaped = null;
+    outer:
+    for (let r = STRANDED_ESCAPE_MIN; r <= STRANDED_ESCAPE_MAX; r += STRANDED_ESCAPE_STEP) {
+      for (const turn of STRANDED_ESCAPE_TURNS) {
+        const c = Math.cos(turn), sn = Math.sin(turn);
+        const tx = X + (0 * c - -1 * sn) * r, ty = Y + (0 * sn + -1 * c) * r;
+        if (g.leafAtClient(tx, ty) == null) continue;
+        escaped = { x: tx, y: ty, r }; break outer;
+      }
+    }
+    ok('a leaf-trusting hop finds a way out', escaped !== null);
+    ok('it lands on real floor', escaped != null && g.leafAtClient(escaped.x, escaped.y) != null);
+    ok('and stays inside the recovery bound',
+       escaped != null && Math.hypot(escaped.x - X, escaped.y - Y) <= STRANDED_ESCAPE_MAX);
+
+    // The guard: this only ever applies from a floorless origin. A body with floor under
+    // it still goes through the ordinary trace.
+    ok('the rule is scoped to a floorless origin', g.leafAtClient(X, Y) == null);
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed${skipped ? `, ${skipped} skipped` : ''}`);
 process.exitCode = fail ? 1 : 0;

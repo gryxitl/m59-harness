@@ -532,6 +532,24 @@ export class CharacterController {
           if (!hasFloor) continue;
           const r = tryMove(cx, cy, tx, ty);
           if (r) { escaped = r; break; }
+          // THE TRACE REFUSES DESTINATIONS THAT DEMONSTRABLY HAVE FLOOR.
+          //
+          // From a floorless origin `traceFineMoveClient` answers
+          // `destination_has_no_floor` for squares whose centre `leafAtClient` says is
+          // solid ground — measured on Gountrug at the exact centre of (25,34) in room
+          // 556, where all four squares `moverStepLands` approves came back refused while
+          // `leafAtClient` called every one of them floor. Reasoning about a journey from
+          // an origin the model itself calls invalid produces answers like that, and the
+          // body cannot move at all: 3,919 blocked steps, ZERO packets.
+          //
+          // `m59-game.mjs` already resolved this for the legacy mover, which is why
+          // /movecheck reports `recovered_from_no_floor` on the very steps refused here.
+          // This is that rule, with its clauses intact: only when the ORIGIN is floorless,
+          // only to a destination this same BSP calls floor, bounded by the escape radius,
+          // and counted separately so a move nothing traced is never invisible.
+          this.stats.strandedTrusted = (this.stats.strandedTrusted ?? 0) + 1;
+          escaped = { x: tx, y: ty, slid: true, blocked: false };
+          break;
         }
       }
       if (escaped) {
