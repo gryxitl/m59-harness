@@ -667,6 +667,29 @@ export const SYMBOLS = {
     },
   },
 
+  in_hunt_room: {
+    describe: 'the character is standing in the room it should be hunting in',
+    whenUnknown: true,
+    why_unknown: 'without a room or a choice there is nothing to travel towards, and claiming otherwise would send a character nowhere',
+    // THE INTERMEDIATE STATE THAT LETS `has_target` BE PLANNED RATHER THAN PROCEDURAL.
+    //
+    // `hunt` was a hand-written handler: choose a room, set the router, steer, all in one
+    // branch with no preconditions and no plan (docs/m59-goap-repayment.md, phase 2).
+    // Splitting it needs a symbol between "somewhere else" and "a target in front of me",
+    // because travelling does not produce a target directly — it produces the room in
+    // which targets exist.
+    //
+    // The CHOICE of room stays a policy question and lives with `huntRoomFor`; this only
+    // reports whether we are in the room that choice named.
+    produce: ({ session, policy, client }) => {
+      const want = session?._huntRoomWanted;
+      if (want == null) return null;                    // nothing chosen yet
+      const here = Number(session?.world?.room?.num ?? client?.room?.num);
+      if (!Number.isFinite(here)) return null;
+      return here === Number(want);
+    },
+  },
+
   route_reachable: {
     describe: 'the current leg\'s staging square can actually be walked to from here',
     whenUnknown: true,

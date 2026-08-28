@@ -654,5 +654,47 @@ console.log('\na cast holds the character still, because the tick loop is what b
      /travelTo\.pre = \['route_reachable'\]/.test(src));
 }
 
+// PHASE 2: HUNTING IS PLANNED, NOT PROCEDURAL.
+//
+// `hunt` was a 111-line hand-written branch that chose a room, set the router and steered,
+// with no precondition and no plan — which is why it could re-issue an impossible travel
+// for ever. It is now two planner actions with real preconditions, and the goal name maps
+// to the world state it actually wants. See docs/m59-goap-repayment.md.
+{
+  const src = readFileSync(new URL('./m59-decide.mjs', import.meta.url), 'utf8');
+  ok('the hand-written hunt branch is gone',
+     !/active\?\.goal === 'hunt' \|\| \(!active && ws\.has_target === false\)/.test(src));
+  ok('the goal name maps to a world state', /hunt: \{ has_target: true \}/.test(src));
+  ok('and the planner is asked for that state, not the goal name',
+     /planFor\(client, goalState,/.test(src));
+
+  ok('travel_to_hunt_room is an intent', typeof INTENTS.travel_to_hunt_room === 'function');
+  ok('acquire_target is an intent', typeof INTENTS.acquire_target === 'function');
+
+  // The travel intent steers and does not re-target once already heading there.
+  let toCalls = 0;
+  const router = { dest: null, to(d) { toCalls++; this.dest = d; },
+                   tick: () => ({ state: 'moving' }) };
+  const sess = (here) => ({ _router: router, _huntRoomWanted: 575,
+                            world: { room: { num: here } } });
+  const first = INTENTS.travel_to_hunt_room({}, {}, { session: sess(50), client: {} });
+  ok('it sets the hunt room as the destination', first.sent === true && router.dest === 575);
+  INTENTS.travel_to_hunt_room({}, {}, { session: sess(50), client: {} });
+  ok('and does not re-target on the next tick', toCalls === 1);
+  ok('it declines once already in the room',
+     INTENTS.travel_to_hunt_room({}, {}, { session: sess(575), client: {} }).sent === false);
+
+  // in_hunt_room reports against the chosen room and abstains when nothing is chosen.
+  const ihr = SYMBOLS.in_hunt_room.produce;
+  ok('in_hunt_room is true when we are there',
+     ihr({ session: { _huntRoomWanted: 575, world: { room: { num: 575 } } }, client: {} }) === true);
+  ok('...false when we are not',
+     ihr({ session: { _huntRoomWanted: 575, world: { room: { num: 50 } } }, client: {} }) === false);
+  ok('...and abstains when no room has been chosen',
+     ihr({ session: { world: { room: { num: 50 } } }, client: {} }) === null);
+  ok('an unreadable answer must not strand anybody',
+     SYMBOLS.in_hunt_room.whenUnknown === true);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

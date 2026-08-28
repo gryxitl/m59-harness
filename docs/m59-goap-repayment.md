@@ -84,12 +84,20 @@ the goal below `hunt` gets the tick. No new timers, no failure counting.
 
 `hunt` is the largest consumer of ticks and the commonest livelock.
 
-- [ ] Express the goal as a world state (`has_target`), not a procedure.
-- [ ] Actions: `travel_to_room` (pre: `route_reachable`), `acquire_target` (pre:
-      `target_in_room`).
-- [ ] Delete the hand-written branch; let `planFor` produce the sequence.
-- [ ] Keep `nearestHuntRoom` as the thing that CHOOSES a room — that is a policy
-      question, not a planning one.
+- [x] Express the goal as a world state (`has_target`), not a procedure. `GOAL_STATE` maps
+      the behaviour name to the state it actually wants.
+- [x] Actions: `travel_to_hunt_room` (pre: `route_reachable`, effect: `in_hunt_room`) and
+      `acquire_target` (pre: `in_hunt_room`, effect: `has_target`), in
+      `tools/m59-act/hunt-room.mjs`.
+- [x] New symbol `in_hunt_room` — the intermediate state, because travelling does not
+      produce a target, it produces the room targets live in.
+- [x] Deleted the hand-written branch: 111 lines.
+- [x] `huntRoomFor` keeps the room CHOICE as policy, computed once a tick into
+      `_huntRoomWanted`. Assigned room wins, else nearest within the ceiling.
+
+**Phase 2 done, 2026-08-28.** Verified: a reachable hunt room plans
+`[travel_to_hunt_room, acquire_target]`; an unreachable one plans NOTHING, and the ladder
+falls to `idle_rest`. +13 assertions. Thirteen suites green including both boundary ones.
 
 **Done when:** `hunt` has no early return, and `/tickstats` shows it planning rather than
 handling.

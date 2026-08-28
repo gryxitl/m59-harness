@@ -42,6 +42,7 @@ import { pickUp as pickup } from './m59-act/pickup.mjs';
 import { drop }          from './m59-act/drop.mjs';
 import { deposit, withdraw } from './m59-act/bank.mjs';
 import travelTo      from './m59-act/travel-to.mjs';
+import { travelToHuntRoom, acquireTarget } from './m59-act/hunt-room.mjs';
 import { groundedCasts } from './m59-act/cast.mjs';
 
 // The atomics that are always available -- they need no per-character grounding.
@@ -90,7 +91,14 @@ import { groundedCasts } from './m59-act/cast.mjs';
 //
 // Last in the array on purpose: ties break by insertion order, so anything that can be
 // done where the character already stands is preferred over walking somewhere.
-const ALWAYS = [rest, stand, equipBest, buy, eatSomething, travelTo];
+// `travelToHuntRoom` and `acquireTarget` are the two halves of what the `hunt` handler
+// used to do procedurally. They are here so the goal `has_target` can be PLANNED, which
+// is what makes it refusable: travel carries `route_reachable` as a precondition, so a
+// hunt whose room cannot be reached produces no plan instead of being re-issued for ever.
+// See docs/m59-goap-repayment.md, phase 2. They sit before `travelTo`, the generic
+// last-resort walk, because a named destination beats "keep moving and hope".
+const ALWAYS = [rest, stand, equipBest, buy, eatSomething,
+                travelToHuntRoom, acquireTarget, travelTo];
 
 /**
  * actionsFor(client) -> [action]

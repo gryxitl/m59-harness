@@ -142,6 +142,7 @@ function pickWieldableWeapon(client, session = null) {
   return candidates.sort((a, b) => String(client.rsc?.get?.(b.nameRsc) ?? b.name ?? '').localeCompare(String(client.rsc?.get?.(a.nameRsc) ?? a.name ?? '')))[0] ?? null;
 }
 import { nearestHuntRoom, huntRoomsAtOrBelow } from './m59-hunt-room.mjs';
+import { huntRoomFor } from './m59-act/hunt-room.mjs';
 import { loadSpawns } from './m59-spawns.mjs';
 import * as skills from './m59-skills.mjs';
 import { trustedBuyer } from './m59-skills.mjs';
@@ -341,7 +342,39 @@ function merchantStandPoint(session, me, merchant) {
   return cands[0];
 }
 
+// Goals whose name is a behaviour rather than a world-state symbol. `hunt` is the only
+// one so far; phase 3 adds `_fight`. See docs/m59-goap-repayment.md.
+const GOAL_STATE = {
+  hunt: { has_target: true },
+};
+
 export const INTENTS = {
+  // THE TWO HALVES OF HUNTING, as planner actions rather than one hand-written branch.
+  // `travel_to_hunt_room` only steers; the room was chosen by policy above. Its
+  // precondition (`route_reachable`) is what makes a hunt refusable.
+  travel_to_hunt_room: (f, act, ctx) => {
+    const s = ctx.session;
+    const router = s?._router;
+    const dest = s?._huntRoomWanted ?? null;
+    if (!router) return { sent: false, why: 'no router' };
+    if (dest == null) return { sent: false, why: 'no hunt room chosen' };
+    const here = Number(s?.world?.room?.num ?? ctx.client?.room?.num);
+    if (here === Number(dest)) return { sent: false, why: 'already in the hunt room' };
+    if (router.dest !== dest) {
+      router.to(dest);
+      return { sent: true, what: `hunt room ${dest} — heading there` };
+    }
+    const r = routeIntent(router)(f, act);
+    return { sent: r.sent, what: r.what ?? `travelling to hunt room ${dest}` };
+  },
+  // Standing in the room is not having a target. The decider's own selection fills
+  // `has_target` from room contents each tick; this exists so the PLANNER can say that
+  // being there comes first, which is what makes the travel step refusable.
+  acquire_target: (f, act, ctx) => {
+    const room = ctx.session?._huntRoomWanted;
+    return { sent: false, why: room == null ? 'no hunt room' : `in room ${room}; waiting for a target` };
+  },
+
   rest:  (f, act, ctx) => {
     // Resting recovers HP and vigor. At an inn it's fast;
     // outside an inn it's slower but still works. The GOAP
@@ -1114,6 +1147,22 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     const ws = evaluate({ client, session, policy, agent: session.name });
     // Expose the raw vigor value for the vigor_low goal.
     ws._vigor = client?.vitals?.()?.vigor?.value ?? null;
+
+    // WHICH ROOM WE HUNT IN IS POLICY, NOT PLANNING. Chosen here so `in_hunt_room` can
+    // report against it and `travel_to_hunt_room` can act on it; the planner decides
+    // whether travelling is the right thing to do, never where. Assigned room wins, else
+    // the nearest room whose prey is under this character's engagement ceiling.
+    // See docs/m59-goap-repayment.md, phase 2.
+    {
+      const maxHp = client?.vitals?.()?.health?.max ?? 20;
+      const level = maxHp;
+      const fullBand = policy?.threatBand ?? Math.floor(level / 2);
+      const band = ws.armed === true ? fullBand : Math.floor(fullBand / 2);
+      const hereNum = Number(session?.world?.room?.num ?? client?.room?.num);
+      session._huntRoomWanted = huntRoomFor(session, {
+        policy, ws, here: Number.isFinite(hereNum) ? hereNum : null, ceiling: level + band,
+      });
+    }
 
     // Maintain the rest latch (see the note where it is declared). Entering is `hurt`;
     // leaving is `restUntil`, the deadline, or an unreadable bar -- never `hurt` going
@@ -2044,117 +2093,20 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // pick a hunt room and set the router's destination. This is a
     // directional decision, not a world-state transition — it sets
     // the router's destination rather than sending a command.
-    if (active?.goal === 'hunt' || (!active && ws.has_target === false)) {
-      // YIELD WHOLESALE WHILE THE BUY IS ACTIVE (approaching the merchant or the async
-      // shop-open/purchase in flight). The buy goal drives the mover itself during the
-      // same-room approach, so the hunt goal must not touch the router or mover at all —
-      // otherwise it resets the destination to the hunt room and the character bounces
-      // in place. `_buyingActive` is set by the buy intent and cleared when the character
-      // becomes armed (or the buy is abandoned).
-      if (session._buyingActive) {
-        return;
-      }
-      const router = session._router;
-      if (router && router.dest == null) {
-        // No active route: pick a hunt room. BUT if the character is actively routing
-        // to a shop to buy a weapon (the `armed` goal set _buyingRoute), don't grab the
-        // router — that's how hunt would override the smith-bound route and JayB would
-        // bounce between 1012 (smith) and 1016 (Mausoleum) without buying. The hunt
-        // goal resumes once the buy succeeds (armed=true clears _buyingRoute) or the
-        // route is abandoned.
-        if (session._buyingRoute != null && session._buyingRoute === router.dest) {
-          // Let the armed goal keep driving the route.
-          const r = routeIntent(router)(frame, act);
-          onDecision?.({ ticks, goal: 'hunt', action: 'travel',
-            what: r.what ?? `holding route to shop (room ${session._buyingRoute})`, sent: r.sent });
-          return;
-        }
-        try {
-          const roomNum = frame?.room?.num ?? frame?.room?.id;
-          const roomName = frame?.room?.name ?? null;
-          const map = loadMap();
-          const resolved = resolveRoomNum({ id: roomNum, num: roomNum, name: roomName }, map) ?? roomNum;
-          const maxHp = client.vitals?.()?.health?.max ?? 20;
-          const level = maxHp;
-          // Same formula as the GOAP keeper: policy.threatBand ?? floor(level/2),
-          // halved when unarmed. The ceiling is level + band.
-          const isArmed = ws.armed === true;
-          const fullBand = policy?.threatBand ?? Math.floor(level / 2);
-          const band = isArmed ? fullBand : Math.floor(fullBand / 2);
-          const ceiling = level + band;
-          // AN ASSIGNED ROOM IS AN ORDER, AND THIS IGNORED IT.
-          //
-          // nearestHuntRoom picks purely by level ceiling, so a character with
-          // policy.assignedRoom set went wherever the ceiling pointed — Lee to 557 for
-          // centipedes with baby spiders ordered in 575, JayB to whatever was nearest with
-          // giant rats ordered in 535. assigned_room is also what stops the whole fleet
-          // stacking into one top-ranked room, which is the reason it exists.
-          //
-          // So an assignment wins outright while the character is not in it. Nothing else
-          // changes: once there, the ordinary in-room hunt takes over.
-          const assigned = Number(policy?.assignedRoom);
-          if (Number.isFinite(assigned) && assigned !== resolved) {
-            router.to(assigned);
-            onDecision?.({ ticks, goal: 'hunt', action: 'travel',
-              what: `assigned room ${assigned} — heading there`, sent: true });
-            return;
-          }
-          const hunt = nearestHuntRoom(resolved, ceiling);
-          if (hunt && hunt.room !== resolved) {
-            router.to(hunt.room);
-            onDecision?.({ ticks, goal: 'hunt', action: 'travel',
-              what: `hunt ${hunt.creature} lv${hunt.level} in room ${hunt.room} (hops=${hunt.hops})`,
-              sent: true });
-            return;
-          }
-          // Already in the hunt room (hops=0). Do NOT try to plan a travel
-          // (there is none) — that produced "exhausted 5 nodes" every tick.
-          // The character is in the right room; it waits for a target (mobs
-          // respawn, or the target-selection picks one up next tick).
-          if (hunt && hunt.room === resolved) {
-            onDecision?.({ ticks, goal: 'hunt', action: null,
-              what: `in hunt room (${hunt.creature} lv${hunt.level}); waiting for a target`, sent: false });
-            return;
-          }
-        } catch (e) {
-          // Hunt room lookup failed; fall through to idle.
-        }
-      }
-      // If the router already has a destination, let it travel.
-      if (router?.dest != null) {
-        // YIELD RATHER THAN RE-ISSUE AN IMPOSSIBLE TRAVEL.
-        //
-        // `route_reachable` is false only on a positive finding that the leg's staging
-        // square is outside the region the body can walk in. Continuing to steer at it is
-        // the livelock this whole plan exists to remove: the goal keeps succeeding at
-        // sending a packet and never achieves anything, and because `hunt` holds the tick
-        // nothing below it — resting included — ever runs.
-        //
-        // Returning WITHOUT deciding lets the ladder fall to the next goal on this very
-        // tick, which is the GOAP-shaped answer: an unachievable goal simply is not the
-        // one we act on. The router's own oscillation breaker still condemns the square
-        // and re-plans; this only stops us walking into it in the meantime.
-        if (ws.route_reachable === false) {
-          // DROP THE LEG, DO NOT STEER AT IT. Clearing it makes the router re-plan on the
-          // next tick — choosing a different staging square, or, once its breaker has
-          // condemned them all twice, routing around the hop entirely. Until then the
-          // ladder gets the tick, and the bottom of the ladder is resting, so there is
-          // always something to do.
-          try { router.leg = null; router._committedAim = null; } catch { /* best effort */ }
-          onDecision?.({ ticks, goal: 'hunt', action: null, sent: false,
-            what: 'leg staging square is unreachable — dropped it and yielded',
-            why: 'route_reachable=false' });
-          return;
-        }
-        const r = routeIntent(router)(frame, act);
-        onDecision?.({ ticks, goal: 'hunt', action: 'travel',
-          what: r.what ?? r.why, sent: r.sent, why: r.why ?? null });
-        return;
-      }
-      // No hunt room to travel to: we may already be in one,
-      // or there's none in range. Fall through to the normal
-      // goal stack so _fight, has_food, etc. can fire.
-    }
+    // THE HUNT HANDLER IS GONE — the planner owns this now.
+    //
+    // It used to be a 111-line branch that chose a room, set the router and steered, with
+    // no precondition and no plan. That is why it could re-issue an impossible travel for
+    // ever: nothing was able to express that what it was doing could not work. See
+    // docs/m59-goap-repayment.md, phase 2.
+    //
+    // What replaced it:
+    //   the room CHOICE  -> `huntRoomFor`, policy, computed above into _huntRoomWanted
+    //   the travel       -> `travel_to_hunt_room`, pre: route_reachable
+    //   the wait         -> `acquire_target`, pre: in_hunt_room
+    // and the goal `hunt` maps to the world state `has_target`, so an unreachable hunt
+    // room now yields NO PLAN rather than a packet a second. The ladder then falls to
+    // `idle_rest`, which is the floor that makes declining safe.
 
     if (!active) { onDecision?.({ ticks, goal: null, why: 'nothing to do' }); return; }
 
@@ -2168,7 +2120,10 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
         what: r.what ?? 'nothing else applies — resting', why: r.why ?? null });
       return;
     }
-    const p = planFor(client, { [active.goal]: true }, { session, policy, ws });
+    // A GOAL NAME IS NOT ALWAYS A SYMBOL. `hunt` is the name of a behaviour; the world
+    // state it wants is `has_target`. Everything else still asks for its own name.
+    const goalState = GOAL_STATE[active.goal] ?? { [active.goal]: true };
+    const p = planFor(client, goalState, { session, policy, ws });
     const first = p.found ? (p.names?.[0] ?? null) : null;
 
     // A GOAL THAT CANNOT BE PLANNED IS A FAILURE AND MUST COUNT AS ONE. The old keeper
