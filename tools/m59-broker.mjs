@@ -1031,7 +1031,11 @@ class KeeperProxy {
       faculties: {}, activity: this.activity(),
       town_service: null, committed: null, watchdog: null,
       did: { kills: 0, deaths_in_safe_spot: 0, deaths_in_proven_safe_spot: 0 },
-      stalled: this.live ? false : 'keeper unreachable',
+      // LIVENESS IS NOT THE QUESTION. A tick keeper re-decides every 100ms, so it is
+      // always live even while livelocked — deciding the same impossible action ten times
+      // a second. The keeper now reports an OUTCOME-based verdict (has it reached any
+      // waypoint recently); prefer it, and fall back to liveness only when it is absent.
+      stalled: !this.live ? 'keeper unreachable' : (this._state?.stalled ?? false),
       time: null, coordination: null, last_death: null,
       safe_spot: this.activity() === 'holding safe spot',
       goap: g.plan ? { goal: g.plan.goal ?? null, action: g.action ?? null, plan: g.plan.names ?? [], ws: g.plan.ws ?? null, target: g.plan.target ?? null } : { goal: g.goal ?? null, action: g.action ?? null, plan: [], target: g.target ?? null },

@@ -366,6 +366,32 @@ async function join() {
 
 // ---------------------------------------------------------------- state
 
+// How long a character may go without reaching a single waypoint before it is stalled.
+// Generous: a long walk between rooms still arrives at waypoints along the way, and a
+// character resting or fighting is not travelling at all and is excluded below.
+const STALL_NO_ARRIVAL_MS = Number(process.env.M59_STALL_NO_ARRIVAL_MS || 300000);
+let _lastArrived = 0;
+let _lastArrivedAt = Date.now();
+
+// The verdict the fleet board reads. Null (not stalled) unless the mover has been ASKED
+// to move and has arrived at nothing for STALL_NO_ARRIVAL_MS.
+function stallVerdict() {
+  try {
+    const mv = session?._mover;
+    const st = mv?.stats;
+    if (!st) return false;
+    const arrived = st.arrived ?? 0;
+    if (arrived !== _lastArrived) { _lastArrived = arrived; _lastArrivedAt = Date.now(); return false; }
+    // Not travelling: nothing to arrive at, so silence is not a stall.
+    const moving = st.moving ?? 0;
+    if (!moving) return false;
+    const idleMs = Date.now() - _lastArrivedAt;
+    if (idleMs < STALL_NO_ARRIVAL_MS) return false;
+    return `no waypoint reached in ${Math.round(idleMs / 1000)}s`
+         + ` (moving=${moving} blocked=${st.blockedTicks ?? 0} sideSteps=${mv?.ctl?.stats?.sideSteps ?? 0})`;
+  } catch { return false; }
+}
+
 function state() {
   const c = session.client;
   const me = c?.me;
@@ -375,6 +401,23 @@ function state() {
     agent,
     character: me?.name ?? character,
     in_game: inGame,
+    // STALLED IS AN OUTCOME, NOT A HEARTBEAT.
+    //
+    // The broker's `stalled` was `this.live ? false : 'keeper unreachable'` — purely
+    // whether the keeper's port answers. A tick keeper cannot HANG: it re-decides every
+    // 100ms from scratch, so it is always live. What it can do is LIVELOCK — decide the
+    // same impossible action ten times a second for ever — and every liveness check calls
+    // that healthy.
+    //
+    // JayB, 2026-08-28, room 50 at (2,48): 231,626 ticks, 358,787 blocked steps, 938,856
+    // side-steps and ARRIVED ZERO TIMES across seven hours, with `stalled_count: 0` on the
+    // fleet board the whole time. The stillness detectors could not see it either, because
+    // side-stepping is movement.
+    //
+    // So ask the only question that distinguishes work from motion: has this character
+    // reached ANY waypoint recently. `arrived` is the mover's own counter and it is the
+    // thing a livelock cannot fake.
+    stalled: stallVerdict(),
     room: room ? { name: c?.rsc?.get?.(room.nameRsc) ?? room.name, num: room.num } : null,
     hp: v.health ? { value: v.health.value, max: v.health.max } : null,
     vigor: v.vigor ? { value: v.vigor.value, max: v.vigor.max } : null,
