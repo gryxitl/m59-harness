@@ -409,9 +409,21 @@ export class CharacterController {
     }
 
     const wp = this.path[this.pathIdx];
-    const dx = wp.x - this.x, dy = wp.y - this.y;
-    const dist = Math.hypot(dx, dy);
+    let dx = wp.x - this.x, dy = wp.y - this.y;
+    let dist = Math.hypot(dx, dy);
     if (dist < 1) { this.pathIdx++; return { state: 'moving', advanced: true }; }
+    // DENSITY FIX: the tracer can produce micro-waypoints (6-30 client units apart)
+    // in dense corridors. Each one caps travel = min(speed*dt, dist) to only 6 units,
+    // which is 1/40 of a full step. Skip waypoints we are within MOVE_THRESHOLD (256
+    // units) of so the body always aims at the next meaningful waypoint.
+    // The constraint "dist >= 1" already checked above means we're not AT a waypoint,
+    // but very close — safe to advance past.
+    while (dist < MOVE_THRESHOLD_CLIENT && this.pathIdx + 1 < this.path.length) {
+      this.pathIdx++;
+      dx = this.path[this.pathIdx].x - this.x;
+      dy = this.path[this.pathIdx].y - this.y;
+      dist = Math.hypot(dx, dy);
+    }
 
     // STEER: speed x dt, never further than the waypoint.
     //
