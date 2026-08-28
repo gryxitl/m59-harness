@@ -13,6 +13,7 @@ import { makeDecider, intend, INTENTS, DEFAULT_GOALS,
          creatureLevelOf, levelInBand } from './m59-decide.mjs';
 import { readFileSync } from 'node:fs';
 import { evaluate } from './m59-worldstate.mjs';
+import { isArmed } from './m59-skills.mjs';
 import { planFor } from './m59-plan.mjs';
 import { SYMBOLS } from './m59-worldstate.mjs';
 import { Actuator, TickLoop } from './m59-tick.mjs';
@@ -764,6 +765,39 @@ console.log('\na cast holds the character still, because the tick loop is what b
      /can_pay_create_weapon/.test(rsrc) && /can_pay_blink/.test(rsrc));
   ok('...and still declares what it genuinely restores',
      /'healthy'/.test(rsrc) && /'vigor_rested'/.test(rsrc));
+}
+
+// A CASTER'S ZAP ENCHANTMENT IS A REAL WEAPON, AND NOTHING COULD SEE IT.
+//
+// `zap` is `persench/touchatk` — it does not buff a held weapon, it CREATES an enchantment
+// that acts as one. A caster with zap up and blue mushrooms in the pack is armed and needs
+// no weapon at all.
+//
+// `isArmed` read only the server's use list, so every zapped caster was called unarmed,
+// with two consequences that both punish the build: the `armed` goal fires and sends them
+// to conjure or buy a weapon they do not need, and the hunt band is HALVED —
+// floor(level/4) against floor(level/2) — so a properly armed caster refuses prey it could
+// beat. Three of this fleet's five characters are casters.
+{
+  const mk = (equipped, msgs) => ({
+    equipment: () => ({ known: true, equipped }),
+    eventsSince: () => msgs.map((t, i) => ({ kind: 'message', text: t, at: Date.now() - 100 + i })) });
+  const ON  = 'Sparks jump and crackle around your hands!';
+  const OFF = 'Your hands are no longer charged with electrical energy.';
+  const ALREADY = 'Your hands already crackle with energy.';
+
+  ok('a wielded weapon still counts', isArmed(mk([{ name: 'mace' }], [])) === true);
+  ok('nothing wielded and no zap is unarmed', isArmed(mk([], [])) === false);
+  ok('an ACTIVE zap enchantment counts as armed', isArmed(mk([], [ON])) === true);
+  ok('...and stops counting once it lapses', isArmed(mk([], [ON, OFF])) === false);
+  ok('a refusal because it is ALREADY up also means armed',
+     isArmed(mk([], [ALREADY])) === true);
+
+  // The two guards that must not change.
+  ok('an unreadable use list still abstains to armed',
+     isArmed({ equipment: () => ({ known: false }) }) === true);
+  ok('a client with no event source falls through to the use list',
+     isArmed({ equipment: () => ({ known: true, equipped: [] }) }) === false);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

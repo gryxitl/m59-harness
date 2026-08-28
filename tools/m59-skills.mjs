@@ -29,6 +29,7 @@ import { keepTest as keepTestFor, sellTest as sellTestFor } from './m59-loadout.
 import * as buyers from './m59-buyers.mjs';
 import { readFileSync } from 'node:fs';
 import { isTerminalMovementReason } from './m59-movement.mjs';
+import { zapStatus } from './m59-zap.mjs';
 
 // The merchant index resolves a live object id to the class whose buying rule applies.
 // Read once and kept: it is a built artefact that changes when somebody rebuilds it, and
@@ -397,8 +398,27 @@ export const equippedNow = (c) => (c?.using instanceof Set ? c.using : null);
 export const isArmed = (c) => {
   const eq = c?.equipment?.();
   if (!eq || eq.known === false) return true;
-  return (eq.equipped || []).some(o =>
-    weaponScore(o.name ?? c.rsc?.get?.(o.nameRsc) ?? '') > 0);
+  if ((eq.equipped || []).some(o =>
+        weaponScore(o.name ?? c.rsc?.get?.(o.nameRsc) ?? '') > 0)) return true;
+  // A CASTER'S ZAP ENCHANTMENT IS A REAL WEAPON, AND NOTHING COULD SEE IT.
+  //
+  // `zap` is `persench/touchatk`: it does not buff a held weapon, it CREATES an
+  // enchantment that acts as one. A caster with zap up and blue mushrooms in the pack is
+  // armed, and needs no weapon at all.
+  //
+  // Reading only the server's use list therefore called every zapped caster unarmed, with
+  // two consequences that both punish the build: the `armed` goal fires and sends them to
+  // conjure or buy a weapon they do not need, and the hunt band is HALVED —
+  // floor(level/4) against floor(level/2) — so a properly armed caster is treated as
+  // helpless and refuses prey it could beat.
+  //
+  // The enchantment is not in the use list; it is known from the server's own on/off
+  // messages, which `zapStatus` tracks. Absent or unreadable, this falls through to the
+  // equipment answer, so nothing changes for a character without the spell.
+  try {
+    if (zapStatus?.(c)?.active === true) return true;
+  } catch { /* the enchantment view is best-effort; the use list already answered */ }
+  return false;
 };
 
 // The refusal you get for wielding something you are already wielding. Re-`use` is not
