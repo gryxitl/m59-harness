@@ -262,6 +262,16 @@ export const REST_UNTIL_DEFAULT = 0.95;
 // and short enough that a character which cannot fill its bar goes back to work instead of
 // sitting for ever.
 export const REST_LATCH_MAX_MS = 3 * 60_000;
+// VIGOR IS OUT OF 200, AND RESTING STOPS PAYING AT 80 OF IT.
+//
+// Measured 2026-08-27: post-death samples read `vigor_of: 20/200`, climb to 80/200 while
+// sitting, and stop dead there — then fall again as soon as the character is active
+// (Lee 80 -> 78 -> 76 -> 74 over four minutes of walking). Everything above 80 has to be
+// EATEN, which is why the characters carrying reagents are the ones at 133, 160 and 186.
+//
+// So 80 is the ceiling a rest can reach, and it is the only sensible place to stop.
+export const VIGOR_REST_BELOW = 60;
+export const VIGOR_REST_CEILING = 80;
 const CAST_HOLD_MS = Number(process.env.M59_CAST_HOLD_MS || 11000);
 
 export const INTENTS = {
@@ -752,6 +762,8 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
   // rather than retire it in a corner.
   let _healLatch = false;        // resting until whole, not merely until out of danger
   let _healLatchAt = 0;          // when the latch closed, for the deadline
+  let _vigLatch = false;         // same, for vigor: rest to the ceiling, not to the trigger
+  let _vigLatchAt = 0;
   let _wasResting = false;       // was resting last tick (to send stand before moving)
   let _fighting = false;         // suppress stuck detection while fighting
   let _blacklist = new Set();    // unreachable target IDs
@@ -1023,6 +1035,31 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
         _healLatch = false;
       }
       ws._still_recovering = _healLatch;
+    }
+
+    // THE SAME HYSTERESIS FOR VIGOR, for the same reason and with the same shape.
+    //
+    // `vigor_low` fired below 60 and stopped matching at 60, so a character rested to
+    // exactly the trigger and walked out with 60 of 200 — which activity immediately eats
+    // back down. Sasquatch was sitting at 61 when this was written: one point above the
+    // threshold that would have made him rest, at 30% of his bar, drifting.
+    //
+    // The ceiling is 80 rather than the top of the bar because 80 is where resting stops
+    // paying (see VIGOR_REST_CEILING); asking for more would sit for ever waiting for
+    // something a rest cannot deliver. The deadline is shared with the health latch for
+    // the same reason it exists there.
+    {
+      const v = ws._vigor;
+      const below = policy?.vigorRestBelow ?? VIGOR_REST_BELOW;
+      const ceiling = policy?.vigorRestCeiling ?? VIGOR_REST_CEILING;
+      if (v == null) {
+        _vigLatch = false;
+      } else if (!_vigLatch) {
+        if (v < below) { _vigLatch = true; _vigLatchAt = Date.now(); }
+      } else if (v >= ceiling || Date.now() - _vigLatchAt > REST_LATCH_MAX_MS) {
+        _vigLatch = false;
+      }
+      ws._vigor_recovering = _vigLatch;
     }
 
     // ── DEATH WATCH ──────────────────────────────────────────────────────────────────
@@ -2139,7 +2176,10 @@ export const DEFAULT_GOALS = [
   // in reach even at 40 vigor.
   { goal: 'vigor_low', when: ws => {
       const v = ws._vigor;
-      return v != null && v < 60 && ws.in_reach !== true;
+      if (v == null || ws.in_reach === true) return false;
+      // Latched: enter below the trigger, stay until the rest ceiling. See the note where
+      // `_vigor_recovering` is maintained.
+      return v < VIGOR_REST_BELOW || ws._vigor_recovering === true;
     } },
   // ARMED BEFORE FIGHT. This sat BELOW _fight, and in a room that always has a mummy in it
   // the armed goal therefore never got a turn: JayB fought bare-handed for 212 swings and

@@ -8,7 +8,8 @@
 // on this fleet and must not come back: a plan that cannot be made counting as nothing,
 // and an action reporting success it did not have.
 import { makeDecider, intend, INTENTS, DEFAULT_GOALS,
-         REST_UNTIL_DEFAULT, REST_LATCH_MAX_MS } from './m59-decide.mjs';
+         REST_UNTIL_DEFAULT, REST_LATCH_MAX_MS,
+         VIGOR_REST_BELOW, VIGOR_REST_CEILING } from './m59-decide.mjs';
 import { readFileSync } from 'node:fs';
 import { SYMBOLS } from './m59-worldstate.mjs';
 import { Actuator, TickLoop } from './m59-tick.mjs';
@@ -416,6 +417,48 @@ console.log('\na cast holds the character still, because the tick loop is what b
   ok('the goal is still active at 17 of 20 while recovering',
      healthyGoal.when({ hurt: false, _still_recovering: true,
                         has_target: false, under_attack: false }) === true);
+}
+
+// VIGOR NEEDS THE SAME HYSTERESIS AS HEALTH, AND HAS ITS OWN CEILING.
+//
+// `vigor_low` fired below 60 and stopped matching AT 60, so a character rested to exactly
+// the trigger and set out with 60 of 200 — which activity eats straight back down (Lee
+// measured at 80 -> 78 -> 76 -> 74 over four minutes of walking, 2026-08-27). Sasquatch was
+// sitting at 61: one point above the threshold that would have made him rest, at 30% of
+// his bar.
+//
+// The ceiling is 80, not the top of the bar, because resting stops paying there —
+// post-death samples read 20/200, climb to 80/200, and stop dead. Everything above 80 is
+// eaten, which is why the characters carrying reagents were the ones at 133, 160 and 186.
+{
+  const g = DEFAULT_GOALS.find(x => x.goal === 'vigor_low');
+  ok('the vigor_low goal exists', !!g);
+  ok('the ceiling is the rest cap, not the top of the bar',
+     VIGOR_REST_CEILING === 80 && VIGOR_REST_BELOW === 60);
+
+  // Entering is still the trigger.
+  ok('below the trigger it rests', g.when({ _vigor: 45, in_reach: false }) === true);
+  ok('above the trigger, unlatched, it does not',
+     g.when({ _vigor: 61, _vigor_recovering: false, in_reach: false }) === false);
+
+  // Leaving is the ceiling, not the trigger — the whole point.
+  ok('once resting it KEEPS resting past the trigger',
+     g.when({ _vigor: 70, _vigor_recovering: true, in_reach: false }) === true);
+  ok('and stops at the rest ceiling',
+     g.when({ _vigor: 80, _vigor_recovering: false, in_reach: false }) === false);
+
+  // A fight still wins, latch or no latch.
+  ok('something in reach breaks the rest',
+     g.when({ _vigor: 45, _vigor_recovering: true, in_reach: true }) === false);
+  ok('an unreadable vigor never pins anybody',
+     g.when({ _vigor: null, _vigor_recovering: true, in_reach: false }) === false);
+
+  // The latch arithmetic as the loop runs it.
+  const step = (v, was) => was ? !(v >= VIGOR_REST_CEILING) : v < VIGOR_REST_BELOW;
+  ok('61 does not close the latch', step(61, false) === false);
+  ok('59 does', step(59, false) === true);
+  ok('and it stays closed at 79', step(79, true) === true);
+  ok('opening exactly at the ceiling', step(80, true) === false);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
