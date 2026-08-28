@@ -421,6 +421,34 @@ export class Router {
       }
     }
 
+    // DO NOT HAND OUT A LEG THAT CANNOT BE WALKED.
+    //
+    // The sort above already prefers fine-reachable candidates, and then takes the coarse
+    // pick anyway when none of them is reachable — on the reasoning that a bad leg beats
+    // no leg. It does not: a staging square outside the body's own pocket is re-issued for
+    // ever by whatever is steering, which is how JayB spent seven hours at (2,48) with
+    // 938,856 side-steps and zero arrivals.
+    //
+    // Refusing here is what lets the caller do something else. The hop is marked doorless
+    // so `findPath` routes around it on the next plan rather than offering the same
+    // impossible staging square again, and the decider's ladder falls to a goal that can
+    // make progress — at the bottom, resting. See docs/m59-goap-repayment.md.
+    //
+    // Only on a POSITIVE finding: `fineSet` must exist and be non-empty, or we know
+    // nothing and hand the leg over as before.
+    if (fineSet && fineSet.size && standOn && !fineSet.has(`${standOn.col},${standOn.row}`)) {
+      const hop = `${here}>${next}`;
+      (this._doorless ??= new Set()).add(hop);
+      if (!this._unreachNoted?.has(hop)) {
+        (this._unreachNoted ??= new Set()).add(hop);
+        console.error(`[route] ${this.session?.name ?? '?'} ${hop}: staging square`
+          + ` (${standOn.col},${standOn.row}) is not reachable from (${meNow?.col},${meNow?.row})`
+          + ` — marking the hop unusable and routing around it`);
+      }
+      this.leg = null; this.mark = null; this._committedAim = null;
+      return { why: `${hop}: staging square unreachable; re-routing` };
+    }
+
     // Record what this router is now committed to, so a leg torn down by the oscillation
     // breaker is rebuilt aiming at the SAME square rather than the other one.
     this._committedAim = { next: Number(next), col: standOn?.col, row: standOn?.row };

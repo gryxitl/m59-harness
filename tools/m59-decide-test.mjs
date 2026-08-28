@@ -612,13 +612,25 @@ console.log('\na cast holds the character still, because the tick loop is what b
   ok('an unreadable answer must not strand anybody',
      SYMBOLS.route_reachable.whenUnknown === true);
 
-  // The goal declines while the fact holds.
-  ok('hunt declines when the staging square is unreachable',
-     pick({ ...healthy, route_reachable: false }) === 'idle_rest');
+  // WHERE THE REFUSAL LIVES. It was briefly on the `hunt` goal — decline while
+  // `route_reachable` is false — and that DEADLOCKED: the handler that drops the stale leg
+  // lives inside the goal, so gating the goal meant the leg was never dropped and the
+  // character rested for ever (measured: idle_rest 3,096 ticks against hunt 2). Refusing
+  // at source is what lets the router re-plan, so `hunt` stays ungated and the router
+  // simply never hands out an impossible leg.
+  ok('hunt is not gated on route_reachable — the router refuses instead',
+     pick({ ...healthy, route_reachable: false }) === 'hunt');
   ok('...and hunts normally when it is reachable',
      pick({ ...healthy, route_reachable: true }) === 'hunt');
-  ok('...and hunts when the answer is unknown',
-     pick({ ...healthy, route_reachable: null }) === 'hunt');
+
+  const rsrc = readFileSync(new URL('./m59-route.mjs', import.meta.url), 'utf8');
+  ok('the router refuses a staging square outside the reachable set',
+     /staging square unreachable; re-routing/.test(rsrc));
+  ok('...and marks the hop doorless so findPath routes around it',
+     /staging square[\s\S]{0,400}_doorless \?\?= new Set\(\)/.test(rsrc)
+     || /_doorless \?\?= new Set\(\)[\s\S]{0,400}staging square/.test(rsrc));
+  ok('...only on a positive finding, never on an empty set',
+     /fineSet && fineSet\.size && standOn && !fineSet\.has/.test(rsrc));
 
   // THE FLOOR. This is the property that makes declining safe.
   ok('the ladder ends in something that always accepts',

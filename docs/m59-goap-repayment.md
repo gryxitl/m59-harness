@@ -141,6 +141,14 @@ Not by kills, which move for many reasons. By these:
 ## Log
 
 - 2026-08-28 — opened.
+- 2026-08-28 — phase 1, first attempt gated the `hunt` GOAL on `route_reachable`. That
+  DEADLOCKED: the code that drops the stale leg lives inside the hunt handler, so gating
+  the goal meant the leg was never dropped and three characters rested for ever
+  (idle_rest 3,096 ticks against hunt 2). The lesson generalises to phases 2 and 3 —
+  refusing at the SELECTION point strands whatever cleanup lives in the handler. Refuse at
+  source instead: the router now declines to hand out a leg whose staging square is
+  outside the body's reachable set, marks the hop doorless so `findPath` routes around it,
+  and `hunt` stays ungated.
 - 2026-08-28 — phase 1 landed. The floor (`idle_rest`) was not in the original plan and
   turned out to be the load-bearing half: without something that always accepts, making a
   goal decline just moves the stall one rung down. Worth remembering for phases 2 and 3 —

@@ -2440,8 +2440,7 @@ export const DEFAULT_GOALS = [
   // starves everything below — including resting, which always works. See
   // docs/m59-goap-repayment.md. The handler drops the stale leg, after which this reads
   // null (no leg) and hunting is available again on the next plan.
-  { goal: 'hunt',     when: ws => (ws.has_target === false || ws.target_in_band === false)
-                                 && ws.route_reachable !== false },
+  { goal: 'hunt',     when: ws => ws.has_target === false || ws.target_in_band === false },
   { goal: 'vigor_ok', when: ws => ws.vigor_ok === false && ws.has_food === true
                                  && ws.has_target !== true },
   { goal: 'has_food', when: ws => ws.has_food === false && ws.has_reagents === true },
