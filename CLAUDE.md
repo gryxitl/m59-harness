@@ -26,6 +26,7 @@ covers what you are about to touch, before you touch it. Comments across `tools/
 | change a threshold, a posture, an area or a tactic | [`docs/m59-policy.md`](docs/m59-policy.md) |
 | hand a bot a character, or take one back | [`docs/m59-boundary.md`](docs/m59-boundary.md) |
 | run or extend the offline tests | [`docs/m59-tests.md`](docs/m59-tests.md) |
+| ask why a character is doing nothing, before changing anything | [`docs/m59-telemetry.md`](docs/m59-telemetry.md) |
 
 ## The one-liner
 
@@ -366,6 +367,17 @@ Money, merchants and supply — [`docs/m59-economy.md`](docs/m59-economy.md):
 - A guild want is an END STATE, not an errand, which is what makes it safe to give to twenty-one characters.
 - Four containers, four different rules, and only the pack has two ceilings.
 - A trip that cannot fix the thing that opened it will run for ever, and every lap reports success.
+
+Telemetry — [`docs/m59-telemetry.md`](docs/m59-telemetry.md):
+
+- A keeper can report a healthy 10Hz loop, zero errors and zero skipped ticks while running
+  its decider ONCE IN 195 TICKS. `loop.ticks` against `decide.entries` is the comparison.
+- `skipped` misses a blocking tick entirely: a four-second synchronous block queues ONE
+  timer callback, so the damage shows only in `worst_gap_ms`.
+- A goal reporting `sent=0` may be sending perfectly well — check `/rxstats` before
+  believing a counter written by the code you are debugging.
+- `at=(col,row)` is a SQUARE, and a square centre with no floor and a body with floor share
+  one square number. `ctlAt` and `aim` are the numbers that separate them.
 
 Keepers, deaths and the numbers on the board — [`docs/m59-keeper.md`](docs/m59-keeper.md):
 
