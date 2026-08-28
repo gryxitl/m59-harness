@@ -708,14 +708,48 @@ export class ControllerMover {
           console.error(`[ctlmover] ${this._agent} no square progress in ${BLOCKED_RESYNC_TICKS} ticks`
             + ` at believed (${after.col},${after.row}); the server says (${sv.col},${sv.row})`
             + ` — ${sameSquare ? 're-centring on the stand point' : 'adopting it'}`);
-        // NO FINE POSITION HERE, DELIBERATELY. Every other caller of `serverMovedPlayer`
-        // is adopting a place the server genuinely put the body, and for those the fine
-        // coordinate is the truth and the square centre is a lossy approximation of it.
-        // THIS caller is the opposite: the fine position is the thing that has gone wrong.
-        // The square is fine, the body is pressed into geometry inside it, and re-centring
-        // on the stand point is the entire cure — see the note above. Passing `sv.x, sv.y`
-        // here re-adopts the jam it is trying to escape and the body never moves again.
-        try { this.ctl.serverMovedPlayer(sv.col, sv.row); } catch { /* best effort */ }
+        // RESYNC ESORTING FROM APRX EST UENQUE USES THE SQUARE CENTER.
+        // 座择再 - Son Adopt fine position from a direction that the body can ACTUALLY walk.
+        // The old code re-centred at (col-0.5)*CLIENT_PER_SQUARE — the square centre —
+        // and the body immediately re-jammed into the same wall. Now: try the heading direction first,
+        // then two perpendiculars. Each probe is a short trace from the current point.
+        let reSyncPx = undefined, reSyncPy = undefined;
+        try {
+          const geoFine = this._geo?.();
+          if (geoFine?.traceFineMoveClient && this.ctl.x != null) {
+            const CLIENT_PER_TILE = 1024;
+            const KOD_FINE = 64;
+            // Step probe: 1/8 tile in the direction toward the dest
+            const dx = (this.dest.col - after.col), dy = (this.dest.row - after.row);
+            const len = Math.hypot(dx, dy) || 1;
+            const step = CLIENT_PER_TILE / 8;
+            const dirs = [
+              [dx/len * step, dy/len * step],          // toward dest
+              [-dy/len * step, dx/len * step],          // perpendicular A
+              [dy/len * step, -dx/len * step],          // perpendicular B
+            ];
+            for (const [ppx, ppy] of dirs) {
+              const t = geoFine.traceFineMoveClient(this.ctl.x, this.ctl.y, this.ctl.x + ppx, this.ctl.y + ppy, { slide: true });
+              const moved = t?.x != null ? Math.hypot(t.x - this.ctl.x, t.y - this.ctl.y) : 0;
+              if (t?.moved && moved >= 32) {
+                // Clamp to the current tile boundary so it doesn't leak into a neighbour.
+                const TILE = 1024, PAD = 16;  // stay 16 units off the tile edge
+                const minX = (sv.col - 1) * TILE + PAD, maxX = sv.col * TILE - PAD;
+                const minY = (sv.row - 1) * TILE + PAD, maxY = sv.row * TILE - PAD;
+                const cx2 = Math.max(minX, Math.min(maxX, t.x));
+                const cy2 = Math.max(minY, Math.min(maxY, t.y));
+                const PROTO_OFFSET = 64, PROTO_SCALE = 16;
+                reSyncPx = Math.round(cx2 / PROTO_SCALE + PROTO_OFFSET);
+                reSyncPy = Math.round(cy2 / PROTO_SCALE + PROTO_OFFSET);
+                break;
+              }
+            }
+          }
+        } catch { /* best-effort geometry */ }
+        try {
+          if (reSyncPx != null) this.ctl.serverMovedPlayer(sv.col, sv.row, reSyncPx, reSyncPy);
+          else this.ctl.serverMovedPlayer(sv.col, sv.row);
+        } catch { /* best effort */ }
         this._plannedFor = null;        // the plan was made from somewhere we are not
         return { state: 'moving', to: this.dest, resynced: true };
       }
