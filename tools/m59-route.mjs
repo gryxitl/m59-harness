@@ -189,8 +189,9 @@ export class Router {
   _planLeg(here) {
     // A new room: the reachability cache (keyed by room) is for the old room now.
     this._reachCache = null;
+    console.error(`[routedbg] _planLeg entered for room=${here}`);
     const world = this.session?.world;
-    if (!world) return { why: 'no world' };
+    if (!world) { console.error(`[routedbg] no world`); return { why: 'no world' }; }
     let hops = null;
     try {
       // A HOP THE ROOM HAS NO DOOR FOR MUST NOT BE PLANNED AGAIN.
@@ -208,10 +209,45 @@ export class Router {
       const p = findPath(this.map, here, this.dest,
                          this._doorless?.size ? { blockedHops: this._doorless } : undefined);
       if (p?.found) hops = p.hops ?? [];
+      console.error(`[routedbg] _planLeg(${here}>${this.dest}) doorless=${this._doorless ? [...this._doorless].join(',') : 'none'} findPath.found=${p?.found} hops=${p?.hops?.length ?? 0}`);
     } catch (e) { return { why: `route failed: ${e.message}` }; }
     if (!hops) return { why: `no route from ${here} to ${this.dest}` };
 
     const next = hops.length ? (hops[0].to ?? hops[0]) : this.dest;
+    // Trace: see what path findPath returns and whether blockedHops is active
+    if (process.env.M59_ROUTE_DEBUG === '1')
+      console.error(`[routedbg] ${this.session?.name} _planLeg(${here}>${this.dest}): next=${next} doorless=${this._doorless?.size}`);
+
+    // AN EDGE EXIT WITH A CONDITION THAT IS NOT MET IS NOT USABLE FROM THE CHARACTER
+    // CURRENT POSITION. A condition like "row > 115" means the character must be at
+    // row 115+ before the west exit opens. Planning the hop anyway stages at a wall
+    // that will never open from the current position and dead-ends the route.
+    // block the hop and re-plan via the alternate path.
+    {
+      const kodRoom = this.map?.rooms?.[String(here)];
+      const edgeExits = kodRoom?.edgeExits ?? [];
+      const toLeg = String(hops[0]?.to ?? hops[0] ?? next);
+      const edges = edgeExits.filter(e => String(e.to) === toLeg);
+      if (edges.length) {
+        // The condition is checked if the edge has no explicit condition (type=null).
+        const me = this.session?.client?.self;
+        const anyAllows = edges.some(e => {
+          if (!e.condition) return true;
+          const { type, threshold } = e.condition;
+          if (type === 1) return (me?.row ?? 0) > threshold;     // row > threshold
+          if (type === 2) return (me?.row ?? Infinity) < threshold;  // row < threshold
+          if (type === 3) return (me?.col ?? 0) > threshold;     // col > threshold
+          if (type === 4) return (me?.col ?? Infinity) < threshold; // col < threshold
+          return true;  // unknown condition: allow
+        });
+        if (!anyAllows) {
+          (this._doorless ??= new Set()).add(`${here}>${next}`);
+          this.leg = null;
+          console.error(`[route] ${this.session?.name ?? '?'} exit ${here}>${next} condition not met at (${me?.col},${me?.row}) — marking hop blocked`);
+          return { why: `exit ${here}>${next} condition not met at (${me?.col},${me?.row}); re-routing` };
+        }
+      }
+    }
     let exits = [];
     try { exits = world.exits() ?? []; } catch (e) { return { why: `exits failed: ${e.message}` }; }
     // PREFER EXITS WHOSE STAND_ON IS REACHABLE. A go/edge exit whose stand_on square
@@ -866,6 +902,10 @@ export class Router {
    */
   tick(frame, act) {
     const t = this.now();
+    if (process.env.M59_ROUTE_DEBUG === '1' && (this.tickCount ?? 0) % 50 === 0) {
+      const n = (this.tickCount = (this.tickCount || 0) + 1);
+      console.error(`[routedbg] tick#${n} dest=${this.dest} state=${this.lastState} leg=${this.leg?.fromRoom}>${this.leg?.next}`);
+    }
     if (this.dest == null) return this._say('idle');
     const here = resolveRoomNum(frame?.room ?? {}, this.map);
     const me = frame?.position;
