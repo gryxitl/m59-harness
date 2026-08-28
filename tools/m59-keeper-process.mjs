@@ -236,6 +236,23 @@ async function join() {
           // dashboard saying nothing was driving JayB while the tick driver swung at mummies.
           session._tickDecision = { goal: d.goal ?? null, action: d.action ?? null,
                                     what: d.what ?? null, why: d.why ?? null, at: Date.now() };
+          // WHERE THE TICKS GO. A character sending 0.33 packets a second cannot hunt
+          // however good its decisions are, and the per-goal counters are the only way to
+          // tell "held by a guard" from "never asked to move" from "asked and refused".
+          // Cheap: two integers per goal, no allocation on the hot path after the first
+          // tick of each kind.
+          const ts = (session._tickStats ??= { since: Date.now(), n: 0, sent: 0, byGoal: {} });
+          ts.n++;
+          if (d.sent) ts.sent++;
+          const g = d.goal ?? 'none';
+          const b = (ts.byGoal[g] ??= { n: 0, sent: 0, actions: {} });
+          b.n++;
+          if (d.sent) b.sent++;
+          if (d.action) {
+            const a = (b.actions[d.action] ??= { n: 0, sent: 0 });
+            a.n++;
+            if (d.sent) a.sent++;
+          }
           // Log decisions that change, not every tick.
           const line = `${d.goal ?? 'idle'}${d.action ? ' -> ' + d.action : ''}${d.what ? ' (' + d.what + ')' : ''}${d.why ? ' — ' + d.why : ''}`;
           if (line !== lastTickLog) {
@@ -444,6 +461,40 @@ const server = createServer(async (req, res) => {
     if (req.method === 'GET' && path === '/state') {
       // Use cached state to avoid blocking on the live session
       json(cachedState || state());
+      return;
+    }
+
+    // WHERE DID THE TICKS GO, and how fast is the loop really running. See the note by
+    // `_tickStats`. `?reset=1` zeroes the window so two readings can be compared.
+    if (req.method === 'GET' && path === '/tickstats') {
+      const ts = session._tickStats;
+      if (!ts) { json({ error: 'no ticks recorded yet' }); return; }
+      const elapsed = Math.max(1, Date.now() - ts.since) / 1000;
+      // The loop's own numbers: asked-for period against the measured one.
+      const L = session._tickLoop ?? autopilot?._tickLoop ?? null;
+      const g = L?.stats?.gaps ?? null;
+      const loop = L ? {
+        hz_configured: L.intervalMs ? +(1000 / L.intervalMs).toFixed(2) : null,
+        interval_ms_configured: L.intervalMs ?? null,
+        interval_ms_measured: g && g.n ? +(g.sum / g.n).toFixed(1) : null,
+        hz_measured: g && g.n ? +(1000 / (g.sum / g.n)).toFixed(2) : null,
+        worst_gap_ms: g?.max ?? null,
+        gaps_over_2x: g?.over2x ?? null,
+        ticks: L.stats?.ticks ?? null, skipped: L.stats?.skipped ?? null,
+        errors: L.stats?.errors ?? null, longest_decide_ms: L.stats?.longest_decide_ms ?? null,
+      } : null;
+      const rows = Object.entries(ts.byGoal)
+        .map(([goal, b]) => ({ goal, ticks: b.n, sent: b.sent,
+                               pct: +(100 * b.n / ts.n).toFixed(1),
+                               actions: b.actions }))
+        .sort((a, b) => b.ticks - a.ticks);
+      json({ window_s: +elapsed.toFixed(1), ticks: ts.n,
+             ticks_per_sec: +(ts.n / elapsed).toFixed(2),
+             sent: ts.sent, sent_per_sec: +(ts.sent / elapsed).toFixed(2),
+             sent_pct: +(100 * ts.sent / Math.max(1, ts.n)).toFixed(1),
+             loop, by_goal: rows });
+      if (new URL(req.url, 'http://x').searchParams.get('reset') === '1')
+        session._tickStats = { since: Date.now(), n: 0, sent: 0, byGoal: {} };
       return;
     }
 

@@ -557,6 +557,18 @@ export class TickLoop {
     if (this.frozen) { this._lastTickAt = Date.now(); this.stats.frozen_ticks++; return; }
     this.busy = true;
     const t0 = Date.now();
+    // THE PERIOD, NOT THE DURATION. `longest_decide_ms` and the tick-metrics line both
+    // measure how long a tick TOOK; neither says how often one happens. A loop asked for
+    // 10Hz that actually runs at 2Hz caps every packet rate downstream, and nothing in the
+    // existing counters would show it — `skipped` only counts re-entry while busy.
+    if (this._prevTickAt) {
+      const gap = t0 - this._prevTickAt;
+      const g = (this.stats.gaps ??= { n: 0, sum: 0, max: 0, over2x: 0 });
+      g.n++; g.sum += gap;
+      if (gap > g.max) g.max = gap;
+      if (gap > this.intervalMs * 2) g.over2x++;
+    }
+    this._prevTickAt = t0;
     // DIAGNOSTIC: a heartbeat so a silent stall is visible. A tick loop that has stopped
     // producing decide() calls (0% CPU, no log) is otherwise indistinguishable from a
     // healthy idle. Log the stats every 50 ticks and on the first 10s of silence.
