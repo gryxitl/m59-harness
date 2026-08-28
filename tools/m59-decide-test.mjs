@@ -360,5 +360,32 @@ console.log('\na cast holds the character still, because the tick loop is what b
   ok('it steers instead', again.sent !== undefined);
 }
 
+// THE MERCHANT DEPENDS ON THE GOODS, AND SENDING THE WRONG ONES IS SILENT.
+//
+// `SELL_ROOM` was one hardcoded room for everything, and it is a BLACKSMITH:
+// JasperBlacksmith buys weapon and wearable (jssmith.kod:93) and nothing else. This
+// fleet's loot is reagents and gems, so the trip ran, the sale executed, and the log read
+// `[sell] t1: sold 0 item(s) to Quintor` over and over — the documented trap, in which a
+// smith offered a mushroom returns a silence rather than an error. Gountrug walked to
+// Jasper with eight elderberry, eight mushrooms, four herbs, six red mushrooms and two
+// sapphires and sold none of it. 2026-08-27.
+{
+  const mk = (names) => ({ inventory: names.map(n => ({ name: n })) });
+  const dest = (names) => {
+    const router = { dest: null, to(d) { this.dest = d; }, tick: () => ({ state: 'moving' }) };
+    INTENTS.travel_to({}, {}, { session: { _router: router }, client: mk(names) });
+    return router.dest;
+  };
+
+  ok('reagents go to the grocer, not the smith',
+     dest(['elderberry', 'mushroom', 'herb']) === 151, String(dest(['elderberry'])));
+  ok('a gem goes there too', dest(['sapphire']) === 151);
+  ok('a spare weapon still goes to the smith', dest(['mace', 'mace']) === 374);
+  ok('armour goes to the smith as well', dest(['leather armor']) === 374);
+  ok('a mixed pack prefers the smith, because only he buys the gear half',
+     dest(['mace', 'elderberry']) === 374);
+  ok('an empty pack falls back to the smith', dest([]) === 374);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

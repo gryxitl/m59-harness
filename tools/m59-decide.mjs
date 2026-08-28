@@ -183,6 +183,34 @@ function attackAbility(name) {
 const SMITH_ROOM = Number(process.env.M59_SMITH_ROOM || 374);
 
 const SELL_ROOM = Number(process.env.M59_SELL_ROOM || 374);   // Quintor, Jasper Blacksmith
+// Solomon's Edibles, off Cor Noth. `KNOWN_BUYERS` calls him CornothGrocer, and
+// `cngrocer.kod:84` has him buying reagent AND sundry — which between them cover every
+// mushroom, herb, elderberry and gem this fleet picks up.
+const REAGENT_SELL_ROOM = Number(process.env.M59_REAGENT_SELL_ROOM || 151);
+
+// WHICH MERCHANT DEPENDS ON WHAT IS IN THE PACK, and sending the wrong goods is SILENT.
+//
+// `SELL_ROOM` was one hardcoded room for everything, and it is a BLACKSMITH: JasperBlacksmith
+// buys weapon and wearable (jssmith.kod:93) and nothing else. The fleet's loot is reagents
+// and gems, so the trip ran, the sale executed, and the log read
+//
+//     [sell] t1: sold 0 item(s) to Quintor
+//
+// over and over — which is exactly the trap the economy notes warn about: a smith does not
+// buy mushrooms, and offering him one is a successful call that returns a silence. Gountrug
+// walked to Jasper carrying eight elderberry, eight mushrooms, four herbs, six red mushrooms
+// and two sapphires, and sold none of it. 2026-08-27.
+//
+// Weapons still go to the smith, because that is who buys them and `over_weapons` is one of
+// the two triggers. Everything else goes to the grocer.
+function sellRoomFor(client) {
+  const inv = Array.isArray(client?.inventory) ? client.inventory : [];
+  const named = inv.map(o => String(client?.rsc?.get?.(o.nameRsc) ?? o.name ?? '').toLowerCase());
+  const GEAR_RE = /\b(mace|sword|axe|hammer|dagger|club|staff|halberd|spear|flail|scimitar|rapier)\b|armor|armour|shield|helmet|helm/i;
+  const hasGear = named.some(n => GEAR_RE.test(n));
+  if (hasGear) return SELL_ROOM;
+  return named.length ? REAGENT_SELL_ROOM : SELL_ROOM;
+}
 const BANK_ROOM = Number(process.env.M59_BANK_ROOM || 376);   // Yevitan, Jasper Banker
 import { creatureKey, preyNames } from './m59-combat.mjs';
 import { recordEvent } from './m59-ledger.mjs';
@@ -336,7 +364,7 @@ export const INTENTS = {
   travel_to: (f, act, ctx) => {
     const s = ctx.session;
     if (!s?._router) return { sent: false, why: 'no router to reach a shop' };
-    const dest = SELL_ROOM;
+    const dest = sellRoomFor(ctx.client);
     if (s._router.dest !== dest) {
       s._router.to(dest);
       return { sent: true, what: `travel to the merchant (room ${dest})` };
@@ -351,7 +379,7 @@ export const INTENTS = {
     const list = c?.room?.objects instanceof Map ? [...c.room.objects.values()] : [];
     const buyer = list.find(o => trustedBuyer(String(c?.rsc?.get?.(o.nameRsc) ?? o.name ?? '')));
     if (!buyer) {
-      const dest = SELL_ROOM;
+      const dest = sellRoomFor(c);
       if (!s?._router) return { sent: false, why: 'no router to reach a buyer' };
       if (s._router.dest !== dest) { s._router.to(dest); return { sent: true, what: `travel to Quintor (room ${dest}) to sell` }; }
       const r = routeIntent(s._router)(f, act);
