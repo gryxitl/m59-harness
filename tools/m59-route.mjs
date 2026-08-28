@@ -515,8 +515,19 @@ export class Router {
       const dx = dir === 'east' ? 1 : dir === 'west' ? -1 : 0;
       const dy = dir === 'south' ? 1 : dir === 'north' ? -1 : 0;
       if (dx || dy) {
+        // USE THE KOD DIMENSIONS, NOT THE .roo GEO, FOR THE OFF-ROOM TARGET.
+        // The .roo file covers only the walkable region of a room (ups 48 rows),
+        // but the KOD room may be much larger (129 rows for King's Way 576).
+        // The server sees the new row/col against the KOD piRows/piCols (from the
+        // kompendium map). An off-map target derived from the geo (row 49) is inside
+        // the KOD room, so the server treats it as a normal in-room move and fires
+        // no boundary crossing. The target must be one past the KOD boundary, not
+        // one past the .roo boundary.
         const geo = this._geo?.();
-        const rows = geo?.rows, cols = geo?.cols;
+        // Fallback chain: KOD room dims (from map) > geo dims > one step from standOn
+        const kodRoom = this.map?.rooms?.[String(here)];
+        const rows = kodRoom?.rows ?? geo?.rows;
+        const cols = kodRoom?.cols ?? geo?.cols;
         let col = standOn.col + dx, row = standOn.row + dy;
         if (dir === 'north') row = 0;
         else if (dir === 'west') col = 0;
