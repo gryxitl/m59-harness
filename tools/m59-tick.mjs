@@ -382,7 +382,10 @@ export class Actuator {
   }
   go() {
     const c = this.session.client;
-    return this._send('move', () => c.go(), 0);
+    // kind='go', not 'move': the pacer coalesces same-kind packets, so if go() shares
+    // the 'move' kind it collides with moveToSquare and only one fires per 200ms slot.
+    // 'go' is its own slot; the server sees BP_REQ_GO regardless of the pacer kind.
+    return this._send('go', () => c.go(), 0);
   }
 
   // -- combat

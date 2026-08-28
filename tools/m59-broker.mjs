@@ -12904,8 +12904,9 @@ async function selftest(account, password) {
 // imported as a module (e.g. by the keeper process). The keeper process
 // imports Session and Pacer from this file; it does not need the HTTP
 // server, the fleet resume, or the background tasks.
-const isMainModule = process.argv[1] &&
-  realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+const isMainModule = process.argv[1]
+  ? realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])
+  : process.argv.slice(2).some(a => a.startsWith('--http') || a === '--selftest' || a === '--stdio');
 
 const argv = process.argv.slice(2);
 if (argv.includes('--selftest')) {

@@ -15,7 +15,9 @@ process.env.M59_KEEPER = '1';
 //   7. Saves state periodically
 //   8. Handles SIGTERM gracefully
 
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join as pathJoin, dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createServer } from 'http';
 import { Session, Pacer } from './m59-session.mjs';
 import { autopilotFor, dropAutopilot, autopilotIfAny } from './m59-autopilot.mjs';
@@ -53,9 +55,10 @@ console.error(`[keeper] ${agent} starting on port ${port} (fleet: ${fleetName})`
 // Resolve the fleet name to a file path, same as the broker does.
 // The default fleet is substrate/fleet-state.json.
 // Named fleets are substrate/fleet-<name>.json.
+const HERE_dir = dirname(fileURLToPath(import.meta.url));
 const fleetPath = fleetName === 'default' || fleetName === '-'
-  ? 'substrate/fleet-state.json'
-  : `substrate/fleet-${fleetName}.json`;
+  ? pathJoin(HERE_dir, '..', 'substrate', 'fleet-state.json')
+  : pathJoin(HERE_dir, '..', 'substrate', `fleet-${fleetName}.json`);
 
 let fleet;
 try {
