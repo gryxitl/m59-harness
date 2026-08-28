@@ -122,9 +122,18 @@ console.log('\nthe target comes from the world state, never a second search');
 {
   const foe = { id: 42, col: 6, row: 5, flags: 0 };
   const { session } = world({ objects: new Map([[42, foe]]) });
+  // ASSERT THE SWING, NOT THE SENTENCE. This used to regex the id out of `what`,
+  // which broke the moment `attack` started running through the CombatController —
+  // the swing still went to 42, the prose just stopped naming it. Same lesson as the
+  // refusal-wording assertion above: pin the behaviour, and let the words move.
+  const swings = [];
+  const spied = session.client.attack?.bind(session.client);
+  session.client.attack = (id) => { swings.push(id); return spied?.(id); };
   const r1 = intend('attack', { objects: session.client.room.objects }, new Actuator(session),
                     { client: session.client, session, ws: { _targetId: 42 } });
-  ok('with a target in the ws it swings at that id', r1.sent === true && /42/.test(r1.what));
+  ok('with a target in the ws it swings at that id',
+     r1.sent === true && swings.includes(42),
+     `sent=${r1.sent} swings=${JSON.stringify(swings)}`);
   const r2 = intend('attack', { objects: session.client.room.objects }, new Actuator(session),
                     { client: session.client, session, ws: {} });
   ok('with none it refuses rather than picking one', r2.sent === false,
@@ -646,10 +655,14 @@ console.log('\na cast holds the character still, because the tick loop is what b
 
   // Survival still outranks everything, which the plan says must not change.
   const order = DEFAULT_GOALS.map(g => g.goal);
+  // `indexOf` is the FIRST occurrence, and both `flee_danger` and `idle_rest` now appear
+  // twice: once where they are the right answer, and once in the total cover at the
+  // bottom. What must hold is that the high occurrence outranks work and that the LAST
+  // rung is the floor — which is what these say now.
   ok('survival still outranks work',
      order.indexOf('flee_danger') < order.indexOf('hunt')
      && order.indexOf('healthy') < order.indexOf('hunt')
-     && order.indexOf('idle_rest') === order.length - 1);
+     && order[order.length - 1] === 'idle_rest');
 
   // travel_to is now unplannable without the precondition.
   const src = readFileSync(new URL('./m59-act/travel-to.mjs', import.meta.url), 'utf8');
@@ -798,6 +811,164 @@ console.log('\na cast holds the character still, because the tick loop is what b
      isArmed({ equipment: () => ({ known: false }) }) === true);
   ok('a client with no event source falls through to the use list',
      isArmed({ equipment: () => ({ known: true, equipped: [] }) }) === false);
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\nNO HEALTH AND DISTANCE COMBINATION LETS A HURT CHARACTER WALK AT A MOB');
+{
+  // THE GUARD FOR PHASE 3, AND THE ONE THAT SHOULD FAIL IF ANYBODY UNDOES IT.
+  //
+  // `_fight` used to hand the whole decision to the CombatController, which checked
+  // health at the top of its `close` phase and backed off below 55%. That check is
+  // gone — the ladder owns retreat now, which is right, because two retreat rules with
+  // two thresholds meant the one that fired was whichever number was crossed first.
+  //
+  // But removing it made the ladder's coverage load-bearing, and the ladder had a hole:
+  // `flee_hurt` required `in_reach`, so a character at 30% health with the mob one
+  // square outside melee selected `_fight` — and `_fight` plans `approach_target`. It
+  // would walk TOWARDS the thing that hurt it and only be allowed to flee once it
+  // arrived and got hit again.
+  //
+  // This sweeps the whole space rather than sampling it, because the hole was not at a
+  // threshold — it was in a corner two booleans wide.
+  const engaged = (hp, { inReach, underAttack }) => ({
+    has_target: true, target_in_band: true, in_reach: inReach,
+    under_attack: underAttack, hurt: hp < 80,
+    below_flee: hp <= 70, critical: hp <= 20,
+    healthy: hp >= 95, armed: true, vigor_ok: true, has_food: true,
+    fleeing: false, outnumbered: false, entombed: false,
+    in_underworld: false, pocket_has_exit: true, can_leave: true,
+  });
+  const pick = (ws) => DEFAULT_GOALS.find(g => g.when?.(ws))?.goal ?? '(none)';
+  const FLEES = new Set(['flee_hurt', 'flee_danger']);
+
+  let holes = [];
+  for (const hp of [70, 65, 55, 45, 35, 30, 25, 20, 15, 10, 5]) {
+    for (const inReach of [true, false]) {
+      for (const underAttack of [true, false]) {
+        const g = pick(engaged(hp, { inReach, underAttack }));
+        if (!FLEES.has(g)) holes.push({ hp, inReach, underAttack, goal: g });
+      }
+    }
+  }
+  ok('below the flee line, every combination runs — none of them fights or approaches',
+     holes.length === 0, JSON.stringify(holes.slice(0, 6)));
+
+  // The other half: this must not have been bought by making everyone flee always.
+  // A healthy character with an in-band quarry still fights, in reach or not.
+  let fights = 0;
+  for (const inReach of [true, false])
+    for (const underAttack of [true, false])
+      if (pick(engaged(95, { inReach, underAttack })) === '_fight') fights++;
+  ok('...and a healthy character still takes the fight', fights === 4);
+}
+
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\n_fight IS PLANNED NOW: approach, then swing');
+{
+  // Phase 3 end to end, through the real decider rather than the planner alone.
+  // `_fight` maps to the world state `!has_target` — the quarry stops existing — and
+  // the two ways to get there are ordinary actions: `approach_target` achieves
+  // `in_reach`, `attack` consumes it. What this pins is that the decision changes with
+  // the distance, which is exactly what the hand-written phase machine used to decide.
+  // A giant rat, not a baby spider: the selector refuses a quarry whose ATTACK ABILITY
+  // (3*level + 60*difficulty) is over the danger cap, and a baby spider's 315 is over it
+  // at this max health while a rat's 150 is not. See the table beside `dangerCap`.
+  const foeAt = (col) => new Map([[42, { id: 42, col, row: 5, flags: 0, name: 'giant rat' }]]);
+  const decisionFor = (col) => {
+    const { session } = world({ hp: 20, maxHp: 20, vigor: 150,
+                                equipped: [{ id: 1, name: 'mace' }], objects: foeAt(col) });
+    let seen = null;
+    const decide = makeDecider({ session, goals: DEFAULT_GOALS,
+                                 onDecision: (d) => { seen = d; } });
+    decide({ in_game: true, objects: session.client.room.objects,
+             position: session.client.self, vitals: { health: { pct: 100 } } },
+           new Actuator(session), null);
+    return seen;
+  };
+
+  const near = decisionFor(6);          // adjacent
+  ok('adjacent, the goal is the fight', near?.goal === '_fight',
+     JSON.stringify(near));
+  const far = decisionFor(15);          // across the room
+  ok('across the room it is still the fight goal', far?.goal === '_fight',
+     JSON.stringify(far));
+  // The actions differ even though the goal does not — that IS the migration.
+  ok('but the planned action is not the same at both distances',
+     near?.action !== far?.action, `near=${near?.action} far=${far?.action}`);
+  ok('...and from across the room it closes rather than swinging',
+     far?.action === 'approach_target', JSON.stringify(far));
+  ok('...while from beside it, it swings',
+     near?.action === 'attack', JSON.stringify(near));
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\nTHERE IS ALWAYS SOMETHING TO DO — NO WORLD STATE SELECTS NO GOAL');
+{
+  // A stall does not need a bug in a handler. It only needs a combination of symbols
+  // that every rung declines, and the commonest source of those is a symbol that is
+  // NULL rather than true or false — "we could not tell". `_fight` asked for
+  // `target_in_band === true` and `hunt` for `=== false`, so an unresolved creature
+  // level matched neither; `idle_rest` excludes a character holding a target; and the
+  // character had no goal at all. Watched live as Lee, 192 ticks of `none`.
+  //
+  // Sweeping the tri-state space is the only honest way to check this, because the hole
+  // was not at a threshold — it was where two rungs both said "not my case".
+  const TRI = [true, false, null];
+  const pick = (ws) => DEFAULT_GOALS.find(g => g.when?.(ws))?.goal ?? null;
+
+  const holes = [];
+  for (const has_target of TRI)
+    for (const target_in_band of TRI)
+      for (const under_attack of TRI)
+        for (const hurt of TRI)
+          for (const armed of TRI) {
+            const ws = { has_target, target_in_band, under_attack, hurt, armed,
+              in_reach: false, below_flee: false, critical: false,
+              vigor_ok: true, has_food: true, fleeing: false, outnumbered: false,
+              entombed: false, in_underworld: false, pocket_has_exit: true,
+              can_leave: true, can_arm: true };
+            if (pick(ws) === null)
+              holes.push({ has_target, target_in_band, under_attack, hurt, armed });
+          }
+  ok('every combination of the five combat symbols selects some goal',
+     holes.length === 0, `${holes.length} with no goal, e.g. ${JSON.stringify(holes.slice(0, 4))}`);
+
+  // AND THE INVARIANT IS STRUCTURAL, NOT A PROPERTY OF THE CONDITIONS ABOVE.
+  //
+  // The sweep above covers five symbols; the rungs read a dozen. Closing corners one at
+  // a time is what kept producing them — each fix made one pair of rungs agree and left
+  // the next pair to be found. The bottom rung takes no world state at all, so totality
+  // cannot be broken by editing anything above it. If this assertion ever fails, the
+  // ladder has stopped being a total cover and `none` will come back.
+  const last = DEFAULT_GOALS[DEFAULT_GOALS.length - 1];
+  ok('the last rung accepts unconditionally', last.when({}) === true && last.when() === true,
+     JSON.stringify(last.goal));
+  ok('...and it is a safe one to land on', last.goal === 'idle_rest', last.goal);
+
+  // The empty world state is the one a keeper sees on its very first tick, before
+  // anything has been read back. It must still produce a goal.
+  ok('a completely unknown world still selects a goal', pick({}) !== null);
+
+  // Randomised tri-state across every symbol any rung mentions — cheap insurance that
+  // the two bottom rungs really are reached rather than shadowed by a throw.
+  const NAMES = ['has_target','target_in_band','under_attack','hurt','armed','critical',
+                 'in_reach','fit_to_engage','vigor_floor','below_flee','fleeing',
+                 'outnumbered','entombed','in_underworld','pocket_has_exit','can_leave',
+                 'can_arm','vigor_ok','has_food','has_reagents','in_raza','raza_outgrown',
+                 'purse_heavy','over_weapons','has_loot','_still_recovering'];
+  let random_holes = 0, threw = 0;
+  for (let i = 0; i < 4000; i++) {
+    const ws = {};
+    for (const n of NAMES) ws[n] = TRI[Math.floor(Math.random() * 3)];
+    try { if (pick(ws) === null) random_holes++; } catch { threw++; }
+  }
+  ok('4000 random tri-state worlds all select a goal', random_holes === 0, `${random_holes} holes`);
+  ok('...and no rung throws on an unexpected shape', threw === 0, `${threw} threw`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

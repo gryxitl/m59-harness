@@ -91,6 +91,86 @@ const WEAPONISH = /\b(mace|sword|axe|hammer|dagger|club|staff|halberd|spear|flai
 // Bolt spells (zap, fire bolt) travel several squares, so casters can
 // engage from farther out than melee.
 const CAST_REACH = 8;
+
+// ─── ONE REACH RULE, SHARED BY THE PLANNER AND THE SWING ───────────────────────
+//
+// These used to be two rules with two metrics. `in_reach` (m59-worldstate.mjs)
+// asked whether the target was inside a EUCLIDEAN disc of radius 3 — the server's
+// own bound — while this file decided whether to swing on MANHATTAN <= 2, the
+// deliberately conservative bound the JayB measurement above bought. Both are
+// defensible alone; together they livelock. A target three squares NSEW reads
+// in_reach TRUE to the planner and OUT of reach to the mover, so the planner picks
+// `attack`, the swing is refused for range, nothing changes, and the same decision
+// is taken again ten times a second.
+//
+// So the DECISION to swing has one home, and it is the conservative one: a swing
+// refused for range costs the whole cooldown second it was paced against. The
+// server's Euclidean bound stays exported from m59-worldstate.mjs as the fact it
+// is; this is the rule we act on.
+
+/**
+ * The character's attack mode, as a pure read of the client.
+ * Casters (no weapon equipped, an attack spell known) bolt from CAST_REACH;
+ * everyone else swings at MELEE_REACH, or PUNCH_REACH bare-handed.
+ */
+export function attackSpellFor(client) {
+  if (!client) return null;
+  // Do NOT use skills.isArmed here — it defaults to `true` when the equipment read
+  // is unknown ("a failed read must not idle the fleet"), which makes a caster look
+  // like a melee fighter.
+  let hasWeapon = false;
+  try {
+    const eq = client.equipment?.();
+    if (eq?.known !== false && Array.isArray(eq.equipped)) {
+      hasWeapon = eq.equipped.some(o => {
+        const n = (o.name ?? client.rsc?.get?.(o.nameRsc) ?? '').toLowerCase();
+        return /sword|axe|club|mace|hammer|dagger|staff|spear|bow|claymore|scimitar/.test(n);
+      });
+    }
+  } catch {}
+  if (hasWeapon) return null;
+  const spells = client.spells ?? [];
+  if (!spells.length) return null;
+  const norm = (s) => String(client.rsc?.get?.(s.nameRsc) ?? s.name ?? '').toLowerCase();
+  // Zap is NOT a bolt — it is the persistent touch enchantment, maintained by
+  // _maybeCastZap. Returning it here would make a bare-handed zap-caster "cast zap"
+  // as a bolt every swing instead of keeping the enchantment up.
+  const ATK = ['fire','ice','bolt','missile','flame','frost','shock','lightning','acid'];
+  for (const s of spells) {
+    const n = norm(s);
+    if (n === 'zap') continue;
+    if (ATK.some(a => n.includes(a))) return { id: s.id, name: n };
+  }
+  return null;
+}
+
+/** Is a weapon equipped? Unknown reads assume armed, the safer error. */
+export function armedFor(client) {
+  try {
+    const eq = client?.equipment?.();
+    if (!eq || eq.known === false) return true;
+    return (eq.equipped ?? []).some(o => WEAPONISH.test(String(o.name ?? '')));
+  } catch { return true; }
+}
+
+/** How far this character can attack from, in squares, given its mode. */
+export function attackReachFor(client) {
+  if (attackSpellFor(client)) return CAST_REACH;
+  return armedFor(client) ? MELEE_REACH : PUNCH_REACH;
+}
+
+/**
+ * Can this character attack that target from where it stands?
+ * MANHATTAN, because that is what the mover costs and what the swing was
+ * measured against. Returns null when either position is unknown — the caller
+ * decides what an unknown means, and `in_reach` reads it as "do not swing".
+ */
+export function targetInReach(client, target) {
+  const me = client?.self;
+  if (!me || !target || me.col == null || target.col == null) return null;
+  const d = Math.abs(target.col - me.col) + Math.abs(target.row - me.row);
+  return d <= attackReachFor(client);
+}
 // Swing cooldown: one swing per 1000ms (the server's IsOkayAttackTime threshold).
 // Previously 950ms, which was under the server cooldown and caused rejected swings.
 // At 1000ms we hit the server's rate exactly: one clean swing per second.
@@ -242,7 +322,19 @@ export class CombatController {
    *   the swing must land on the same one.
    * @returns {object} { kind, what, why? }
    */
-  tick(frame, act, ws) {
+  /**
+   * One combat action.
+   *
+   * `decision` is the planner's, and when it is given this method does NOT choose
+   * between closing, swinging and retreating — it carries the choice out. Everything
+   * else it does is bookkeeping that has to keep happening either way: kill recording
+   * (the ledger is the only true source of kills), the no-route blacklist, the zap
+   * enchantment, re-equipping, and standing the mover down when we stop walking.
+   *
+   * With `decision` null it falls back to its own phase machine, which is how the
+   * legacy driver and the offline suite still drive it.
+   */
+  tick(frame, act, ws, { decision = null } = {}) {
     const c = this.session?.client;
     if (!c || c.state !== 'game') return { kind: 'idle', why: 'not in game' };
 
@@ -488,6 +580,27 @@ export class CombatController {
     // (retreat to a safe spot) when HP is low. The old safe-spot-first
     // design committed to a spot before checking the mob was engageable,
     // which trapped the character holding a spot it couldn't get to.
+    // THE PLANNER'S DECISION, WHEN THERE IS ONE.
+    //
+    // `retreat` is deliberately absent: backing off at low health is `flee_hurt` and
+    // `flee_danger`, which sit ABOVE `_fight` in the goal ladder and have done all
+    // along. Having a second retreat rule here — a hardcoded 55% — meant which one
+    // fired depended on which threshold was crossed first, and this one's answer was
+    // to shuffle one square away from a mob that simply followed.
+    if (decision === 'approach' || decision === 'attack') {
+      this.phase = decision === 'attack' ? 'fight' : 'close';
+      // The reach test still belongs here, because `pathDist` is the mover's finding
+      // and the planner only had the straight-line one. Disagreeing is not a livelock
+      // now that both sides use the same rule (attackReachFor) — but a target that
+      // stepped away between the plan and the send is still normal, and closing is
+      // the honest answer rather than swinging at air.
+      if (decision === 'attack' && pathDist > reach)
+        return this._walkToward(act, moveTarget, 'out of reach, closing', me);
+      if (decision === 'attack')
+        return this._doFight(frame, act, target, dist, isAggroed, pathDist);
+      return this._walkToward(act, moveTarget, 'close gap', me);
+    }
+
     switch (this.phase) {
       case 'idle':
       case 'close': {
@@ -714,44 +827,7 @@ export class CombatController {
    * attack (fire, ice, zap, bolt, missile, etc.). Returns null if the
    * character has no weapon AND no attack spell (can't fight).
    */
-  _attackSpell() {
-    const client = this.session?.client;
-    if (!client) return null;
-    // Do NOT use skills.isArmed here — it defaults to `true` when the
-    // equipment read is unknown ("a failed read must not idle the fleet"),
-    // which makes a caster look like a melee fighter. Instead, directly
-    // check: is there a weapon in the equipped list? If not, and there are
-    // attack spells, the character is a caster.
-    let hasWeapon = false;
-    try {
-      const eq = client.equipment?.();
-      if (eq?.known !== false && Array.isArray(eq.equipped)) {
-        hasWeapon = eq.equipped.some(o => {
-          const n = (o.name ?? client.rsc?.get?.(o.nameRsc) ?? '').toLowerCase();
-          return /sword|axe|club|mace|hammer|dagger|staff|spear|bow|claymore|scimitar/.test(n);
-        });
-      }
-    } catch {}
-    if (hasWeapon) return null;
-    const spells = client.spells ?? [];
-    if (!spells.length) return null;
-    const norm = (s) => {
-      const n = client.rsc?.get?.(s.nameRsc) ?? s.name ?? '';
-      return String(n).toLowerCase();
-    };
-    // Zap is NOT a bolt — it is the persistent touch enchantment, handled by
-    // _maybeCastZap (unequip + cast + track the ON/OFF messages). Do not
-    // return it here as a ranged attack, or a bare-handed zap-caster would
-    // "cast zap" as a bolt every swing instead of maintaining the enchantment.
-    // Then any other obvious attack spell.
-    const ATK = ['fire','ice','bolt','missile','flame','frost','shock','lightning','acid'];
-    for (const s of spells) {
-      const n = norm(s);
-      if (n === 'zap') continue;  // enchantment, not a bolt
-      if (ATK.some(a => n.includes(a))) return { id: s.id, name: n };
-    }
-    return null;
-  }
+  _attackSpell() { return attackSpellFor(this.session?.client); }
 
   /**
    * Walk toward a point. Uses the session's mover if available
@@ -833,13 +909,7 @@ export class CombatController {
 
   // Are we holding a weapon? The server's own use list, so it cannot disagree with the
   // character's actual hands — and it decides whether we reach two squares or one.
-  _armed(c) {
-    try {
-      const eq = c?.equipment?.();
-      if (!eq || eq.known === false) return true;   // unknown: assume armed, the safer error
-      return (eq.equipped ?? []).some(o => WEAPONISH.test(String(o.name ?? '')));
-    } catch { return true; }
-  }
+  _armed(c) { return armedFor(c); }
 
   // Is this object us? By id when we know it, and by name always — see the caller.
   _isSelf(o, c) {

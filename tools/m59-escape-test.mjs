@@ -351,6 +351,9 @@ function safeSpot({ resting = false, deaf = false, hits = 3 } = {}) {
     stats: async () => {},
     async waitFor() { return { events: [], timedOut: true }; },
     roomContents() {},
+    // The fight() in m59-skills.mjs faces the target before the swing. The mock server
+    // has no orientation, so the face is a no-op that just logs.
+    face: async (deg) => { log.push(`face:${deg}`); },
     stand() { log.push('stand'); if (!deaf) resting = false; },
   };
 
@@ -377,7 +380,9 @@ function safeSpot({ resting = false, deaf = false, hits = 3 } = {}) {
   ok('a refused swing gets us back on our feet', log.includes('stand'), JSON.stringify(log));
   ok('and the fight then actually happens', r.killed === true, JSON.stringify(r));
   ok('it says a round went to standing up', /resting/.test(r.stood_up || ''), r.stood_up);
-  ok('the stand comes after the round that was refused', log.indexOf('stand') === 1, JSON.stringify(log));
+  ok('the stand comes after the round that was refused',
+     log.filter(x => x !== 'face:' + (log[0] ?? '').slice(5)).indexOf('stand') === 1,
+     JSON.stringify(log));
 }
 
 // Standing did not help: Hold, Dazzle, Blind, a DM freeze. Swinging eleven more times

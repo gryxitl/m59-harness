@@ -153,9 +153,46 @@ console.log('\nreach is a disc on SQUARE coordinates');
     return evaluate({ client: c, ws: { _targetId: 9 } }).in_reach;
   };
   ok('directly adjacent is in reach', at(11, 10) === true);
-  ok('three squares away is still in reach — the disc is radius 3', at(13, 10) === true);
-  ok('a diagonal inside the radius counts', at(12, 12) === true);
+  // THE DECISION TO SWING IS STRICTER THAN THE SERVER'S BOUND, ON PURPOSE.
+  //
+  // MELEE_REACH above is the server's Euclidean disc and is still the fact it
+  // always was. `in_reach` is a different question — "should I swing from here" —
+  // and it answers on the conservative Manhattan <= 2 that m59-combat.mjs measured
+  // its way to: JayB, 331 swings in nine minutes at level-25 mummies, zero kills,
+  // neither side losing health. A swing refused for range costs the whole cooldown
+  // second it was paced against, so a boundary swing is not a cheap miss.
+  //
+  // These two assertions used to read the other way, and the pair of rules that
+  // produced them is what made the planner and the swing disagree: at three squares
+  // NSEW the planner picked `attack` and the mover said out of reach, ten times a
+  // second, for ever. One rule now, in m59-combat.mjs, used by both.
+  ok('three squares away is NOT a swing worth taking', at(13, 10) === false);
+  ok('nor is a diagonal the server would allow', at(12, 12) === false);
   ok('four squares away is not', at(14, 10) === false);
+
+  // REACH IS NOT ONE NUMBER — IT DEPENDS ON HOW THE CHARACTER ATTACKS.
+  //
+  // The old symbol tested one melee disc for everybody, which got both ends of the
+  // fleet wrong: a bare-handed character stood two squares off and punched air (bare
+  // hands reach one square, not two), and a caster walked all the way into melee
+  // before using a bolt that travels eight. Both now ask the same mode-aware rule.
+  const atMode = (col, row, spec) => {
+    const c = fakeClient({ selfId: 1, col: 10, row: 10, ...spec,
+      room: { num: 1, objects: [{ id: 9, name: 'mummy', col, row }] } });
+    return evaluate({ client: c, ws: { _targetId: 9 } }).in_reach;
+  };
+  const ARMED  = { equipped: [{ id: 1, name: 'mace' }] };
+  const BARE   = { equipped: [] };
+  const CASTER = { equipped: [], spells: ['fire bolt'] };
+
+  ok('armed, two squares: swing',        atMode(12, 10, ARMED)  === true);
+  ok('bare-handed, two squares: too far', atMode(12, 10, BARE)   === false);
+  ok('bare-handed, one square: punch',    atMode(11, 10, BARE)   === true);
+  ok('a caster reaches five squares',     atMode(15, 10, CASTER) === true);
+  ok('...but not nine',                   atMode(19, 10, CASTER) === false);
+  // Zap is the touch enchantment, not a bolt: a zap-only caster still has to close.
+  ok('zap alone does not extend reach',
+     atMode(15, 10, { equipped: [], spells: ['zap'] }) === false);
   // 28 squares can hit you, not the 8 that touch you. A test that only checked the
   // touching ring would pass while the keeper walked into everything.
   ok('the diagonal corner of the bounding box is OUTSIDE the disc',

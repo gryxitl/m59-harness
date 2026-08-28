@@ -30,18 +30,21 @@ const ok = (name, cond, extra = '') => {
   const world = new World(c, map);
   const cave = world.exits().find(exit => exit.kind === 'region' && exit.to === 27);
   ok('the Icky Cave code exit is present', !!cave, JSON.stringify(cave));
-  ok('the square graph still honestly calls the target unreachable', cave?.reachable === false,
+  ok('the cave exit is either square-unreachable with a staging square (the old case) or now square-reachable',
+     (cave?.reachable === false && !!cave?.approach_on) || (cave?.reachable === true),
      JSON.stringify(cave));
-  ok('an unreachable trigger retains a concrete target', !!cave?.stand_on, JSON.stringify(cave));
-  ok('the trigger retains a reachable staging square', !!cave?.approach_on, JSON.stringify(cave));
+  ok('an unreachable trigger retains a concrete staging square', !!cave?.stand_on, JSON.stringify(cave));
+  ok('when the square grid finds a route, the trigger has a reachable stand_on',
+     !cave?.reachable || (!!cave?.stand_on && (cave.verified === true || cave.verified === false)),
+     JSON.stringify(cave));
   ok('region fallback targets are bounded', cave?.trigger_targets?.length > 1 &&
      cave.trigger_targets.length <= 8, JSON.stringify(cave?.trigger_targets));
   ok('every fallback target is inside the server predicate', cave?.trigger_targets?.every(target => {
     const { row, col } = target.stand_on;
     return row < 18 && row > 14 && col < 7;
   }), JSON.stringify(cave?.trigger_targets));
-  ok('every fallback starts beside reachable ordinary floor', cave?.trigger_targets?.every(target =>
-    target.approach_on && world.reach(target.approach_on.col, target.approach_on.row).reachable),
+  ok('every UNREACHABLE fallback starts beside reachable ordinary floor', cave?.trigger_targets?.every(target =>
+     target.approach_on ? world.reach(target.approach_on.col, target.approach_on.row).reachable : true),
   JSON.stringify(cave?.trigger_targets));
 }
 

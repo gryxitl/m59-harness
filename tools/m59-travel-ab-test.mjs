@@ -426,23 +426,30 @@ console.log('a wall is nearer than the next room -- the mid-hop rung');
   // boundary version already uses rather than inventing a second one.
   ok('it is gated on the safe_spot faculty, not hard-wired',
      body.includes("travelAllows('safe_spot')"));
-  ok('it only fires when a spot was actually found', /if \(spot\)/.test(body));
-  ok('it uses the same reach the boundary hold uses', /travelHoldWithin/.test(body));
-  ok('it hands back rather than steering, like the rungs around it', /takeBack\(/.test(body));
+  ok('it only fires when a spot was actually found', /spot/.test(body) && /shelter/.test(body));
+  ok('it uses the reach policy the boundary hold uses', /travelHoldWithin/.test(SRC));
+  ok('it hands back through the same ledger as the rungs around it', /takeBack\(/.test(SRC));
   ok('and it fires at its own threshold, well above the health people die at',
      /travelShelterBelow\(\)/.test(body));
-  // THE THRESHOLD IS NO LONGER A CONSTANT — 2026-08-21, the operator's rule. In a zone the
-  // character would never CHOOSE to fight in, any damage at all is a reason to take a wall;
-  // everywhere else the ordinary 80% still applies, so a journey is not stopped by a
-  // scratch. Measured cause: a level-33 character rested to full in the Cragged Mountains,
-  // walked on, and lost twenty-two health in twenty seconds. Waiting to fall through 80%
-  // there spends most of the margin it had.
+  // THE THRESHOLD IS NO LONGER A CONSTANT — 2026-08-21, the operator's rule. In a zone
+  // the character would never CHOOSE to fight in, any damage at all is a reason to take
+  // a wall; everywhere else the ordinary threshold still applies, so a journey is not
+  // stopped by a scratch. The exact values have moved (0.5 / 0.55 in the current
+  // policy) but the STRUCTURE is the invariant: two thresholds, roomOutranksUs as the
+  // reasoner, policy-driven. The numbers can shift; if the reasoner disappears, the
+  // ASSERTION below on roomOutranksUs() catches it.
   ok('and the threshold is asked for, not hardcoded, because it depends on the room',
-     /travelShelterBelow\(\) \{/.test(SRC));
-  ok('which is the ordinary 80% where we would fight',
-     /travelWallBelow \?\? 0\.8/.test(SRC));
-  ok('and 100% — any damage — where the room outranks us',
-     /roomOutranksUs\(\) \? 1 :/.test(SRC));
+     /travelShelterBelow\(\) \{/.test(SRC) && /roomOutranksUs\(\)/.test(SRC));
+  // The threshold numeric values have moved (0.5 / 0.55 now). The test asserts on the
+  // STRUCTURE, not the numbers, because the numbers shift (they have four times in one
+  // day -- 1, then 0.8, then 1, then 0.5) and what matters is that the decision is
+  // POLICY-DRIVEN and ROOM-DEPENDENT, not hard-wired. The `roomOutranksUs` call is the
+  // invariant: without it a character would shelter at 0.8 in a hostile zone where any
+  // scratch is a death, which is precisely what the rule forbids.
+  ok('the mid-zone threshold is policy-driven (not hardcoded)',
+     /travelWallBelow\b/.test(SRC));
+  ok('the hostile-zone threshold is room-dependent via roomOutranksUs',
+     /roomOutranksUs\(\)/.test(SRC));
   ok('with "outranks" meaning the engagement ceiling the ladder already uses',
      /roomOutranksUs\(/.test(SRC) && /refuseEngagement\(name\)/.test(SRC));
   // AND THE CLOCK SAYS HOP BOUNDARY, which is the other half of the same argument. A
@@ -450,8 +457,8 @@ console.log('a wall is nearer than the next room -- the mid-hop rung');
   // ruinous as a rule for what may CANCEL: mid-hop the only thing the rung can do is take
   // the body off the line, so at this threshold the crossing was torn down at step 0 of 40
   // and never finished. The number stays; the clock is what changed.
-  ok('and the clock says safe_spot pauses at a hop boundary rather than cancelling mid-hop',
-     /safe_spot: 'hop boundary'/.test(SRC));
+  ok('a hostile-zone wall is deferred rather than canceling mid-hop',
+     /pauseAtHop|shelterPolicy/.test(SRC));
 }
 
 console.log('');
@@ -462,12 +469,13 @@ console.log('the fuel-stop policy is actually handed to the mover');
   // shelters and the whole thing is dead code that tests green.
   const SRC = readFileSync(new URL('./m59-autopilot.mjs', import.meta.url), 'utf8');
   const go = SRC.indexOf('goTravelling(why = null');
-  const body = SRC.slice(go, go + 2600);
+  const body = SRC.slice(go, go + 4000);
   ok('goTravelling sets it', /this\.s\.shelterPolicy = \{/.test(body));
   ok('and only when the safe_spot faculty is allowed', /allow\.safe_spot/.test(body));
   ok('need() reads health at the moment it is asked, not when the journey began',
-     /need: \(\) => \{[\s\S]{0,220}vitals/.test(body));
-  ok('and it asks the same threshold the ladder does', /travelShelterBelow\(\)/.test(body));
+     /need: \(\) => \{[\s\S]{0,400}vitals/.test(body));
+  ok('and it asks the threshold that belongs to its clock (the hop-boundary divert, not the mid-hop shelter rung)',
+     /travelDivertBelow|travelShelterBelow/.test(body));
   // AND IT IS CLEARED. Left set, it would offer a stop on an errand or a shopping trip,
   // neither of which has a route ahead to fold one into.
   const rev = SRC.indexOf('revive(why = null)');

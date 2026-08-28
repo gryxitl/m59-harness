@@ -170,6 +170,9 @@ function fakeSession({ at = { col: 5, row: 5 }, roomId = 587, legal = () => true
       return { moved: true, position: { ...sq(self) } };
     },
     queueValidatedMove, retreatAlongBreadcrumbs, walkTo,
+    // The lifted walkTo's last-resort ellipse: coarse grid failed, try fine. This fixture
+    // is about the breadcrumb trail, not fine sliding — a denial is the boring answer.
+    async walkFine() { return { arrived: false, reason: 'no_fine_model', steps: 0 }; },
   };
   return session;
 }

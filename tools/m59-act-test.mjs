@@ -172,9 +172,27 @@ console.log('\nattack obeys the reach disc — a swing from too far is thrown aw
   ok('and names the reason', /out of reach/.test(r.reason));
   ok('and no packet went out', far.c.sent.filter(x => x[0] === 'attack').length === 0);
 
-  const edge = withFoe(13, 10);             // distance exactly 3 — legal
+  // THREE SQUARES IS THE SERVER'S BOUND AND IS NO LONGER A SWING WE TAKE.
+  //
+  // The disc of radius 3 is what the server accepts; whether to swing from its outer
+  // edge is a different question, and it now has one answer shared by the planner and
+  // the mover (attackReachFor, m59-combat.mjs). It is the conservative one: MANHATTAN
+  // <= 2 for an armed character, because a swing refused for range costs the whole
+  // cooldown second it was paced against. Measured: JayB, 331 swings in nine minutes
+  // at level-25 mummies, zero kills, neither side losing health.
+  //
+  // Before this there were two rules — a Euclidean 3 here and a Manhattan 2 in the
+  // controller — and a target three squares NSEW read in-reach to one and out to the
+  // other. Under the planner that is a livelock: pick `attack`, get refused, pick it
+  // again, ten times a second.
+  const edge = withFoe(13, 10);             // Manhattan 3 — the server would take it, we do not
   const r2 = await attack(edge.c, edge.s, { targetId: 9, waitMs: 1 });
-  ok('three squares away IS in reach and does swing', r2.sent === true);
+  ok('three squares away is the server\'s edge, and we hold for a square closer',
+     r2.sent === false);
+
+  const good = withFoe(12, 10);             // Manhattan 2 — inside the disc whatever it rounds to
+  const r3 = await attack(good.c, good.s, { targetId: 9, waitMs: 1 });
+  ok('two squares away does swing', r3.sent === true);
 }
 
 console.log('\nattack is honest: it reads the room back rather than trusting the send');
@@ -462,8 +480,16 @@ console.log('\ngroundedCasts: an unknown spell is ABSENT from the plan space, no
      none.length === 0);
 
   const other = groundedCasts(fakeClient({ spells: ['blink'] }));
-  ok('and a spell with no modelled effect is not invented into the plan space',
-     other.length === 0);
+  // blink's preconditions are `entombed` and `can_pay_blink`; its modelled effect is
+  // `can_leave`. What this gates is that a spell that is NOT in the closed table is
+  // ABSENT from the plan space, because hallucinating a spell's effect is how a
+  // planner invents an action that no server behaviour ever matches. A spell that IS
+  // in the table (blink is, now, for entombment) gets an action even when the client
+  // is not actually entombed; the pre then just refuses the cast at run time.
+  ok('and a spell in the closed table appears exactly once',
+     other.length === 1 && other[0].atomic === 'cast blink');
+  ok('and a spell NOT in the table invents no plan',
+     groundedCasts(fakeClient({ spells: ['bogus'] })).length === 0);
 
   // The chain the fleet actually lives on, expressed in the vocabulary.
   ok('create food is 2 elderberry AND 2 herbs -> a meal',
@@ -565,8 +591,14 @@ console.log('\neat closes the supply chain, in the vocabulary');
 
 console.log('\nattack declares a plan-able contract');
 {
-  ok('pre includes being armed and in reach',
-     attack.pre.includes('armed') && attack.pre.includes('in_reach'));
+  ok('pre includes being in reach', attack.pre.includes('in_reach'));
+  // AND DELIBERATELY DOES NOT INCLUDE `armed`. Requiring it made `_fight` — a planned
+  // goal since phase 3 — unplannable for a bare-handed character, who then stood in
+  // front of the quarry doing nothing. Arming is the rung above `_fight` in the ladder,
+  // not a precondition of swinging; a character that cannot arm punches, which is how it
+  // earns the price of a weapon. See the note beside attack.pre.
+  ok('and NOT being armed — punching is how an unarmed character earns a weapon',
+     !attack.pre.includes('armed'));
   ok('pre includes the engagement band — the ceiling is a PRECONDITION, not an afterthought',
      attack.pre.includes('target_in_band'));
   ok('every symbol it names exists in the vocabulary',

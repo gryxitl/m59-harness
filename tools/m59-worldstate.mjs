@@ -45,7 +45,7 @@ import * as skills from './m59-skills.mjs';
 import * as party  from './m59-party.mjs';
 import { REST_VIGOR_CAP, MIN_FIGHT_VIGOR } from './m59-localpolicy.mjs';
 import { affordances } from './m59-parse.mjs';
-import { preyNames, creatureKey } from './m59-combat.mjs';
+import { preyNames, creatureKey, targetInReach, attackReachFor } from './m59-combat.mjs';
 
 // Melee reach is a disc on SQUARE coordinates -- both sides run
 // `SquaredDistanceTo <= GetAttackRange^2` where range is Bound(2 + difficulty/6, 2, 3)
@@ -565,12 +565,15 @@ export const SYMBOLS = {
     why_unknown: 'swinging at nothing is free for the server and costs us the round',
     produce: ({ client, ws }) => {
       const id = ws?._targetId;
-      const me = client?.self;
       const t  = id == null ? null : client?.room?.objects?.get?.(id);
-      if (!me || !t || t.col == null || me.col == null) return null;
-      // SQUARED distance on square coordinates -- the server's own test.
-      const d2 = (t.col - me.col) ** 2 + (t.row - me.row) ** 2;
-      return d2 <= MELEE_REACH ** 2;
+      // ONE REACH RULE, and it lives with the swing (m59-combat.mjs). This used to
+      // test a Euclidean disc of MELEE_REACH while the controller swung on a
+      // Manhattan bound of 2, so a target three squares NSEW was in reach to the
+      // planner and out of reach to the mover — pick `attack`, get refused for
+      // range, decide the same thing again. It is also mode-aware now: a caster
+      // bolts from CAST_REACH and does not have to walk into melee to use it,
+      // and bare hands reach one square rather than two.
+      return targetInReach(client, t);
     },
   },
 

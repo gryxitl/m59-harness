@@ -86,7 +86,22 @@ export async function attack(client, session, { targetId, waitMs = SWING_MS } = 
 // GOAP metadata. `!has_target` is the effect of the target LEAVING the room, which
 // is the only thing a swing can be said to accomplish from out here -- "damage" is
 // not in the vocabulary because nothing on the wire reports it per swing.
-attack.pre     = ['armed', 'has_target', 'in_reach', 'target_in_band'];
+// BARE HANDS ARE STILL AN ATTACK, AND `armed` IS NOT A PRECONDITION OF SWINGING.
+//
+// This used to read ['armed', 'has_target', 'in_reach', 'target_in_band'], which was
+// harmless while `_fight` ran a hand-written handler — the CombatController punched, and
+// PUNCH_REACH exists in m59-combat.mjs for exactly that. The moment `_fight` became a
+// PLANNED goal (`{'!has_target': true}`), `armed` made the whole goal unplannable for a
+// bare-handed character: the goal was selected, no plan was found, and the character
+// stood in front of the quarry doing nothing. Watched live: Lee, 40 ticks of
+// "_fight — exhausted 13 nodes without finding a plan".
+//
+// Nothing is lost by dropping it, because arming is a HIGHER RUNG rather than a
+// precondition: `{ goal: 'armed', when: ws.armed === false && ws.can_arm !== false }`
+// sits above `_fight` in the ladder, so a character that can get a weapon still does
+// before it fights. Only one that CANNOT — no weapon, no money — falls through to here,
+// and for that character punching is the way it earns the price of a mace.
+attack.pre     = ['has_target', 'in_reach', 'target_in_band'];
 attack.effects = ['!has_target'];
 attack.atomic  = 'attack';
 

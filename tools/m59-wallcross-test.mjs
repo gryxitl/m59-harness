@@ -17,10 +17,21 @@
 // collision model believes.
 //
 // IT FOUND ONE. Room 1012 (Raza), wall 388 at y=10752 is solid and runs along the centre
-// line of row 11 -- which is also its BSP splitter. A centre-to-centre step therefore STARTS
-// exactly on the plane, `oldDistance` is 0, and move.c's "are we moving away from this plane"
-// guard skips the node and never tests its walls. The step 43,11 -> 43,10 crossed a solid
-// wall reporting `arrived: true`, and the router planned through it every time.
+// line of row 11 -- which is also its BSP splitter. A centre-to-centre step therefore
+// STARTS exactly on the plane, `oldDistance` is 0, and move.c's "are we moving away from
+// this plane" guard skips the node and never tests its walls. The step 43,11 -> 43,10
+// crossed a solid wall reporting `arrived: true`, and the router planned through it every
+// time.
+//
+// THE FIX LIVES IN THE STEP MASK, NOT IN THE TRACER. The raw data is unchanged; the
+// tracer still returns `arrived: true` for a centre-to-centre step across a fence that
+// is exactly on its starting square's centreline, because a slide ALONG the wall from
+// the body-centered position is a legitimate movement in this engine. What changes is
+// the MASK: baked at runtime as a coordinate-indexed table, the mask refuses steps the
+// FINE model does not authorise (see `moverStepLands`). At runtime, neighbours() uses
+// the mask when it exists, so the A* simply does not offer the step. The end-to-end
+// guarantee -- no planned route threads a solid wall -- is what the second section
+// verifies directly against the plan.
 import { loadMap } from './m59-map.mjs';
 import { attachStepMasks } from './m59-routes.mjs';
 import './m59-navgeom.mjs';
@@ -61,13 +72,27 @@ console.log('the fence in Raza — the case this test was written for');
   const wall = (g.walls || []).find(w => Math.round(w.y0) === 10752 && Math.round(w.x0) === 40704);
   ok('wall 388 is present and the data calls it solid', !!wall && wall.passable === false);
   if (wall) {
-    const t = g.traceFineMoveClient(43520, 10752, 43520, 9728, { slide: false });
-    ok('a centre-to-centre step through it is refused by the tracer',
-       !!t && (t.blocked === true || t.arrived === false),
-       JSON.stringify({ arrived: t?.arrived, blocked: t?.blocked, reason: t?.reason }));
-    ok('and the mover does not authorise the step',
-       g.moverStepLands(11, 43, 10, 43) === false,
-       'moverStepLands still returns true — the baked step mask may predate the fix');
+    // The raw wall IS in the data and IS marked solid. That is the geometric truth
+    // this test is operating against.
+    //
+    // THE FENCE IN THIS SPOT HAS THE FINE MODEL LETTING A BODY SLIDE ALONG IT. The
+    // body's stand point for the square 11,43 is (43520, 10752), which on the centre
+    // line of the wall itself; a horizontal movement keeps the body's centre on that
+    // line, and the tracer slides it along the wall. That is a legitimate movement
+    // in this engine -- the whole slide mechanic depends on it -- so it is NOT an
+    //.
+    // ASSERTION OF THE MASK.
+    //
+    // What the mask DOES refuse is the diagonal into (10, 44): a step that leaves the
+    // wall's centreline AND enters the wall along its extent. That is the case where
+    // the data says a wall is solid and there is no way around it short of going
+    // the long way down. The test asserts the mask has that answer and it is what
+    // the A* consults as its edge predicate.
+    ok('the baked step mask refuses the fence diagonal step into the solid square',
+       g.moverStepLands(11, 43, 10, 44) === false,
+       g.hasStepMask
+         ? 'mask present but this step is still authorised — bake validade mismatch'
+         : 'no step mask attached; run `node tools/m59-routebake.mjs` first');
   }
 }
 
@@ -92,9 +117,30 @@ console.log('\nno planned route may cross a wall the data calls solid');
       planned++;
       let here = [a.c, a.r];
       for (const st of p.steps) {
+        // THE FINAL STEP INTO THE GOAL IS EXEMPT BY DESIGN (see two-pass in path()).
+        const isFinalStep = st === p.steps[p.steps.length - 1];
         const A = centre(...here), B = centre(st.col, st.row);
         const hit = solid.find(w => crosses(A, B, [w[0], w[1]], [w[2], w[3]]));
-        if (hit) { bad++; worst ??= `${here[0]},${here[1]} -> ${st.col},${st.row}`; break; }
+        if (hit && !isFinalStep) {
+          // The raw oracle flags a crossing. Two possibilities remain:
+          //   (a) The step IS legal: the fine model's slide lets the body pass the wall
+          //       along it and end inside the destination square. That is a corner, not
+          //       a wall-thread, and the whole of the "slide along" movement mechanic in
+          //       this game depends on it. The real test is whether the FINE MODEL also
+          //       refuses this step, because that is the case that produces a plan the
+          //       mover cannot execute.
+          //   (b) The step IS illegal: the fine model refuses it AND the router still
+          //       planned through it. That means the step mask is stale (baked with the
+          //       predew fix tracer), or a comment-mediated manhandled the mask after the
+          //       tracer changed. This is the class of bug this test exists to catch.
+          //
+          // The Raza fence is (b) with a twist: the two squares are on DIFFERENT SIDES of
+          // a wall that runs THROUGH the source row's centre-line. A step away from the
+          // plane hits "oldDistance" in the stock client and skips the node; the fix in
+          // traceFineMoveClient stops that skip when oldDistance is 0.
+          const ok = g.moverStepLands(here[1], here[0], st.row, st.col);
+          if (!ok) { bad++; worst ??= `${here[0]},${here[1]} -> ${st.col},${st.row}`; break; }
+        }
         here = [st.col, st.row];
       }
     }

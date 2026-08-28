@@ -102,18 +102,52 @@ falls to `idle_rest`. +13 assertions. Thirteen suites green including both bound
 **Done when:** `hunt` has no early return, and `/tickstats` shows it planning rather than
 handling.
 
-### Phase 3 — migrate `_fight`
+### Phase 3 — migrate `_fight` — **DONE 2026-08-28**
 
-- [ ] Actions: `approach` (pre: `target_reachable`), `swing` (pre: `in_reach`,
-      `vigor_floor`), `disengage`.
-- [ ] The combat controller stays as the thing that executes a swing; the planner decides
-      whether swinging is what should happen.
-- [ ] Preserve the fix already recorded at m59-decide.mjs:1995 — cooldowns and facing are
-      NOT failures. Under GOAP that stops being a special case: a cooldown means the swing
-      action's precondition is briefly false, which the planner handles natively.
+- [x] `_fight` maps to the world state `{'!has_target': true}` — the quarry stops
+      existing. `attack` already declared that effect and `in_reach` as its precondition;
+      what was missing was an action that ACHIEVES `in_reach`.
+- [x] `approach_target` (`tools/m59-act/approach.mjs`), pre `has_target`, effects
+      `in_reach`. NOT gated on reachability: whether a path exists is the mover's finding
+      and arrives as `session._moverNoRoute` after an attempt. Gating on a symbol the
+      planner cannot produce before trying is what deadlocked `hunt` in phase 1.
+- [x] The controller stays as the thing that executes, and keeps every piece of
+      bookkeeping it had — kill recording (the ledger is the only true source of kills),
+      the no-route blacklist, the zap enchantment, re-equipping, the unpathable-square
+      retarget, `_standStill`. `tick()` takes a `decision` and carries it out instead of
+      choosing. With `decision` null it still runs its own phase machine, for the legacy
+      driver and the offline suite.
+- [x] Cooldowns are not failures: `combatStep` treats swing/walk/cast/loot/stand/idle/
+      reequip as engagement. Kept explicitly rather than relied upon.
 
-**Done when:** the 3.5s swing gap that motivated the original widening cannot recur,
-because nothing is counting failures any more.
+**Two things the plan did not anticipate, both load-bearing:**
+
+**1. There were two reach rules, and migrating would have livelocked on them.**
+`in_reach` tested a EUCLIDEAN disc of radius 3 (the server's bound) while the controller
+swung on MANHATTAN <= 2 (deliberately conservative, bought by a measurement: JayB, 331
+swings in nine minutes, zero kills). A target three squares NSEW read in-reach to the
+planner and out of reach to the mover — pick `attack`, get refused for range, pick it
+again, ten times a second. The decision now has one home (`attackReachFor` /
+`targetInReach` in `m59-combat.mjs`) and the atomic, the planner and the controller all
+read it. It is also mode-aware now, which fixed two live wrongs: a bare-handed character
+stood two squares off and punched air (bare hands reach one, not two), and a caster walked
+into melee before using a bolt that travels eight.
+
+**2. Removing the controller's retreat made the ladder's coverage load-bearing, and the
+ladder had a hole.** The controller checked health at the top of its `close` phase and
+backed off below 55%. That quietly covered a gap in `flee_hurt`, which required
+`in_reach`: a character at 30% health with the mob one square outside melee selected
+`_fight` — and `_fight` now plans `approach_target`, so it would WALK TOWARDS the thing
+that hurt it and only become allowed to flee once it arrived and got hit again. The
+identical mistake is described and fixed one rung higher, beside `flee_danger`/`critical`
+("`in_reach` is a fact about this instant and a chasing mob is in and out of it every
+second"); the argument had never been carried down. `flee_hurt` no longer asks about
+reach. Swept exhaustively rather than sampled, because the hole was not at a threshold —
+it was in a corner two booleans wide.
+
+**Done when:** the 3.5s swing gap cannot recur, because nothing is counting failures any
+more. — Met. And the survival sweep is pinned in `m59-decide-test.mjs`; reintroducing the
+`in_reach` gate on `flee_hurt` fails it with the exact holes named.
 
 ### Phase 4 — the survival goals
 
@@ -170,3 +204,59 @@ blocking a character's escape on.
   turned out to be the load-bearing half: without something that always accepts, making a
   goal decline just moves the stall one rung down. Worth remembering for phases 2 and 3 —
   every goal made declinable needs the floor underneath it, and the floor is now there.
+- 2026-08-28 — phase 3 landed. Two surprises, both recorded above: the two reach rules
+  (which would have livelocked the migration on its first tick) and the `flee_hurt` hole
+  (which the controller's own retreat had been hiding). The general lesson for phase 4, if
+  it is ever taken: **removing a hand-written handler removes whatever ELSE it was quietly
+  deciding.** The retreat was not in the plan's list of what `_fight` did, and it was the
+  most important of them. Before deleting a handler, sweep the space the ladder must now
+  cover — do not read it.
+- 2026-08-28 — offline suite: 16 suites fail, and the same 16 fail on a stashed baseline.
+  No regressions from phase 3. Pre-existing and NOT investigated here: `m59-travelguard-test`
+  (`s.startJob is not a function` — harness drift; `startJob` is live in the broker and
+  `m59-travelling-test` passes at 90), `m59-region-exit-test` (3), one `m59-act-test` spell
+  assertion, and a dozen routing/travel suites. Worth a separate pass.
+- 2026-08-28 — two live findings from the first hour on the migrated code, both fixed.
+  **(a) `attack.pre` required `armed`.** Harmless while `_fight` was hand-written — the
+  controller punched, and `PUNCH_REACH` exists for it — but the moment the goal became
+  PLANNED it made the whole thing unplannable bare-handed: goal selected, no plan, the
+  character standing in front of the quarry. Lee, 40 ticks of "exhausted 13 nodes".
+  Dropped: arming is the rung ABOVE `_fight`, not a precondition of swinging, so a
+  character that can arm still does and one that cannot punches for the price of a mace.
+  **(b) A tri-state hole meant NO goal at all.** `_fight` asked `target_in_band === true`
+  and `hunt` asked `=== false`, so an unresolved creature level matched neither, and
+  `idle_rest` excludes a character holding a target. Lee again, 192 ticks of `none`.
+  `hunt` is now the exact complement of `_fight` (`!== true` on both symbols), which is
+  also the convention the symbol documents: a ceiling that cannot be read is a refusal.
+  Both are swept exhaustively in `m59-decide-test.mjs` rather than sampled.
+
+  The general lesson, and the one worth carrying into any phase 4: **a precondition that
+  was decoration under a handler becomes load-bearing under a planner.** A handler that
+  cannot satisfy a condition improvises; a planner returns no plan and the goal goes
+  quiet. Every `pre` on an action reachable from a migrated goal is worth re-reading in
+  that light before the migration, not after.
+- 2026-08-28 — two more from the second hour, and the second one is the important one.
+  **(c) `_targetId` was never set on the sticky path.** The decider overrides
+  `ws.has_target = true` after selecting a quarry, but only assigned `ws._targetId` on the
+  branch that chose a NEW one — so on every tick after the first, the world state claimed
+  a target and carried no id for it. The hand-written handler survived that because the
+  CombatController falls back to scanning the room; a planner action cannot, and
+  `approach_target` refused with "no target in the world state" while `_fight` was
+  selected on `has_target === true`. Lee, 180 ticks planning an approach and sending
+  nothing. The same block also carried a THIRD hardcoded copy of the melee bound
+  (`bestD2 <= 4`, Euclidean, mode-blind) which OVERRODE the `in_reach` symbol on the
+  common path — so consolidating the reach rule would have had no effect on a live fight
+  until this was found. Both now call `targetInReach`.
+  **(d) The ladder was not a total cover, and closing corners one at a time was making
+  more of them.** Three separate tri-state combinations selected NO goal — no action, no
+  error, a stall invisible to every liveness check because the loop ticks at 10Hz and
+  reports zero failures. The bottom two rungs are now a total cover (`flee_danger` when
+  something is hitting us, `idle_rest` unconditionally), so the invariant no longer
+  depends on a dozen conditions above staying mutually exhaustive as they are edited.
+  `m59-decide-test.mjs` asserts the last rung takes no world state at all.
+
+  Both (c) and (d) are the same shape as (a): **the handler was compensating for something
+  the world state got wrong, silently, and the planner cannot.** That is the real cost of
+  the migration and the real value of it — the compensations are now visible as refusals
+  instead of invisible as improvisation.
+

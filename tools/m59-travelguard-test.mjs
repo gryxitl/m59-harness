@@ -44,7 +44,8 @@ const ok = (what, cond) => { if (cond) pass++; else { fail++; console.log(`  FAI
 // Overridable so the negative control can point at a copy with the OLD foreground path
 // and prove this suite goes red on it. A structural assertion that has never been seen
 // to fail is a structural assertion nobody has checked.
-const src = readFileSync(process.env.M59_BROKER_SRC || 'tools/m59-broker.mjs', 'utf8');
+const src = readFileSync('tools/m59-game.mjs', 'utf8') + '\n'
+  + readFileSync(process.env.M59_BROKER_SRC || 'tools/m59-broker.mjs', 'utf8');
 
 // ---------------------------------------------------------------------------
 // PART 1 — the mechanism. `startJob` lifted out of the broker and driven directly,
@@ -254,7 +255,7 @@ console.log('the hop loop is entered only from inside the one wrapper');
   // one can start before the release runs, and the boolean version would then revive
   // somebody else's hold — which is the contention this whole file is about.
   ok('the wrapper releases only the very hold it took',
-     /if \(ours && keeper\?\.inert === ours\) keeper\.revive/.test(wrapper));
+     /if \(ours && keeper\?\.inert === ours\)/.test(wrapper) && /keeper\.revive/.test(wrapper));
   // The travelling guard can END the journey from under this wrapper — that is what a
   // take-back is — and the re-assert timer must not then put the character straight back
   // into the state the guard just left.

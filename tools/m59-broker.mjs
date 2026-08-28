@@ -552,6 +552,20 @@ const resources = loadResources();      // one table, shared by every character
 // startup clearly instead of serving a fleet whose every action later stalls closed.
 // Room-name -> .roo-file lookup for unmapped rooms.
 import { readFileSync as _rfs2 } from 'fs';
+
+/**
+ * Every shape a saved snapshot's `equipment` has taken, reduced to plain names.
+ * Array of strings, array of objects, or a slot-keyed object; anything else is
+ * no equipment rather than a throw.
+ */
+function wornNames(eq) {
+  if (!eq) return [];
+  const one = (v) => typeof v === 'string' ? v
+    : (v && typeof v === 'object') ? (v.nameRsc ?? v.name ?? null) : null;
+  const list = Array.isArray(eq) ? eq : Object.values(eq);
+  return list.map(one).filter(n => typeof n === 'string' && n.length > 0);
+}
+
 let roomRooLookup;
 try {
   roomRooLookup = new Map(JSON.parse(_rfs2(new URL('../substrate/room-roo-lookup.json', import.meta.url), 'utf8')));
@@ -916,7 +930,13 @@ class KeeperProxy {
       spells: (s.spells ?? []).map(p => ({ nameRsc: p.name, school: p.school, mana: p.mana })),
       skills: (s.skills ?? []).map(p => ({ nameRsc: p.name })),
       inventory: [
-        ...(s.equipment ?? []).map(name => ({ nameRsc: name, amount: 1, flags: 0x04 })),
+        // WORN IS NOT ALWAYS A LIST. Snapshots have carried `equipment` in three
+        // shapes over time: an array of names, an array of {name}/{nameRsc}
+        // objects, and — from the equipment() reader — an object keyed by slot.
+        // `.map` on the last one threw, which killed the ledger sampler and every
+        // heroSnapshot on the dashboard (both caught the throw and logged, so the
+        // fleet page went quietly stale rather than erroring). Normalise to names.
+        ...wornNames(s.equipment).map(name => ({ nameRsc: name, amount: 1, flags: 0x04 })),
         ...(s.pack ?? []).map(entry => {
           const m = entry.match(/^(.*) \(x(\d+)\)$/);
           return m ? { nameRsc: m[1], amount: parseInt(m[2]), flags: 0 } : { nameRsc: entry, amount: 1, flags: 0 };

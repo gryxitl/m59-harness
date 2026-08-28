@@ -106,7 +106,9 @@ function fakeSession({ rooms = [1, 2, 3, 4], script = [], startAt = 0,
 // the fleet lock and starts rejoin timers — so the method is lifted out of the source by
 // BRACE MATCHING, which is exact, rather than by hunting for a closing line that also
 // appears inside the body.
-const src = await import('node:fs').then(m => m.readFileSync('tools/m59-broker.mjs', 'utf8'));
+/* eslint-disable no-control-regex */
+const src = (await import('node:fs')).readFileSync('tools/m59-game.mjs', 'utf8')
+  + '\n' + (await import('node:fs')).readFileSync('tools/m59-broker.mjs', 'utf8');
 const start = src.indexOf('  async travel(toRoomNum, {');
 ok('the travel method was located', start > 0);
 // Start matching at the BODY brace, not at the destructured options object in the

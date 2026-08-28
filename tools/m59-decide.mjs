@@ -223,7 +223,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SPAWNS_FILE = join(__dirname, '..', 'compendium', 'data', 'spawns.json');
 import { loadMap } from './m59-map.mjs';
 import { resolveRoomNum, routeIntent } from './m59-route.mjs';
-import { CombatController } from './m59-combat.mjs';
+import { CombatController, targetInReach } from './m59-combat.mjs';
 
 // ---------------------------------------------------------------------------
 // INTENT -- one planned action, turned into one command
@@ -351,7 +351,60 @@ const GOAL_STATE = {
   // choose — blink is gated on `entombed`, so a pocketed character is offered
   // `escape_pocket` instead of casting into a wall for ever. See JayB, room 50.
   unwedge: { can_leave: true },
+  // FIGHTING IS A STATE TRANSITION LIKE ANY OTHER: the quarry stops existing.
+  // `attack` already declared `!has_target` as its effect and `in_reach` as a
+  // precondition; all that was missing was an action that ACHIEVES `in_reach`
+  // (`approach_target`) and a goal that asks for the end state. The 60-line
+  // hand-written branch that used to sit here chose between closing, swinging and
+  // retreating; the planner does the first two and the ladder always owned the third.
+  _fight: { '!has_target': true },
 };
+
+/**
+ * One combat action, carried out by the CombatController on the planner's decision.
+ *
+ * The controller keeps its bookkeeping (see the note on `attack` below); what it no
+ * longer does is CHOOSE between closing, swinging and backing off. `decision` is the
+ * planner's word, and `retreat` is not one of the options — low health is `flee_hurt`
+ * and `flee_danger`, which outrank `_fight` in the goal ladder.
+ */
+function combatStep(decision, f, act, ctx) {
+  const { session, ws } = ctx;
+  const id = ws?._targetId;
+  if (id == null) return { sent: false, why: 'no target in the world state' };
+  if (!f.objects?.get?.(id)) return { sent: false, why: 'the target has left the room' };
+
+  let combat = session._combat;
+  if (!combat) { combat = new CombatController(session); session._combat = combat; }
+
+  const r = combat.tick(f, act, ws, { decision });
+
+  // LOOT AFTER A KILL: the quarry died and its drops are on the floor. lootFloor is
+  // async and multi-second, so it is kicked off fire-and-forget — it has its own pacer
+  // queue and must not block the tick. The cooldown stops it re-looting every tick
+  // while the floor is still being picked up.
+  if (r.kind === 'loot') {
+    const now = Date.now();
+    const agentName = session.name;
+    if (!session._lastLootAt || now - session._lastLootAt > 5000) {
+      session._lastLootAt = now;
+      session.lootFloor?.({ maxItems: 12 }).then(res => {
+        const taken = res?.taken?.length ?? 0;
+        if (taken) console.error(`[tick] ${agentName} looted ${taken} item(s) after kill`);
+      }).catch(e => console.error(`[tick] ${agentName} loot err: ${e.message}`));
+    }
+  }
+
+  // A COMBAT TICK IS NOT A FAILURE JUST BECAUSE IT IS A COOLDOWN. Every normal combat
+  // state — swing, walk, cast, loot, stand, idle-on-cooldown — is engagement. The old
+  // code counted "attack cooldown" as a failure, and after five of them skipped the
+  // whole goal for 3000ms: swing, five cooldowns, 3s of nothing, swing. Measured at a
+  // 3570ms gap between swings instead of 1000ms.
+  const fighting = ['swing', 'walk', 'cast', 'loot', 'stand', 'idle', 'reequip']
+    .includes(r.kind);
+  return { sent: r.sent ?? fighting, what: r.what ?? `${decision} ${id}`, why: r.why ?? null,
+           kind: r.kind };
+}
 
 export const INTENTS = {
   // THE TWO HALVES OF HUNTING, as planner actions rather than one hand-written branch.
@@ -703,13 +756,18 @@ export const INTENTS = {
   // `in_reach` and `target_in_band` are all produced from ws._targetId, so choosing a
   // different creature here would let the ceiling be checked against one and the swing
   // land on another -- the engagement ceiling failing open.
-  attack: (f, act, ctx) => {
-    const id = ctx.ws?._targetId;
-    if (id == null) return { sent: false, why: 'no target in the world state' };
-    if (!f.objects?.get?.(id)) return { sent: false, why: 'the target has left the room' };
-    act.swing(id);
-    return { sent: true, what: `attack ${id}` };
-  },
+  // THE TWO HALVES OF FIGHTING, as planner actions rather than one hand-written branch.
+  //
+  // Both run through the CombatController, and that is deliberate. The DECISION —
+  // close, or swing — is the planner's now, but everything the controller does around
+  // the decision still has to happen on every combat tick: recording a kill when the
+  // quarry vanishes (the ledger is the only true source of kills; a keeper's own tally
+  // is emptied in its constructor), the mover's no-route blacklist, the zap
+  // enchantment, re-equipping a dropped weapon, retargeting when the quarry stands on
+  // an unpathable square, and standing the mover down when we stop walking. `attack`
+  // used to send a bare `act.swing(id)`, which had none of that.
+  attack:          (f, act, ctx) => combatStep('attack',   f, act, ctx),
+  approach_target: (f, act, ctx) => combatStep('approach', f, act, ctx),
 
   // Underworld escape: walk to the nearest portal and step on it.
   // Fire-and-forget: the escapeUnderworld skill is async, but we
@@ -1716,7 +1774,11 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             ws._targetLevel = targetLevel;
             // Re-derive the target-dependent symbols.
             ws.has_target = true;
-            ws.in_reach = bestD2 <= 4; // MELEE_REACH = 2, squared = 4
+            // ONE REACH RULE. This read `bestD2 <= 4` — a third copy of the melee bound,
+            // hardcoded, Euclidean, and blind to how the character actually attacks. It
+            // also OVERRODE the `in_reach` symbol on the common path, so consolidating
+            // the rule in m59-combat.mjs would have had no effect on a live fight.
+            ws.in_reach = targetInReach(client, best) === true;
             // If the level is unknown, treat as in-band (the
             // GOAP keeper's default: a ceiling that defaults
             // open is the one that kills somebody, but a
@@ -1727,8 +1789,19 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
         } else {
           // Target still in room: re-derive in_reach.
           const d2 = (target.col - me.col) ** 2 + (target.row - me.row) ** 2;
-          ws.in_reach = d2 <= 4;
+          ws.in_reach = targetInReach(client, target) === true;
           ws.has_target = true;
+          // AND THE ID THE SYMBOLS WERE DERIVED FROM, WHICH THIS BRANCH NEVER SET.
+          //
+          // `has_target` is overridden to true here, but `_targetId` was only assigned on
+          // the OTHER branch (a newly chosen quarry). On the sticky path — the common one,
+          // every tick after the first — the world state claimed a target and carried no
+          // id for it. The old hand-written handler survived that because the
+          // CombatController falls back to scanning the room when `ws._targetId` is null;
+          // a planner action cannot, and `approach_target` refused with "no target in the
+          // world state" while `_fight` was selected on `has_target === true`. Watched
+          // live: Lee, 180 ticks planning an approach and sending nothing.
+          ws._targetId = target.id ?? target.obj_id ?? ws._targetId;
           // THE ENGAGEMENT CEILING APPLIES TO A TARGET WE ALREADY HAVE, TOO.
           //
           // This said `ws.target_in_band = true;  // DEBUG: force in-band to test` and it
@@ -2045,52 +2118,19 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // 2c. FIGHT: delegate to the CombatController which handles
     // the full safe-wall combat state machine (approach, hold,
     // pull, fight, close). One action per tick.
-    if (active?.goal === '_fight') {
-      let combat = session._combat;
-      if (!combat) {
-        combat = new CombatController(session);
-        session._combat = combat;
-      }
-      const r = combat.tick(frame, act, ws);
-      // A combat tick is NOT a failure just because it's a cooldown or facing
-      // the target. The old `note(goal, kind==='swing'||'walk')` counted every
-      // "attack cooldown" and "facing target" tick as a failure, and after 5 of
-      // them (skipAfter) it SKIPPED the _fight goal for 3000ms (skipForMs). The
-      // cycle: swing -> 5 cooldowns (500ms) -> _fight skipped 3000ms -> swing
-      // again = a 3.5s swing gap (measured 3570ms, 0.28/s instead of 1/s).
-      // Only a genuine "no progress possible" (the target is unreachable/stuck
-      // with no path) is a failure. All normal combat states (swing, walk,
-      // idle-cooldown, facing, retreat, cast, stand, loot) are engagement, not
-      // failure. The reachability problem is handled separately by
-      // session._moverNoRoute (blacklist) and the stuck detector, not by
-      // pausing the fight goal.
-      const fighting = r.kind === 'swing' || r.kind === 'walk' || r.kind === 'cast'
-        || r.kind === 'loot' || r.kind === 'stand' || r.kind === 'idle';
-      note(active.goal, fighting);
-      // `sent` was omitted here, so every _fight action read as sent=0 in /tickstats and
-      // a fight that was swinging perfectly well looked dead. The wire disagreed:
-      // totalSwingsSent matched the swing count exactly. Report what the step actually
-      // said rather than leaving the field undefined.
-      onDecision?.({ ticks, goal: '_fight', action: r.kind, sent: r.sent ?? fighting,
-        what: r.what ?? null, why: r.why ?? null });
-      // Loot after a kill: the target died, its drops are on the floor.
-      // lootFloor is async and multi-second, so kick it off
-      // fire-and-forget (it has its own pacer queue and won't block the
-      // tick). A cooldown prevents re-looting every tick while the floor
-      // is still being picked up.
-      if (r.kind === 'loot') {
-        const now = Date.now();
-        const agentName = session.name;
-        if (!session._lastLootAt || now - session._lastLootAt > 5000) {
-          session._lastLootAt = now;
-          session.lootFloor?.({ maxItems: 12 }).then(res => {
-            const taken = res?.taken?.length ?? 0;
-            if (taken) console.error(`[tick] ${agentName} looted ${taken} item(s) after kill`);
-          }).catch(e => console.error(`[tick] ${agentName} loot err: ${e.message}`));
-        }
-      }
-      return;
-    }
+    // THE FIGHT HANDLER IS GONE — the planner owns this now.
+    //
+    // It used to be a 60-line branch that built a CombatController and handed it the
+    // whole decision: close, swing, or retreat. `_fight` now maps to the world state
+    // `!has_target` (GOAL_STATE), and the two ways to get there are ordinary planner
+    // actions with honest preconditions — `approach_target` achieves `in_reach`,
+    // `attack` consumes it. Both still run through the controller, which kept every
+    // piece of bookkeeping it had; see `combatStep`.
+    //
+    // The third thing the controller used to decide, retreating below 55% health, is
+    // NOT reimplemented here: `flee_hurt` and `flee_danger` sit above `_fight` in the
+    // ladder and always did. Two retreat rules with two thresholds meant the one that
+    // fired was whichever number was crossed first. See docs/m59-goap-repayment.md.
 
     // 2c2. TOWN BUSINESS: sell the surplus, bank the excess.
     if (active?.goal === 'sell_loot' || active?.goal === 'bank_money') {
@@ -2284,10 +2324,23 @@ export const DEFAULT_GOALS = [
   // JayB: hurt, health falling over eight samples, and every other flee condition false.
   { goal: 'flee_danger', when: ws => ws.under_attack === true && ws.hurt === true },
   { goal: 'flee_danger', when: ws => ws.has_target === true && ws.target_in_band === false && ws.in_reach === true },
-  // FLEE when hurt AND a target is actively in reach
-  // (attacking you). If the target is in the room but
-  // not in reach, fight it instead of fleeing.
-  { goal: 'flee_hurt', when: ws => ws.below_flee === true && ws.has_target === true && ws.in_reach === true },
+  // FLEE when below the flee line with a live quarry — WHETHER OR NOT IT IS IN REACH.
+  //
+  // This used to require `in_reach === true`, on the reasoning that a target in the room
+  // but not adjacent should be fought rather than run from. That is the identical mistake
+  // the note above `flee_danger`/`critical` describes and fixes one rung higher: `in_reach`
+  // is a fact about THIS INSTANT, and a chasing mob is in and out of it every second. The
+  // argument was accepted there and never carried down to here.
+  //
+  // It became load-bearing when the CombatController stopped making its own retreat
+  // decision (phase 3 — see `combatStep`). The controller used to check health at the top
+  // of its `close` phase and back off below 55%, which quietly covered this gap. With that
+  // gone and the reach gate still here, a character at 30% health with the mob one square
+  // outside melee selected `_fight`, and `_fight` now plans `approach_target` — it would
+  // WALK TOWARDS the thing that hurt it, at 30%, and only become allowed to flee once it
+  // arrived and got hit again. Swept before and after: hp 30-70, out of reach, not being
+  // hit this instant was the whole hole, and it is the commonest shape of a losing fight.
+  { goal: 'flee_hurt', when: ws => ws.below_flee === true && ws.has_target === true },
   // Rest when hurt, but only when there's no target in
   // the room. If a target is in reach, the flee_hurt or
   // _fight goal handles it.
@@ -2426,7 +2479,24 @@ export const DEFAULT_GOALS = [
   // starves everything below — including resting, which always works. See
   // docs/m59-goap-repayment.md. The handler drops the stale leg, after which this reads
   // null (no leg) and hunting is available again on the next plan.
-  { goal: 'hunt',     when: ws => ws.has_target === false || ws.target_in_band === false },
+  // A CEILING THAT CANNOT BE READ IS A REFUSAL TO ENGAGE, NOT A GAP IN THE LADDER.
+  //
+  // This asked for `target_in_band === false`, and `_fight` asks for `=== true`, so a
+  // NULL — the quarry is there but its level did not resolve — matched neither. Nor did
+  // the floor, because `idle_rest` excludes a character that holds a target. The result
+  // was a character with no goal at all: watched live as Lee, 192 ticks of `none`.
+  //
+  // `!== true` is the same convention the symbol itself documents ("A CEILING THAT
+  // DEFAULTS OPEN IS THE ONE THAT KILLS SOMEBODY -- threatCeiling() returns null on
+  // unknown max health and every caller reads null as refuse"). A quarry we cannot
+  // assess is one to walk away from and replace, which is what hunting is.
+  // HUNT IS THE EXACT COMPLEMENT OF `_fight`, and writing it that way is what closes the
+  // gap for good. `_fight` engages only on a confirmed target that is confirmed in band;
+  // anything less — either symbol false OR null — is a reason to go and find something
+  // else, which is what hunting is. Written as two `=== false` tests it left four
+  // tri-state corners matching no rung at all, and a character with no goal is a stall
+  // that no liveness check can see. See the sweep in m59-decide-test.mjs.
+  { goal: 'hunt',     when: ws => ws.has_target !== true || ws.target_in_band !== true },
   { goal: 'vigor_ok', when: ws => ws.vigor_ok === false && ws.has_food === true
                                  && ws.has_target !== true },
   { goal: 'has_food', when: ws => ws.has_food === false && ws.has_reagents === true },
@@ -2447,4 +2517,25 @@ export const DEFAULT_GOALS = [
   // simply decline, because something below it always accepts. See
   // docs/m59-goap-repayment.md.
   { goal: 'idle_rest', when: ws => ws.has_target !== true && ws.under_attack !== true },
+
+  // ── THE LADDER IS TOTAL, AND IT IS TOTAL BY CONSTRUCTION ──────────────────────
+  //
+  // The rung above says "something below it always accepts", and for a year it was not
+  // true of itself: it declines while a target is held or while something is hitting us,
+  // and every rung above it declines on some combination too. A world state that matched
+  // NOTHING produced no goal, no action, and no error — a stall that no liveness check
+  // can see, because the loop is ticking at 10Hz and reporting zero failures. Watched
+  // live: Lee, 864 ticks of `none`, three separate tri-state corners over one afternoon.
+  //
+  // Closing those corners one at a time is what produced them: each fix made one pair of
+  // rungs agree and left the next pair to be discovered. So the bottom two rungs are a
+  // TOTAL cover instead, and the invariant stops depending on the conditions above them
+  // staying mutually exhaustive as they are edited.
+  //
+  // Being hit is the one state where sitting down is wrong, so it gets the rung that
+  // leaves; everything else rests. Neither is a good plan — reaching here means every
+  // considered goal declined — but both are safe, and doing something safe is the whole
+  // requirement. There is always something to do, even if it is resting.
+  { goal: 'flee_danger', when: ws => ws.under_attack === true },
+  { goal: 'idle_rest',   when: () => true },
 ];

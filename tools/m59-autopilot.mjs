@@ -1048,6 +1048,29 @@ export function applyFightAboveVigor(policy, value) {
   return policy;
 }
 
+// THE FLOOR MUST BE REACHABLE. Resting alone caps at REST_VIGOR_CAP (80 of a 200 bar);
+// every point of vigor above that comes only from eating. So the highest vigor a
+// character can actually get is the resting cap plus the nutrition already carried.
+// A configured floor above that is unreachable by any action the keeper can take, and
+// holding out for it idles the character for ever: it rests to the cap, still below the
+// floor, and loops "too tired to start a fight" forever.
+//
+// This is the root of the Lee deadlock: a baseline floor of 140 is above the 80 resting
+// cap, and a character carrying a single mushroom (+50 -> 130) has a NON-empty larder,
+// so the old empty-larder escape hatch never fired and the floor stayed at 140, yet 130
+// < 140. Cap the floor at what resting + the carried food can deliver, in every case: a
+// badly-stocked character fights at what it can actually reach, and a well-stocked one
+// still climbs to the full floor by eating.
+//
+// Re-exported after an internal refactor inlined the formula and dropped the importable
+// name — `m59-autopilot-policy-test.mjs` still imports it by name. Keeping the pure
+// function here rather than duplicating the arithmetic in the test is the whole point of
+// the export in the first place.
+export function reachableFightFloor(want, vigorMax, carriedVigor) {
+  const restCap = REST_VIGOR_CAP * (vigorMax || 200);   // 80 on a 200 bar
+  return Math.min(want, restCap + (carriedVigor || 0));
+}
+
 // How long after a food trip before another is worth making, and the same for a selling
 // trip. Declared here rather than inside bankRun() so `_bankRunShouldGo` shares the one
 // definition — two copies of a cooldown is how two callers come to disagree about whether

@@ -32,6 +32,7 @@ import { plan as astar } from './m59-goap-planner.mjs';
 import { costOf } from './m59-cost.mjs';
 
 import { attack, attackOf }       from './m59-act/attack.mjs';
+import { approachTarget }         from './m59-act/approach.mjs';
 import { step }          from './m59-act/step.mjs';
 import { equipBest }              from './m59-act/equip.mjs';
 import { rest, stand }   from './m59-act/rest.mjs';
@@ -99,7 +100,12 @@ import { groundedCasts } from './m59-act/cast.mjs';
 // See docs/m59-goap-repayment.md, phase 2. They sit before `travelTo`, the generic
 // last-resort walk, because a named destination beats "keep moving and hope".
 const ALWAYS = [rest, stand, equipBest, buy, eatSomething,
-                travelToHuntRoom, acquireTarget, escapePocket, travelTo];
+                travelToHuntRoom, acquireTarget, escapePocket, travelTo,
+                // `approach_target` is what makes `in_reach` achievable, and so what
+                // makes the goal `!has_target` plannable from across the room instead
+                // of only from inside melee. Without it the planner can express
+                // "swing" and never "walk up to it and then swing".
+                approachTarget];
 
 /**
  * actionsFor(client) -> [action]

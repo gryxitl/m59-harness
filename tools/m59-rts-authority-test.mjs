@@ -105,7 +105,11 @@ assert.deepEqual(rtsJobReport({ ...baseJob, done: false, finishedAt: undefined,
 
 const brokerPath = fileURLToPath(new URL('./m59-broker.mjs', import.meta.url));
 const skillsPath = fileURLToPath(new URL('./m59-skills.mjs', import.meta.url));
-const broker = readFileSync(brokerPath, 'utf8');
+const gamePath = fileURLToPath(new URL('./m59-game.mjs', import.meta.url));
+// Read the game FIRST: the movement methods (step, queueValidatedMove, walkTo, lootFloor)
+// are the real implementations now, and the broker holds only thin keeper-action wrappers
+// that do not carry the beforeMutation hook this suite is asserting on.
+const broker = readFileSync(gamePath, 'utf8') + '\n' + readFileSync(brokerPath, 'utf8');
 const skills = readFileSync(skillsPath, 'utf8');
 const section = (start, end) => {
   const from = broker.indexOf(start);
