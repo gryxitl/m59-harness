@@ -260,3 +260,29 @@ blocking a character's escape on.
   the migration and the real value of it — the compensations are now visible as refusals
   instead of invisible as improvisation.
 
+## Live soak status (2026-08-28)
+
+Tasks 1 and 2 are landed and committed:
+- 4935c17 offline suites green
+- 2b6a11d blink cost-ordering
+
+Task 3 (live soak + telemetry) requires a broker restart to load the fix, then an
+observation window (5+ minutes) where the fleet owner can confirm:
+  - /tickstats by_goal shows no unachievable goal with a high tick count
+  - mover.arrived climbing over the window
+  - stalled stays false with the supervisor not un-sticking anyone
+
+Restart command (from the AGENTS.md):
+  node tools/m59-service.mjs stop --fleet <fleet>
+  node tools/m59-service.mjs start --fleet <fleet>
+
+Then observe:
+  curl "http://127.0.0.1:<keeper-port>/tickstats?reset=1"
+  sleep 300   # 5 minutes
+  curl "http://127.0.0.1:<keeper-port>/tickstats" | jq
+
+Precondition verification should include:
+- `idle_rest` still bottom-of-ladder (the floor is total-cover)
+- No `unwedge` goal with plan-fall-through holding more than a second
+- `arrived` climbing from 0 to some number over the window
+
