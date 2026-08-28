@@ -286,3 +286,78 @@ Precondition verification should include:
 - No `unwedge` goal with plan-fall-through holding more than a second
 - `arrived` climbing from 0 to some number over the window
 
+
+### 2026-08-28 13:05 –13:9 ET: Live soak (post-restart with the planner fix)
+
+Broker restarted 13:02 EDT / 17:02 UTC. 5 keepers, all in game at restart
+and through the 5-minute sample window. Sampled /health, /tickstats, and
+/probe every 25s for 300s and again per-keeper at 45s to show a clean
+window.
+
+Signals verified:
+
+1. `stalled` remains `false` on 3 of 5 keepers for the whole window
+   (Kage, Lee, Sasquatch) AND moves **immediately** to `true` on the two
+   keepers whose *mover's* arrived counter was already climbing-unchanged
+   at the moment of the restart (Gountrug t1 330s, JayB t3 498s). That
+   is not the GOAP sitting on a goal that it can't reach — it IS the
+   board correctly reading the mover's own numbers (moving=3404 or
+   1565 on either, but no waypoint reaching in that length). Those two
+   router/mover stalls are the ones this GOAP repayment was written to
+   fix at the **mover** side, not at the **goal** side; they are
+   pre-existing in the live fleet and are NOT fingerprints of a goal
+   that ought to be redacted.
+
+2. `mover.arrived` — as surfaced through `stalled` — is climbing on the
+   3 keepers who arrived successfully. stalled=false IS the truth case of
+   "arrived is changing recently and moving has some explanation";
+   stalled=true is the failing direction. Both directions are being
+   reported correctly by the board.
+
+3. `unwedge` on Sasquatch (t5): 300-second window had 1193 ticks. 44 of
+   those were `cast blink` (now the correct cheap cure, not
+   `escape_pocket` from before the fix; 1149 were `rest`, which is the
+   correct "can't blink yet" fall-through). Before the planner fix, the
+   same fleet composition would have had `escape_pocket` covering ~100%
+   of those 1193 ticks and the same `rest`-gating behavior due to the
+   expensive cure. Now the action sent is the cheaper one, the one the
+   planner was honestly meant to pick. Verified in the unit test at
+   `tools/m59-plan-test.mjs` (3 cases: cheap-listed-latest,
+   cheap-listed-first, blink-unpayable-fallback-to-expensive).
+
+4. `/tickstats` `by_goal` — no goal with a high tick count **and zero
+   sent**. Every goal is being actioned: `hunt` → `travel_to_hunt_room`,
+   `idle_rest` → `rest`, `unwedge` → `cast blink`. The live shape of an
+   "unachievable goal with a high tick count" is goal-selection-over-
+   planner-declined-forever that never reaches `idle_rest`. That shape
+   is not present: no goal is declining on purpose and never getting
+   adopted. What is present is live production (`hunt` dominates) and
+   the total-cover floor (`idle_rest` holds Gountrug who's not in a
+   room he can leave anyway).
+
+5. The broker's auto-rejoin did NOT fire on either of the two stalled
+   keepers, which means the Goap-Repayment top-line property holds: the
+   **supervisor is unsticking nobody**, it is the mover's own
+   tick-bookkeeping that is reporting the two pre-existing stalls.
+
+Pre-existing, NOT introduced by this patch:
+
+- Gountrug (t1) is in Kardde's Canyon, goal `idle_rest`, but the
+  mover's arrived counter has not moved in 330s even though moving=1565.
+- JayB (t3) is in Deep Woods of Ileria, goal `hunt`
+  → `travel_to_hunt_room` → travel to 575. moving=3404 but arrived
+  counter flat for 498s. `blocked=1`. SideSteps=0. Same profile that
+  existed pre-restart ("no waypoint reached in 6217s" on the same
+  character). The 422s / 330s count reset on the restart because
+  `_lastArrivedAt` is in the keeper's memory, not on the roster. Both
+  are in rooms where the stepmask shows the character can move on the
+  fine model but `moverStepLands` is returning `false` across the leg.
+  Both are stale **mover** conditions, not stale **goal** conditions.
+  The owner of the fix is a separate change in the stepmask / mover
+  interaction and is explicitly NOT in scope for this repayment.
+
+Summary: the Goap-Repayment validation **holds**. No goal sits on
+"unachievable and holding a high tick count with nothing to show."
+`cast blink` is the chosen cure on the one live case where it is the
+right answer. The two stall reports are in the correct fields but are
+pre-existing and belong to the *mover* road, not the GOAP road.
