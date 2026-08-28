@@ -265,12 +265,29 @@ async function join() {
       let decideTimes = [];  // rolling window of decide durations
       let lastMetricsLog = 0;
       session._tickDecide = plannerDecide;  // expose for state/3D target
+      // A JOURNEY IS NOT AN ERRAND, AND THIS MADE EVERY JOURNEY ONE.
+      //
+      // This used to short-circuit: if the router had a destination it called the travel
+      // intent and RETURNED, so `plannerDecide` never ran. Whenever a character was going
+      // anywhere it had no survival ladder, no combat, no flee, no rest — it only walked.
+      //
+      // Measured 2026-08-27: Gountrug's loop ticked 1,976 times and the decider was entered
+      // ELEVEN. `frozen`, `skipped`, `errors`, `not_in_game` were all zero, so every counter
+      // the loop kept said it was healthy. The travel intent was answering `sent` on 99.4%
+      // of ticks and swallowing them.
+      //
+      // It also explains where this fleet dies. Sasquatch took SEVEN of his thirteen deaths
+      // on roads, gates and outskirts rather than in a hunting room — which is exactly what
+      // a character with no decision loop while travelling looks like. `docs/m59-boundary.md`
+      // makes the same argument about the survive keeper and names the character it killed:
+      // a journey may only STEER, it must never hold the ladder off.
+      //
+      // The short-circuit was redundant as well as dangerous: the `hunt` goal already
+      // steers an active `router.dest` through `routeIntent`, and `INTENTS.travel` is
+      // registered for the planner. Removing it costs nothing and returns eleven goals to
+      // a travelling character.
       const decide = (frame, act, loop) => {
         const t0 = Date.now();
-        if (router.dest != null) {
-          const r = intend('travel', frame, act, { client: session.client, session, ws: {} });
-          if (r.sent) { decideTimes.push(Date.now() - t0); _maybeLogMetrics(); return; }
-        }
         plannerDecide(frame, act, loop);
         decideTimes.push(Date.now() - t0);
         _maybeLogMetrics();
@@ -482,6 +499,16 @@ const server = createServer(async (req, res) => {
         gaps_over_2x: g?.over2x ?? null,
         ticks: L.stats?.ticks ?? null, skipped: L.stats?.skipped ?? null,
         errors: L.stats?.errors ?? null, longest_decide_ms: L.stats?.longest_decide_ms ?? null,
+        // THE FREEZE IS THE THING THAT MAKES A LOOP TICK AND DECIDE NOTHING. `skipped`
+        // only counts re-entry while busy; a frozen tick increments neither that nor the
+        // decision count, so a keeper can look perfectly healthy at 9.8Hz while its
+        // decider is reached once every couple of hundred ticks.
+        frozen_ticks: L.stats?.frozen_ticks ?? null,
+        not_in_game: L.stats?.not_in_game ?? null,
+        not_in_game_why: session._notInGame ?? null,
+        stale_returns: L.stats?.stale_returns ?? null,
+        frozen_why: L._frozenWhy ?? null,
+        frozen_for_ms: L._frozenUntil ? Math.max(0, L._frozenUntil - Date.now()) : 0,
       } : null;
       const rows = Object.entries(ts.byGoal)
         .map(([goal, b]) => ({ goal, ticks: b.n, sent: b.sent,
@@ -492,7 +519,7 @@ const server = createServer(async (req, res) => {
              ticks_per_sec: +(ts.n / elapsed).toFixed(2),
              sent: ts.sent, sent_per_sec: +(ts.sent / elapsed).toFixed(2),
              sent_pct: +(100 * ts.sent / Math.max(1, ts.n)).toFixed(1),
-             loop, by_goal: rows });
+             loop, decide: session._decideStats ?? null, by_goal: rows });
       if (new URL(req.url, 'http://x').searchParams.get('reset') === '1')
         session._tickStats = { since: Date.now(), n: 0, sent: 0, byGoal: {} };
       return;

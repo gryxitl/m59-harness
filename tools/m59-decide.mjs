@@ -819,8 +819,19 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
 
   const decide = (frame, act, loop) => {
     ticks++;
+    // HOW OFTEN IS THE DECIDER ACTUALLY ENTERED, and how often does it leave without
+    // saying anything. The loop reports 9.8Hz and `frozen`/`skipped` were both zero while
+    // only one call in 195 produced a decision — so the silence is inside here, and
+    // nothing recorded which exit it left by.
+    const D = (session._decideStats ??= { entries: 0, emitted: 0, exits: {} });
+    D.entries++;
+    let _emitted = false;
+    const mark = (where) => { if (!_emitted) D.exits[where] = (D.exits[where] ?? 0) + 1; };
+    const _onDecision = onDecision;
+    onDecision = (d) => { _emitted = true; D.emitted++; return _onDecision?.(d); };
+    try {
     const client = session.client;
-    if (!client) return;
+    if (!client) { mark('no client'); return; }
 
     // 0. STUCK DETECTION. If the character hasn't moved in
     // STUCK_MS, escape the geometry pocket. Blink teleports
@@ -2125,6 +2136,10 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     note(active.goal, r.sent);
     onDecision?.({ ticks, goal: active.goal, action: actionName, sent: r.sent,
                    what: r.what ?? null, why: r.why ?? null });
+    } finally {
+      mark('fell through without deciding');
+      onDecision = _onDecision;
+    }
   };
 
   function note(goal, ok) {

@@ -132,8 +132,16 @@ export class Sensor {
     // and some decisions (engaging, committing to a walk) deserve to know that.
     const dt = this.lastAt ? at - this.lastAt : null;
     this.lastAt = at;
-    if (!c || s.live !== true || c.state !== 'game')
-      return { in_game: false, at, dt_ms: dt };
+    if (!c || s.live !== true || c.state !== 'game') {
+      // WHICH OF THE THREE. A frame that says "not in game" stops the tick before the
+      // decider and used to be indistinguishable from a healthy idle; the keeper's own
+      // /state reports in_game from a DIFFERENT test, so the two can disagree silently.
+      const why = !c ? 'no client' : (s.live !== true ? `s.live=${String(s.live)}`
+                                                      : `client.state=${String(c.state)}`);
+      const b = (s._notInGame ??= {});
+      b[why] = (b[why] ?? 0) + 1;
+      return { in_game: false, at, dt_ms: dt, why };
+    }
     const me = c.self;
     return {
       at,
@@ -581,7 +589,11 @@ export class TickLoop {
     }
     try {
       const frame = this.sensor.read();
-      if (!frame.in_game) return;
+      // COUNTED, because this is the one that was eating the ticks. A loop reporting
+      // 9.8Hz with frozen=0 and skipped=0 was reaching the decider once in 195 ticks, and
+      // every counter the loop kept said it was healthy — because this return happens
+      // after `busy = true` and incremented nothing.
+      if (!frame.in_game) { this.stats.not_in_game = (this.stats.not_in_game ?? 0) + 1; return; }
       // LIVENESS GUARD: a live in-game session receives server data continuously
       // (the keepalive reply alone guarantees one per 20s). If no byte has
       // arrived for LIVENESS_STALE_MS, the session is a ghost — the client is
@@ -607,6 +619,7 @@ export class TickLoop {
             this.onSessionDead?.({ staleMs });
           } catch { /* the reporter is not allowed to matter */ }
         }
+        this.stats.stale_returns = (this.stats.stale_returns ?? 0) + 1;
         return;  // do not decide against a dead session
       }
       this._livenessFlagged = false;
