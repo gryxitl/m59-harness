@@ -696,7 +696,19 @@ const server = createServer(async (req, res) => {
         // different room than the one the server had, so every validated step landed
         // somewhere unexpected and the walk re-planned in a loop. session.world.room.num
         // is the same source the /health endpoint uses (1011 for Raza Inn).
-        room_num: session.world?.room?.num ?? c?.room?.id ?? null,
+        // A WRONG NUMBER IS WORSE THAN NO NUMBER. This fell back to the client's runtime
+        // room id, which is a DIFFERENT NAMESPACE: the sensor's own note records JayB
+        // standing in "Raza" reporting id 2013, which is a real map room called "The East
+        // Tower". Live id 6 is the Underworld and also map room 6, "The Deep Dark Woods of
+        // Marion" — 63x56 against the Underworld's real 30x32. A consumer that resolves
+        // geometry from that id draws the right objects over the wrong map, which is
+        // exactly what "two maps overlaid" looks like in the 3D view.
+        //
+        // The consumers already prefer the NAME (`geometryForRoom` does `rooByName ?? roo`)
+        // and the name resolves correctly for every room checked, so sending null here
+        // loses nothing and removes the trap under the fallback.
+        room_num: session.world?.room?.num ?? null,
+        client_room_id: c?.room?.id ?? null,
         // The decider's current target, for the 3D viewer.
         target: (() => {
           const tid = session._tickDecide?.state?.()?.targetId ?? null;
