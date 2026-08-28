@@ -9,7 +9,8 @@
 // and an action reporting success it did not have.
 import { makeDecider, intend, INTENTS, DEFAULT_GOALS,
          REST_UNTIL_DEFAULT, REST_LATCH_MAX_MS,
-         VIGOR_REST_BELOW, VIGOR_REST_CEILING } from './m59-decide.mjs';
+         VIGOR_REST_BELOW, VIGOR_REST_CEILING,
+         creatureLevelOf, levelInBand } from './m59-decide.mjs';
 import { readFileSync } from 'node:fs';
 import { SYMBOLS } from './m59-worldstate.mjs';
 import { Actuator, TickLoop } from './m59-tick.mjs';
@@ -459,6 +460,54 @@ console.log('\na cast holds the character still, because the tick loop is what b
   ok('59 does', step(59, false) === true);
   ok('and it stays closed at 79', step(79, true) === true);
   ok('opening exactly at the ceiling', step(80, true) === false);
+}
+
+// THE ENGAGEMENT CEILING WAS SWITCHED OFF BY A DEBUG LINE.
+//
+//     ws.target_in_band = true;  // DEBUG: force in-band to test
+//
+// That ran for any target ALREADY IN THE ROOM, which is the common path — once a target is
+// selected and stays put, every later tick came through it. So the ceiling applied to
+// almost nothing and `_fight` engaged anything at any level. The other half: the level was
+// resolved from `max_health`, and the compendium lookup that was meant to find the real one
+// set `targetLevel = null` with a comment saying it would be "set below" and never set it —
+// and an unknown level defaults to in-band.
+//
+// Sasquatch, level 20, ceiling 30, spent 2026-08-27 trading blows with level-50 fungus
+// beasts and died thirteen times — six times more than the same-build JayB.
+{
+  const o = (n) => ({ name: n });
+
+  ok('a fungus beast is level 50, by name', creatureLevelOf({}, o('fungus beast')) === 50);
+  ok('a giant rat is 30', creatureLevelOf({}, o('giant rat')) === 30);
+  ok('a mummy is 25', creatureLevelOf({}, o('mummy')) === 25);
+
+  // The case that mattered.
+  ok('at ceiling 30 a fungus beast is OUT of band',
+     levelInBand(creatureLevelOf({}, o('fungus beast')), 30) === false);
+  ok('...while a giant rat is in', levelInBand(creatureLevelOf({}, o('giant rat')), 30) === true);
+  ok('...and a centipede is in', levelInBand(creatureLevelOf({}, o('centipede')), 30) === true);
+
+  // And it opens up as he grows: ceiling = level + floor(level/2) armed, so 34 -> 51.
+  ok('a fungus beast comes into band once the ceiling clears 50',
+     levelInBand(creatureLevelOf({}, o('fungus beast')), 51) === true);
+  ok('but not at 49', levelInBand(creatureLevelOf({}, o('fungus beast')), 49) === false);
+
+  // An unknown creature still answers in-band, deliberately — refusing everything unnamed
+  // would stop a character fighting in a room it was deliberately sent to.
+  ok('an unknown creature is still in-band', levelInBand(creatureLevelOf({}, o('wibble')), 30) === true);
+  ok('and an unknown ceiling never blocks', levelInBand(50, null) === true);
+
+  // The health proxy remains the fallback for things the table does not name.
+  ok('an unnamed object falls back to its health',
+     creatureLevelOf({}, { max_health: 42 }) === 42);
+
+  // The debug line must not come back. Checked as an ASSIGNMENT, not as text, because the
+  // note explaining the fix quotes the line it removed.
+  const src = readFileSync(new URL('./m59-decide.mjs', import.meta.url), 'utf8');
+  const code = src.split('\n').filter(l => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+  ok('no unconditional force-in-band assignment remains',
+     !/^\s*ws\.target_in_band\s*=\s*true\s*;/m.test(code));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -141,7 +141,7 @@ function pickWieldableWeapon(client, session = null) {
       && WEAPON.test(String(client.rsc?.get?.(o.nameRsc) ?? o.name ?? '')));
   return candidates.sort((a, b) => String(client.rsc?.get?.(b.nameRsc) ?? b.name ?? '').localeCompare(String(client.rsc?.get?.(a.nameRsc) ?? a.name ?? '')))[0] ?? null;
 }
-import { nearestHuntRoom } from './m59-hunt-room.mjs';
+import { nearestHuntRoom, huntRoomsAtOrBelow } from './m59-hunt-room.mjs';
 import { loadSpawns } from './m59-spawns.mjs';
 import * as skills from './m59-skills.mjs';
 import { trustedBuyer } from './m59-skills.mjs';
@@ -273,6 +273,42 @@ export const REST_LATCH_MAX_MS = 3 * 60_000;
 export const VIGOR_REST_BELOW = 60;
 export const VIGOR_REST_CEILING = 80;
 const CAST_HOLD_MS = Number(process.env.M59_CAST_HOLD_MS || 11000);
+
+// A CREATURE'S LEVEL, BY NAME. The hunt-room table already carries it for every mob this
+// fleet can meet — fungus beast 50, giant rat 30, centipede 30, mummy 25 — and nothing was
+// reading it at the point where the engagement ceiling is applied. Built once and cached;
+// the table is static.
+let _creatureLevels = null;
+function creatureLevelTable() {
+  if (_creatureLevels) return _creatureLevels;
+  _creatureLevels = new Map();
+  try {
+    for (const r of huntRoomsAtOrBelow(999)) {
+      if (!r?.creature || r.level == null) continue;
+      const k = String(r.creature).toLowerCase();
+      _creatureLevels.set(k, Math.max(_creatureLevels.get(k) ?? 0, r.level));
+    }
+  } catch { /* no table: every lookup answers null and the caller falls back */ }
+  return _creatureLevels;
+}
+export function creatureLevelOf(client, obj) {
+  if (!obj) return null;
+  const name = String(client?.rsc?.get?.(obj.nameRsc) ?? obj.name ?? '').toLowerCase().trim();
+  if (name) {
+    const t = creatureLevelTable();
+    if (t.has(name)) return t.get(name);
+    for (const [k, v] of t) if (name.includes(k)) return v;
+  }
+  // Fall back to the health proxy only when the name is unknown to us.
+  return obj.max_health ?? obj.health ?? null;
+}
+// An unknown level still answers in-band, deliberately: refusing every unnamed thing would
+// stop a character fighting in a room it was sent to. What changed is that the level is now
+// usually KNOWN, so the default is the exception rather than the rule.
+export function levelInBand(level, ceiling) {
+  if (level == null || ceiling == null) return true;
+  return level <= ceiling;
+}
 
 export const INTENTS = {
   rest:  (f, act, ctx) => {
@@ -1511,7 +1547,12 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             ws._threatCeiling = level + band;
             // Level: from the object's max_health, or the
             // compendium (spawns data) for this room+creature.
-            let targetLevel = best.max_health ?? best.health ?? null;
+            // NAME FIRST, because that is what the tables key on and what a creature's
+            // level actually is. `max_health` is a proxy that reads a fungus beast as
+            // harmless: the loop below was supposed to resolve the real level from the
+            // compendium and never did — it set `targetLevel = null` with a comment saying
+            // it would be "set below", and unknown levels default to IN-BAND.
+            let targetLevel = creatureLevelOf(client, best);
             if (targetLevel == null) {
               try {
                 const spawns = loadSpawns(SPAWNS_FILE);
@@ -1548,7 +1589,15 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           const d2 = (target.col - me.col) ** 2 + (target.row - me.row) ** 2;
           ws.in_reach = d2 <= 4;
           ws.has_target = true;
-          ws.target_in_band = true;  // DEBUG: force in-band to test
+          // THE ENGAGEMENT CEILING APPLIES TO A TARGET WE ALREADY HAVE, TOO.
+          //
+          // This said `ws.target_in_band = true;  // DEBUG: force in-band to test` and it
+          // was the common path — once a target is selected and stays in the room, every
+          // subsequent tick came through here. So the ceiling was switched off for almost
+          // all of the fleet's fighting, and `_fight` engaged anything at any level.
+          // Sasquatch, level 20 with a ceiling of 30, spent 2026-08-27 trading blows with
+          // level-50 fungus beasts and died thirteen times.
+          ws.target_in_band = levelInBand(creatureLevelOf(client, target), ws._threatCeiling);
         }
       }
     }
