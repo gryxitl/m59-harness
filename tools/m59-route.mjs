@@ -1008,9 +1008,17 @@ export class Router {
     // not be detected as `at`, and the crossing (or the walk-past-boundary) would never
     // trigger. client.self is updated by every position packet and is the source the
     // probe/room-view use.
+    // Use frame.position (world position) for the `at` check on `go` exits:
+    // the go command is only valid when the character is currently standing on
+    // the tile, not when they were standing there a few ticks ago.
+    // `client.self` can lag behind `frame.position` in the opposite direction —
+    // it's the last position the client model knew about, which can be stale if
+    // the character has moved. For edge (walk-past-boundary) exits, either source
+    // is fine since the crossing fires by the walk, not by a discrete command.
     const selfPosAt = this.session?.client?.self;
-    const at = (me.col === this.leg.standOn.col && me.row === this.leg.standOn.row)
-      || (selfPosAt && selfPosAt.col === this.leg.standOn.col && selfPosAt.row === this.leg.standOn.row);
+    const atByFrame = (me.col === this.leg.standOn.col && me.row === this.leg.standOn.row);
+    const atBySelf  = selfPosAt && selfPosAt.col === this.leg.standOn.col && selfPosAt.row === this.leg.standOn.row;
+    const at = (this.leg.kind === 'go') ? atByFrame : (atByFrame || atBySelf);
 
     if (at && this.leg.kind === 'go') {
       // Fire the go command to transition rooms.

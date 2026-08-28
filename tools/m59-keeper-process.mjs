@@ -1047,6 +1047,7 @@ const server = createServer(async (req, res) => {
               dest: r.dest ?? null,
               state: r.lastState ?? null,
               leg: r.leg ? { next: r.leg.next, kind: r.leg.kind,
+                             fromRoom: r.leg.fromRoom ?? null,
                              standOn: r.leg.standOn ?? null,
                              edgeTarget: r.leg.edgeTarget ?? null,
                              direction: r.leg.direction ?? null } : null,
