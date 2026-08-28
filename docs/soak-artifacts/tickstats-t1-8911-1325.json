@@ -1,0 +1,53 @@
+{
+    "window_s": 877.3,
+    "ticks": 2783,
+    "ticks_per_sec": 3.17,
+    "sent": 2374,
+    "sent_per_sec": 2.71,
+    "sent_pct": 85.3,
+    "loop": {
+        "hz_configured": 10,
+        "interval_ms_configured": 100,
+        "interval_ms_measured": 101.9,
+        "hz_measured": 9.82,
+        "worst_gap_ms": 294,
+        "gaps_over_2x": 2,
+        "ticks": 7682,
+        "skipped": 0,
+        "errors": 0,
+        "longest_decide_ms": 293,
+        "frozen_ticks": 0,
+        "not_in_game": null,
+        "slow_ticks": null,
+        "not_in_game_why": null,
+        "stale_returns": null,
+        "frozen_why": null,
+        "frozen_for_ms": 0
+    },
+    "decide": {
+        "entries": 7682,
+        "emitted": 7682,
+        "exits": {}
+    },
+    "by_goal": [
+        {
+            "goal": "idle_rest",
+            "ticks": 2374,
+            "sent": 2374,
+            "pct": 85.3,
+            "actions": {
+                "rest": {
+                    "n": 2374,
+                    "sent": 2374
+                }
+            }
+        },
+        {
+            "goal": "hunt",
+            "ticks": 409,
+            "sent": 0,
+            "pct": 14.7,
+            "actions": {}
+        }
+    ]
+}
