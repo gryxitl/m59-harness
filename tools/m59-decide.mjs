@@ -31,7 +31,7 @@
 // copy of that judgement -- the shape this repository keeps paying for -- it imports the
 // SAME pure helpers the atomics bind with: pickWeapon, pickFood, knownSpells. Those are
 // synchronous by construction, which is why they can be shared at all.
-import { evaluate } from './m59-worldstate.mjs';
+import { evaluate, TARGET_SYMBOLS } from './m59-worldstate.mjs';
 import { KOD_FINENESS } from './m59-roo.mjs';
 import { planFor } from './m59-plan.mjs';
 import { pickWeapon } from './m59-act/equip.mjs';
@@ -322,6 +322,33 @@ export function creatureLevelOf(client, obj) {
 // An unknown level still answers in-band, deliberately: refusing every unnamed thing would
 // stop a character fighting in a room it was sent to. What changed is that the level is now
 // usually KNOWN, so the default is the exception rather than the rule.
+/**
+ * The engagement ceiling for THIS CHARACTER. It does not depend on the quarry, which is
+ * exactly why it used to be computed inside the branch that picks a new one — and so was
+ * `undefined` on every tick that kept the quarry it already had. `levelInBand(level, null)`
+ * is `true`, so the ceiling was not merely wrong on the common path, it was ABSENT, and a
+ * level-20 character read a level-50 fungus beast as in band. Measured, before this moved:
+ * tick 1 `_threatCeiling=30 target_in_band=false`, tick 2 onwards `undefined` and `true`.
+ *
+ * Same formula as the GOAP keeper: level + band, and the band is halved unarmed.
+ */
+export function threatCeilingFor(client, policy = {}, armed = true) {
+  const level = client?.vitals?.()?.health?.max ?? null;
+  if (level == null) return null;
+  const fullBand = policy?.threatBand ?? Math.floor(level / 2);
+  const band = armed === true ? fullBand : Math.floor(fullBand / 2);
+  return level + band;
+}
+
+/**
+ * A quarry's level. NAME FIRST, because that is what the tables key on and what a
+ * creature's level actually is -- `max_health` is a proxy that reads a fungus beast as
+ * harmless. Null when we cannot tell, and the caller decides what that means.
+ */
+export function resolveTargetLevel(client, obj) {
+  return creatureLevelOf(client, obj);
+}
+
 export function levelInBand(level, ceiling) {
   if (level == null || ceiling == null) return true;
   return level <= ceiling;
@@ -1477,7 +1504,14 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       // only when a target exists. Without this, a dropped target (killed,
       // left the room, blacklisted) leaves has_target stale-true and the
       // character keeps "fighting" a ghost.
-      ws.has_target = false;
+      // `target` is declared out here because the derivation below the loop needs it for
+      // BOTH paths — the room we could not read is also a room with no quarry, and it has
+      // to clear the scratch rather than leave last tick's id standing.
+      //
+      // The `ws.has_target = false` reset that used to sit here is gone with the rest of
+      // the hand-written symbols: `has_target` is produced from `_targetId`, so clearing
+      // the id IS clearing the symbol, and the two can no longer drift apart.
+      let target = null;
       if (objects instanceof Map && me?.col != null) {
         // If we already have a target and it's still in the room, keep it.
         // STICKY: use _lastTargetId (the PERSISTENT module-level target), not ws._targetId
@@ -1488,7 +1522,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
         // it is killed, leaves the room, is blacklisted as unreachable, OR a MUCH closer
         // target appears (less than 50% of the current distance), OR we just took damage
         // and a mob is in melee range (the attacker — fight the one hitting us).
-        let target = _lastTargetId != null ? objects.get(_lastTargetId) : null;
+        target = _lastTargetId != null ? objects.get(_lastTargetId) : null;
         // UNREACHABLE STICKY TARGET. The combat controller reports _moverNoRoute
         // when the fine A* finds no path to the current target (it moved behind a
         // wall/ledge, or was never reachable to begin with). The _moverNoRoute
@@ -1793,85 +1827,54 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             ws._targetId = best.id ?? best.obj_id;
             _lastTargetId = ws._targetId;
             _currentTargetId = ws._targetId;
-            // Level: from the object's max_health or health, or the
-            // compendium. The threat ceiling: same formula as the
-            // GOAP keeper (level + band, halved when unarmed).
-            const maxHp = client.vitals?.()?.health?.max ?? 20;
-            const level = maxHp;
-            const isArmed = ws.armed === true;
-            const fullBand = policy?.threatBand ?? Math.floor(level / 2);
-            const band = isArmed ? fullBand : Math.floor(fullBand / 2);
-            ws._threatCeiling = level + band;
-            // Level: from the object's max_health, or the
-            // compendium (spawns data) for this room+creature.
-            // NAME FIRST, because that is what the tables key on and what a creature's
-            // level actually is. `max_health` is a proxy that reads a fungus beast as
-            // harmless: the loop below was supposed to resolve the real level from the
-            // compendium and never did — it set `targetLevel = null` with a comment saying
-            // it would be "set below", and unknown levels default to IN-BAND.
-            let targetLevel = creatureLevelOf(client, best);
-            if (targetLevel == null) {
-              try {
-                const spawns = loadSpawns(SPAWNS_FILE);
-                if (spawns?.byMonster) {
-                  const mobName = String(client.rsc?.get?.(best.nameRsc) ?? best.name ?? '').toLowerCase();
-                  // Look up the monster in byMonster to find its level
-                  // from any room it appears in.
-                  for (const [monName, entries] of Object.entries(spawns.byMonster)) {
-                    if (monName.toLowerCase() === mobName) {
-                      // The level is typically in the room's spawn data.
-                      // For now, use the creature name match as confirmation
-                      // that this is a mob. The level will be set from the
-                      // compendium's room data if available.
-                      targetLevel = null; // will be set below
-                      break;
-                    }
-                  }
-                }
-              } catch { /* compendium lookup failed */ }
-            }
-            ws._targetLevel = targetLevel;
-            // Re-derive the target-dependent symbols.
-            ws.has_target = true;
-            // ONE REACH RULE. This read `bestD2 <= 4` — a third copy of the melee bound,
-            // hardcoded, Euclidean, and blind to how the character actually attacks. It
-            // also OVERRODE the `in_reach` symbol on the common path, so consolidating
-            // the rule in m59-combat.mjs would have had no effect on a live fight.
-            ws.in_reach = targetInReach(client, best) === true;
-            // If the level is unknown, treat as in-band (the
-            // GOAP keeper's default: a ceiling that defaults
-            // open is the one that kills somebody, but a
-            // target with unknown level is probably a common
-            // mob in a room we already chose to hunt in).
-            ws.target_in_band = targetLevel == null ? true : targetLevel <= ws._threatCeiling;
+            // Everything this branch used to derive -- the ceiling, the level, and the
+            // three target symbols -- now happens ONCE below, for this branch and the
+            // sticky one together. Two copies is how the ceiling came to be applied on
+            // the tick a quarry was chosen and absent on every tick after it.
           }
         } else {
-          // Target still in room: re-derive in_reach.
-          const d2 = (target.col - me.col) ** 2 + (target.row - me.row) ** 2;
-          ws.in_reach = targetInReach(client, target) === true;
-          ws.has_target = true;
-          // AND THE ID THE SYMBOLS WERE DERIVED FROM, WHICH THIS BRANCH NEVER SET.
+          // KEEPING A QUARRY IS NOT A DIFFERENT KIND OF EVENT FROM CHOOSING ONE.
           //
-          // `has_target` is overridden to true here, but `_targetId` was only assigned on
-          // the OTHER branch (a newly chosen quarry). On the sticky path — the common one,
-          // every tick after the first — the world state claimed a target and carried no
-          // id for it. The old hand-written handler survived that because the
-          // CombatController falls back to scanning the room when `ws._targetId` is null;
-          // a planner action cannot, and `approach_target` refused with "no target in the
-          // world state" while `_fight` was selected on `has_target === true`. Watched
-          // live: Lee, 180 ticks planning an approach and sending nothing.
+          // This branch used to re-derive `in_reach`, `has_target` and `target_in_band`
+          // itself, and got the last one wrong in the worst possible way: it read
+          // `ws._threatCeiling`, which only the SIBLING branch ever set, and
+          // `levelInBand(level, undefined)` is `true`. So the engagement ceiling was
+          // applied on the tick a quarry was chosen and ABSENT on every tick after it —
+          // which is nearly all of them. Measured before this change: tick 1
+          // `_threatCeiling=30 target_in_band=false`, ticks 2+ `undefined` and `true`,
+          // with a level-20 character reading a level-50 fungus beast as in band.
+          //
+          // The comment that used to sit here described that exact failure as something
+          // it had FIXED (it replaced a `// DEBUG: force in-band` line). It reproduced it.
+          // That is the argument for the block below: a branch that decides is not also
+          // allowed to sense.
           ws._targetId = target.id ?? target.obj_id ?? ws._targetId;
-          // THE ENGAGEMENT CEILING APPLIES TO A TARGET WE ALREADY HAVE, TOO.
-          //
-          // This said `ws.target_in_band = true;  // DEBUG: force in-band to test` and it
-          // was the common path — once a target is selected and stays in the room, every
-          // subsequent tick came through here. So the ceiling was switched off for almost
-          // all of the fleet's fighting, and `_fight` engaged anything at any level.
-          // Sasquatch, level 20 with a ceiling of 30, spent 2026-08-27 trading blows with
-          // level-50 fungus beasts and died thirteen times.
-          ws.target_in_band = levelInBand(creatureLevelOf(client, target), ws._threatCeiling);
         }
       }
+
+      // ── ONE PLACE, FOR BOTH PATHS ────────────────────────────────────────────
+      //
+      // Above this line the decider CHOOSES a quarry. Below it, it asks the world state
+      // what that choice means. The three target symbols are produced by their own
+      // producers in m59-worldstate.mjs and are never written here, so they cannot
+      // disagree with `_targetId` and cannot differ between the two branches — the two
+      // bugs this block replaces. `_threatCeiling` depends only on the character, so it
+      // is computed for every tick that has a quarry at all, not only a fresh one.
+      if (target) {
+        ws._threatCeiling = threatCeilingFor(client, policy, ws.armed === true);
+        ws._targetLevel   = resolveTargetLevel(client, target);
+      } else {
+        ws._targetId = null;
+        ws._targetLevel = null;
+        ws._threatCeiling = null;
+      }
+      // ASK, DO NOT COMPUTE. `only` is the supported re-sense: the ceiling needs `armed`,
+      // and `target_in_band` needs the ceiling, so the honest order is sense, choose,
+      // re-sense the part choosing unlocked. Naming the list from TARGET_SYMBOLS rather
+      // than repeating it means a fourth target symbol cannot be silently left at the
+      // pre-target pass's `false`.
+      Object.assign(ws, evaluate({ client, session, policy, agent: session.name, ws },
+                                 { only: TARGET_SYMBOLS }));
     }
 
     // 1b. POSITION CONFIRMATION. The server does not push our position.

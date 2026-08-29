@@ -1036,9 +1036,40 @@ export const SYMBOL_NAMES = Object.freeze(Object.keys(SYMBOLS));
 // tell" -- a broken producer must not be able to take a keeper down, and it must
 // not be able to quietly flip a symbol to the convenient answer either.
 // ---------------------------------------------------------------------------
-export function evaluate(ctx = {}) {
+/**
+ * The three symbols that cannot be answered until a quarry has been chosen.
+ *
+ * Target SELECTION is not sensing — it is a decision, with stickiness, a blacklist and a
+ * danger cap, and it belongs to a driver rather than here. So a driver picks the quarry,
+ * puts its id on `ws._targetId`, and asks for these three back. What it must NOT do is
+ * work them out itself: that is one code path per driver for the engagement ceiling, and
+ * the ceiling is the number that decides whether a fight is survivable.
+ *
+ * Exported so the list has ONE home. A driver that re-derives "the target symbols" and
+ * names two of the three has silently pinned the third at whatever the pre-target pass
+ * said, which is `false` for all of them.
+ */
+export const TARGET_SYMBOLS = ['has_target', 'in_reach', 'target_in_band'];
+
+/**
+ * evaluate(ctx) -> every symbol, as a boolean.
+ * evaluate(ctx, { only }) -> just those symbols, same rules.
+ *
+ * `only` exists for the two-pass problem, and it is the supported way to solve it. Some
+ * symbols depend on a decision the driver has not made yet when it first senses: it needs
+ * `armed` to work out a threat ceiling, but `target_in_band` needs the ceiling. So the
+ * honest order is sense, decide, then RE-SENSE the part the decision unlocked — and the
+ * re-sense has to go through the producers, or the driver ends up with a second, private
+ * copy of the rule. That is exactly how the engagement ceiling came to be switched off on
+ * the common path twice: a hand-written `target_in_band` on the sticky branch, reading a
+ * `_threatCeiling` that branch never set, and `levelInBand(level, undefined)` is `true`.
+ */
+export function evaluate(ctx = {}, { only = null } = {}) {
   const out = {};
-  for (const [name, sym] of Object.entries(SYMBOLS)) {
+  const entries = only
+    ? only.map(n => [n, SYMBOLS[n]]).filter(([, sym]) => sym)
+    : Object.entries(SYMBOLS);
+  for (const [name, sym] of entries) {
     let v = null;
     try { v = sym.produce(ctx); } catch { v = null; }
     out[name] = v == null ? sym.whenUnknown : !!v;

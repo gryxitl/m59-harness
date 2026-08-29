@@ -971,5 +971,66 @@ console.log('\nTHERE IS ALWAYS SOMETHING TO DO — NO WORLD STATE SELECTS NO GOA
   ok('...and no rung throws on an unexpected shape', threw === 0, `${threw} threw`);
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\nTHE ENGAGEMENT CEILING SURVIVES THE SECOND TICK');
+{
+  // THIS BUG HAS NOW BEEN INTRODUCED TWICE, BOTH TIMES THE SAME WAY, AND THE SECOND
+  // TIME IT WAS INTRODUCED BY THE FIX FOR THE FIRST.
+  //
+  // Target selection has two branches: choose a new quarry, or keep the one we have.
+  // The choosing branch computed `_threatCeiling` and the three target symbols; the
+  // keeping branch computed the symbols AGAIN, reading a `_threatCeiling` it never set.
+  // `levelInBand(level, undefined)` is `true`, so the ceiling was applied on the tick a
+  // quarry was chosen and ABSENT on every tick after it — which is nearly all of them.
+  //
+  // First time it was a literal `ws.target_in_band = true; // DEBUG: force in-band`.
+  // Second time it was the careful-looking replacement for that line. A one-tick test
+  // passes against both. So this one runs FOUR ticks, and the tick that matters is the
+  // second — the first sticky one.
+  const run = (name, ticks = 4) => {
+    const foe = { id: 77, name, col: 6, row: 5, flags: 0 };
+    const { session } = world({ hp: 20, maxHp: 20, vigor: 150,
+      equipped: [{ id: 1, name: 'mace' }], objects: new Map([[77, foe]]) });
+    const seen = [];
+    const goals = [{ goal: '_probe', when: ws => {
+      seen.push({ id: ws._targetId, level: ws._targetLevel,
+                  ceiling: ws._threatCeiling, band: ws.target_in_band,
+                  has: ws.has_target });
+      return false; } }];
+    const decide = makeDecider({ session, goals, policy: {} });
+    for (let i = 0; i < ticks; i++)
+      decide({ in_game: true, objects: session.client.room.objects,
+               position: session.client.self, vitals: { health: { pct: 100 } } },
+             new Actuator(session), null);
+    return seen;
+  };
+
+  // A level-20 character, armed: ceiling = 20 + floor(20/2) = 30.
+  const beast = run('fungus beast');          // level 50 — far above the ceiling
+  ok('a quarry over the ceiling is refused on the FIRST tick',
+     beast[0]?.band === false, JSON.stringify(beast[0]));
+  ok('...and on the second, which is the one that regressed twice',
+     beast[1]?.band === false, JSON.stringify(beast[1]));
+  ok('...and stays refused', beast.every(s => s.band === false),
+     JSON.stringify(beast.map(s => s.band)));
+  ok('the ceiling is present on every tick, not just the first',
+     beast.every(s => s.ceiling === 30), JSON.stringify(beast.map(s => s.ceiling)));
+  ok('and the level is resolved on every tick',
+     beast.every(s => s.level === 50), JSON.stringify(beast.map(s => s.level)));
+
+  // The other half: this must not have been bought by refusing everything.
+  const rat = run('giant rat');               // level 30 — exactly at the ceiling
+  ok('a quarry AT the ceiling is still fightable, every tick',
+     rat.every(s => s.band === true), JSON.stringify(rat.map(s => s.band)));
+
+  // `has_target` is produced from `_targetId` now, so the two cannot disagree. That
+  // disagreement is what made `approach_target` refuse 180 times while the goal said
+  // there was a target -- the sticky branch set the symbol and not the id.
+  ok('has_target and _targetId agree on every tick, on both branches',
+     [...beast, ...rat].every(s => s.has === (s.id != null)),
+     JSON.stringify([...beast, ...rat].map(s => ({ has: s.has, id: s.id }))));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
