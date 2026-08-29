@@ -469,6 +469,7 @@ export class ControllerMover {
       this._plannedFor = null;
       this._noProgress = 0;
       this._handedBack = false;
+      this._lastServerTile = null;
     }
 
     const now = Date.now();
@@ -654,12 +655,13 @@ export class ControllerMover {
     // rubberband. Hold, keep replicating, and let the confirmations arrive.
     if (this._leadExceeded(c)) return { state: 'moving', to: this.dest, holding: true };
 
-    // Use the SERVER'S tile for progress detection, not the controller's belief.
-    // The controller's fine position crosses the tile boundary before the server
-    // updates, which makes `moved` true on the 4th-5th tick even if the server
-    // is rejecting all fine-packets. This hides the stall from every recovery
-    // path.
-    const before = { col: c.self?.col ?? this.ctl.square().col, row: c.self?.row ?? this.ctl.square().row };
+    // Use the SERVER'S tile for progress detection. Store it per tick, compare
+    // current to previous. The controller's fine belief crosses the tile boundary
+    // before the server does (it integrates locally), making the old `moved` check
+    // unreliable.
+    const serverTile = { col: c.self?.col ?? this.ctl.square().col, row: c.self?.row ?? this.ctl.square().row };
+    const before = this._lastServerTile ?? serverTile;
+    this._lastServerTile = serverTile;
     const r = this.ctl.step(dt, { geo, client: c });
     this._lastStep = r;
 
@@ -685,7 +687,7 @@ export class ControllerMover {
       return { state: 'arrived', position: this.ctl.square() };
     }
 
-    const after = { col: c.self?.col ?? this.ctl.square().col, row: c.self?.row ?? this.ctl.square().row };
+    const after = serverTile;
     const moved = after.col !== before.col || after.row !== before.row;
     if (moved) { this._noProgress = 0; this._handedBack = false; }
     else this._noProgress++;
