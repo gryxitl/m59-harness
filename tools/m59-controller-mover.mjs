@@ -75,6 +75,7 @@ export class ControllerMover {
     this._lastTickAt = 0;
     this._lastReconcileAt = 0;
     this._room = null;         // the room our believed position belongs to
+    this._seenClient = null;   // the client object reference from when we last ran — a change means a rejoin
     this._noProgress = 0;
     this._blockedRun = 0;
     this._sentSeen = 0;
@@ -380,6 +381,25 @@ export class ControllerMover {
             `${this._agent} tick#${_tick} pos=${posOverride?posOverride.col+','+posOverride.row:'?'} ctlXY=${this.ctl?.x?.toFixed(0)},${this.ctl?.y?.toFixed(0)} dest=${this.dest?this.dest.col+','+this.dest.row:'null'} step=${this._lastStep?.state} pathLen=${this.ctl?.path?.length ?? 0} pathIdx=${this.ctl?.pathIdx ?? -1}\n`));
         }
       } catch {}
+    }
+    // SESSION RESTART: session.rejoin() replaces session.client with a fresh
+    // one. The character's believed position is in the OLD session; adopting the
+    // new client's coordinates from the server POSLIST is mandatory.
+    // We must reset HERE, before the crossing-delagate branch, otherwise the
+    // believed position (at (11,49)) never has to sync with the server's
+    // current position (at (20,2)) and is forever 47 squares off on a
+    // tiny tileSize pocket.
+    const _c = this.session?.client;
+    if (_c && this._seenClient !== _c) {
+      if (this._seenClient !== null) {
+        console.error(`[ctlmover] ${this._agent} rejoin detected (new client) — resetting controller state`);
+        this.stats.rejoins = (this.stats.rejoins ?? 0) + 1;
+        this.ctl.clear();
+        this._room = null;
+        this._seenClient = _c;
+        return { state: 'resync' };
+      }
+      this._seenClient = _c;  // first tick: just record the client reference
     }
     // Silent while resting, for the reason in physicsTick. Reported as a distinct state so
     // a caller cannot read it as progress or as a stall.
