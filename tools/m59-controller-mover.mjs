@@ -211,12 +211,45 @@ export class ControllerMover {
     try { this.fallback?.cancel?.(); } catch { /* ignore */ }
   }
 
+  // Before the fallback owns the body, make sure our fine position is not anchored on a
+  // stale prediction. When this function is called, the controller has produced a sub-square
+  // plan the geometry cannot execute; the fallback will now own the body and may send a
+  // request that places it on a far tile. `c.predictSelf` in m59-fallbacks.mjs writes that
+  // far tile to `c.self`; on the NEXT tick `syncFrom(me)` reads `c.self` and adopts it as
+  // our fine position — even though the server still has us where we were. The gap is the
+  // distance the body cannot actually cross (the geometry said no), so it persists and the
+  // controller cannot recover without a room change or a restart.
+  //
+  // Fix: adopt the server's confirmed tile BEFORE delegating. `serverMovedPlayer` is the
+  // same call the room-change path and relocation path use for exactly this — it rebase the
+  // fine position and drops the plan. `c.self` is the server's last echo (BP_MOVE); it is
+  // not a local prediction, so it is safe to adopt. Gap > 2 tiles: the legitimate
+  // BP_MOVE echo lag is 1-4 tiles at 1202ms/2.5 tiles-per-sec; a persisted gap past the
+  // 8-tick no-progress window is a genuine asymmetry, not lag.
+  _syncFineForFofalback() {
+    const c = this.session?.client;
+    if (!c?.self || this.ctl?.x == null) return;
+    const me = c.self;
+    const believed = this.ctl.square();
+    const gap = Math.hypot((believed?.col ?? me.col) - me.col,
+                           (believed?.row ?? me.row) - me.row);
+    if (gap > 2) {
+      this.ctl.serverMovedPlayer(me.col, me.row, me.x, me.y);
+      this._plannedFor = null;
+      this._noProgress = 0;
+      this.stats.delegResyncs = (this.stats.delegResyncs ?? 0) + 1;
+      console.error(`[ctlmover] ${this._agent} DELEGATE resync: believed (${believed.col},${believed.row})`
+        + ` vs server (${me.col},${me.row}) — ${gap.toFixed(1)} tiles; rebasing fine position`);
+    }
+  }
+
   _delegate(posOverride, why) {
     this.stats.delegated++;
     const fbState = this.fallback?.active ?? 'no fallback active';
     const fbPath = this.fallback?.path?.length ?? 0;
     console.error(`[ctlmover] ${this._agent} DELEGATE ${why}| fallback.active=${fbState} fallback.path=${fbPath} fallbackId=null`);
     if (!this.fallback?.tick) return { state: 'blocked', why: why ?? 'no fallback mover' };
+    this._syncFineForFofalback();
     const r = this.fallback.tick(posOverride);
     // Don't log every tick, just the state:
     if (this.fallback?.tick === undefined || r?.state !== 'moving') {
