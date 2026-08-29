@@ -14,6 +14,9 @@ export function renderRoom3D(name, rv, hero) {
   const walkable = rv.walkable ?? [];
   const hasWalls = walkable.length === cols * rows && walkable.some(v => v === 0);
   let roomName = hero?.room?.name ?? '';
+  const _sc = self?.col, _sr = self?.row;
+  const posLabel = (_sc != null && _sr != null) ? ` @ (${_sc},${_sr})` : '';
+  roomName += posLabel;
   const hp = hero?.vitals?.health ?? {};
   const mana = hero?.vitals?.mana ?? {};
   const vigor = hero?.vitals?.vigor ?? {};
@@ -439,6 +442,32 @@ if (Array.isArray(SAFE_SPOTS) && SAFE_SPOTS.length) {
   }
   scene.add(safeSpotGroup);
   applySafeSpotVisibility();
+}
+
+// SELF POSITION MARKER: a bright cyan ring + beacon at the character's tile.
+// The 3D view had no way to find yourself in the room — the camera sits at the
+// room center and a navy floor offers no reference. This ring is the "here am I".
+if (SELF && Number.isFinite(SELF.x) && Number.isFinite(SELF.z)) {
+  const sx = SELF.x + 0.5, sz = SELF.z + 0.5;
+  const sy = 0.05 + heightAt(SELF.x, SELF.z);
+  const selfGrp = new THREE.Group();
+  const ringGeo = new THREE.RingGeometry(0.35, 0.6, 32);
+  const ringMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff, side: THREE.DoubleSide, transparent: true, opacity: 0.95 });
+  const ring = new THREE.Mesh(ringGeo, ringMat);
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.set(sx, sy, sz);
+  selfGrp.add(ring);
+  const postGeo = new THREE.CylinderGeometry(0.035, 0.035, 2.2, 6);
+  const postMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff, transparent: true, opacity: 0.5 });
+  const post = new THREE.Mesh(postGeo, postMat);
+  post.position.set(sx, sy + 1.1, sz);
+  selfGrp.add(post);
+  const dotGeo = new THREE.SphereGeometry(0.11, 8, 8);
+  const dotMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff });
+  const dot = new THREE.Mesh(dotGeo, dotMat);
+  dot.position.set(sx, sy + 0.2, sz);
+  selfGrp.add(dot);
+  scene.add(selfGrp);
 }
 
 // Keep a thin reference plane at y=0 for rooms with no height data.
