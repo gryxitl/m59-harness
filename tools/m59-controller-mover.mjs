@@ -79,6 +79,7 @@ export class ControllerMover {
     this._noProgress = 0;
     this._blockedRun = 0;
     this._sentSeen = 0;
+    this._noProgressCycles = 0;
     this.stats = { ticks: 0, arrived: 0, stuck: 0, noRoute: 0, delegated: 0, replans: 0,
                    moving: 0, blockedTicks: 0, planFail: 0 };
     this._lastSummary = 0;
@@ -722,7 +723,7 @@ export class ControllerMover {
         `${this._agent} tick before=(${before.col},${before.row}) after=(${after.col},${after.row}) moved=${moved === (before.col !== after.col || before.row !== after.row)} noProg=${this._noProgress} destAge=${this._destAge ? (Date.now()-this._destAge) : 'null'}\n`));
     }
     const moved = after.col !== before.col || after.row !== before.row;
-    if (moved) { this._noProgress = 0; this._handedBack = false; }
+    if (moved) { this._noProgress = 0; this._handedBack = false; this._noProgressCycles = 0; }
     else this._noProgress++;
 
     // THE SERVER KNOWS WHERE THE BODY IS; THE BELIEF ONLY KNOWS WHERE IT STEERED IT.
@@ -766,9 +767,12 @@ export class ControllerMover {
         try { import('node:fs').then(m => m.appendFileSync('/tmp/t4-pool-delegate.log',
           `${this._agent} WILL DELEGATE: age=${_age} noProg=${this._noProgress}\n`)); } catch {}
       }
-      if (this._destAge && Date.now() - this._destAge > 4500) {
+      this._noProgressCycles = (this._noProgressCycles ?? 0) + 1;
+      const pocket = (this._destAge && Date.now() - this._destAge > 4500)
+        || (this._noProgressCycles >= 2);
+      if (pocket) {
         this.stats.handedBack = (this.stats.handedBack ?? 0) + 1;
-        console.error(`[ctlmover] ${this._agent} in walkable POCKET: 200+ ticks moving, 0 arrived, no tile progress in 30 ticks — handing back to legacy`);
+        console.error(`[ctlmover] ${this._agent} wPR: no tile progress — handing back to legacy (cycles=${this._noProgressCycles})`);
         return this._delegate(posOverride, 'walkable pocket, no geo route');
       }
       const sv = c.self;

@@ -688,12 +688,10 @@ export class CharacterController {
   // however fast the body is moving.
   replicate(client, force = false) {
     const now = Date.now();
-    if (!force) {
-      if (now - this._lastSentAt < MOVE_INTERVAL_MS) return false;
-      if (this._lastSentX != null) {
-        const moved = Math.hypot(this.x - this._lastSentX, this.y - this._lastSentY);
-        if (moved < MOVE_THRESHOLD_CLIENT) return false;
-      }
+    if (now - this._lastSentAt < MOVE_INTERVAL_MS) return false;
+    if (this._lastSentX != null) {
+      const moved = Math.hypot(this.x - this._lastSentX, this.y - this._lastSentY);
+      if (moved < MOVE_THRESHOLD_CLIENT) return false;
     }
     const px = Math.round(clientToProtocol(this.x));
     const py = Math.round(clientToProtocol(this.y));
