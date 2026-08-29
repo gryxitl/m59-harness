@@ -1391,6 +1391,15 @@ const server = createServer(async (req, res) => {
               // the cast.
               const loop = session._tickLoop;
               if (loop) {
+                // A SITTING CHARACTER'S CAST IS REFUSED WHOLE: while resting the
+                // server sets PFLAG_NO_MAGIC (player.kod:1166) and UserCast answers
+                // "You find yourself unable to cast a spell" before mana is even
+                // checked. The decider re-sits a resting character on the very next
+                // tick, so stand FIRST and cast in the same frozen window — the
+                // actuator in m59-tick.mjs already applies this rule to its own
+                // casts (spell.kod:45). Sending stand while already standing is a
+                // harmless no-op.
+                try { c.stand?.(); } catch { /* best effort */ }
                 const since = c.evSeq;  // events after this are from the cast
                 const maxMs = Number(args.holdMs) || 15000;  // blink can take several s
                 // THE CLEAR USED TO BE THE LINE AFTER THE AWAIT, AND THAT IS THE BUG. A
