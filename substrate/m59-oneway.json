@@ -1,17 +1,22 @@
 {
- "note": "Connections the MAP DECLARES that a player cannot actually use. Operator knowledge about the world, not a measurement of this machine — which is why it is committed. `leave` and `kind` narrow a block to ONE declared exit: without them a block removes every link between the two rooms, which killed the Cor Noth DOOR while trying to remove its dead west edge and sent the router eight hops round the Merchant Ways. Directed, and the reverse of each is a legitimate route. Delete an entry to let the router try it again.",
- "blocked": [
-  {
-   "from": 589,
-   "to": 599,
-   "why": "Under the shadow of the Sentinel -> Ukgoth is westward-only in the real game; the operator confirms a player cannot go this way. The route to Ukgoth from An ancient place [579] is 578 -> 576 -> 587 -> 597 -> 598 -> 599, which is a pain to walk and is how it is done. Our geometry catches the 599->598 half (zero routable crossing squares) and misses this half, which offers four."
-  },
-  {
-   "from": 150,
-   "to": 574,
-   "why": "Cor Noth declares LEAVE_WEST -> RID_G4 (cornoth.kod:94) and it is a DEAD DECLARATION: its west edge has ZERO walkable squares in all 46 rows, zero baked approaches, and no crossing has ever been recorded there in either direction. The operator, standing in the room, states there is no western exit at all — the real links are the GO exits (doors), 150 go->574 twice and 574 go->150 twice, and 574 declares no east edge exit. CORRECTS m59-exitgap.mjs, which cites Cor Noth west as 'a door that real players walk through every day' and treats the model's silence there as the defect; the door it means is the go exit, which is not on this edge.",
-   "leave": "west",
-   "kind": "edge"
-  }
- ]
+  "note": "Connections the MAP DECLARES that a player cannot actually use. Operator knowledge about the world, not a measurement of this machine \u2014 which is why it is committed. `leave` and `kind` narrow a block to ONE declared exit: without them a block removes every link between the two rooms, which killed the Cor Noth DOOR while trying to remove its dead west edge and sent the router eight hops round the Merchant Ways. Directed, and the reverse of each is a legitimate route. Delete an entry to let the router try it again.",
+  "blocked": [
+    {
+      "from": 589,
+      "to": 599,
+      "why": "Under the shadow of the Sentinel -> Ukgoth is westward-only in the real game; the operator confirms a player cannot go this way. The route to Ukgoth from An ancient place [579] is 578 -> 576 -> 587 -> 597 -> 598 -> 599, which is a pain to walk and is how it is done. Our geometry catches the 599->598 half (zero routable crossing squares) and misses this half, which offers four."
+    },
+    {
+      "from": 150,
+      "to": 574,
+      "why": "Cor Noth declares LEAVE_WEST -> RID_G4 (cornoth.kod:94) and it is a DEAD DECLARATION: its west edge has ZERO walkable squares in all 46 rows, zero baked approaches, and no crossing has ever been recorded there in either direction. The operator, standing in the room, states there is no western exit at all \u2014 the real links are the GO exits (doors), 150 go->574 twice and 574 go->150 twice, and 574 declares no east edge exit. CORRECTS m59-exitgap.mjs, which cites Cor Noth west as 'a door that real players walk through every day' and treats the model's silence there as the defect; the door it means is the go exit, which is not on this edge.",
+      "leave": "west",
+      "kind": "edge"
+    },
+    {
+      "from": 537,
+      "to": 706,
+      "why": "Old Draven Hall go doors are one-way: 706->537 is the legitimate direction, 537->706 does not fire the door transition from the Farnath approach side. Operator observation: characters standing on (14,6) the 706 go-exit stand_on in room 537 are NOT pushed into room 706, but greet the door from 706 to 537 works fine."
+    }
+  ]
 }
