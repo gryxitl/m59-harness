@@ -168,13 +168,28 @@ const REACH_TIMEOUT_MS = Number(process.env.M59_UW_REACH_TIMEOUT_MS || 30000);
 const UNDERWORLD_ESCAPE_TIMEOUT_MS = Number(process.env.M59_UW_ESCAPE_TIMEOUT_MS || 240000);
 
 // The most dangerous thing a character will take on, as GetAttackAbility (monster.kod:
-// 3*viLevel + 60*viDifficulty). 250 sits above the mummy (195) and giant rat (150) this fleet
-// survives on and below the baby spider (315) and centipede (390) it dies to. Overridable per
-// character with policy.maxAttackAbility; null disables the check entirely.
-// Cap raised from 250 → 500 so both giant rats (150) and baby spiders (315) are fightable.
-// The old 250 cap rejected everything with attackAbility > 250, which excluded baby spiders
-// and meant only giant rats were actual targets even in rooms where both are present.
-const DEFAULT_ATTACK_ABILITY_CAP = Number(process.env.M59_MAX_ATTACK_ABILITY || 500);
+// 3*viLevel + 60*viDifficulty). Overridable per character with policy.maxAttackAbility;
+// null disables the check entirely.
+//
+// THE WHOLE TABLE, BECAUSE THE GAP BETWEEN TWO OF THESE ROWS IS THE WHOLE DECISION:
+//
+//     giant rat     lv30 d1 = 150      survives on
+//     mummy         lv25 d2 = 195      survives on
+//     fungus beast  lv50 d1 = 210      (refused by the LEVEL band, not by this)
+//     baby spider   lv25 d4 = 315      survives on -- the Deep Woods staple
+//     centipede     lv30 d5 = 390      DIES TO
+//     spider        lv50 d4 = 390      DIES TO
+//     living tree   lv50 d4 = 390      DIES TO
+//
+// 250 was too strict: it refused baby spiders, so in a Deep Woods room holding both, only
+// the giant rats were targets. Raising it to 500 fixed that and silently re-admitted the
+// entire 390 band with it -- and 390 is not a near miss, it is the exact group the death
+// ledger names as killers ("centipede, baby spider", "spider, living tree"). Watched
+// live: Gountrug, level 20, engaged a centipede and died.
+//
+// 350 is the only number that does what the raise INTENDED. It clears the baby spider by
+// 35 and stops 40 short of the 390s. There is nothing between 315 and 390 to hit.
+const DEFAULT_ATTACK_ABILITY_CAP = Number(process.env.M59_MAX_ATTACK_ABILITY || 350);
 
 // Attack ability by creature name, from the spawn table's level and difficulty. Built once.
 let _aa = null;
@@ -827,9 +842,15 @@ export const INTENTS = {
     if (!ctx.ws?.in_underworld) {
       s._uwEnteredAt = null;
       s._uwFallthroughDone = false;
+      // EVERY piece of the portal commitment, or the next visit inherits this one's.
+      // `_uwSelectedAbsolutely` was a typo — written here, read nowhere — so the field it
+      // meant (`_uwSelectedAt`) was never actually cleared, and a character that died
+      // twice began its second visit with the first one's clock already expired.
       s._uwPortal = null;
       s._uwSince = null;
-      s._uwSelectedAbsolutely = null;
+      s._uwSelectedAt = null;
+      s._uwBest = null;
+      s._uwProgressAt = null;
       return { sent: false, why: 'not in underworld' };
     }
     // Track when we first entered the Underworld. When we've been here longer than
@@ -890,6 +911,32 @@ export const INTENTS = {
     if (s._uwPortal == null) { s._uwPortal = 0; s._uwSince = now; s._uwSelectedAt = now; }
     let portal = portals[s._uwPortal % portals.length];
     const onCurrent = onIt(portal);
+
+    // A PORTAL WE ARE STILL WALKING TOWARDS IS NOT AN UNREACHABLE ONE.
+    //
+    // Rotating on elapsed time alone abandons a portal the character is approaching
+    // perfectly well, restarts the mover on a new one, and never arrives at any of them.
+    // Watched live: Lee, in the Underworld, cycling "portal 1/6 ... 2/6 ... 3/6 ... 4/6
+    // unreachable after 30000ms" while `/findpath` returned a real waypoint list for
+    // three of those four. Nothing was unreachable; the walk was merely slower than the
+    // clock, which on this mover it usually is — a stall sample from the same afternoon
+    // reads `no waypoint reached in 595s (moving=5376 sideSteps=14436)`.
+    //
+    // So the clock measures PROGRESS, not time. `_uwBest` is the closest we have been to
+    // the portal we are committed to; while that keeps falling the timeout is held off,
+    // and it only runs when we have stopped closing. This is the same correction the
+    // routing notes already record for stall detection — "a stall detector that requires
+    // STILLNESS misses the commonest way to stand still", so ask the rate instead.
+    //
+    // A genuinely unreachable portal still rotates, and quickly: no path means no
+    // closing, so nothing holds the timeout off. (2,21) in this room is exactly that —
+    // `targetFineWalkable: false`, and it should be given up on.
+    const distNow = Math.hypot(portal.col - me.col, portal.row - me.row);
+    if (s._uwBest == null || distNow < s._uwBest - 0.5) {
+      s._uwBest = distNow;
+      s._uwProgressAt = now;          // we are still closing: the clock restarts
+    }
+    const closingRecently = (now - (s._uwProgressAt ?? now)) < REACH_TIMEOUT_MS;
     // Two failure modes, two independent timeouts:
     //   (a) on the portal, nothing triggers — unlit, blocked by geometry, or empty. Rotate after UNLIT_PORTAL_MS.
     //   (b) can't reach the portal — deep-pocket geometry between me and the exit. Rotate after REACH_TIMEOUT_MS.
@@ -904,15 +951,20 @@ export const INTENTS = {
       s._uwPortal = (s._uwPortal + 1) % portals.length;
       s._uwSince = now;
       s._uwSelectedAt = now;
+      s._uwBest = null;               // a new portal gets its own closing record
+      s._uwProgressAt = now;
       portal = portals[s._uwPortal];
       console.error(`[underworld] ${s.name}: portal ${s._uwPortal + 1}/${portals.length} didn't fire after ${UNLIT_PORTAL_MS}ms — trying (${portal.col},${portal.row})`);
-    } else if (!onCurrent && now - (s._uwSelectedAt ?? now) > REACH_TIMEOUT_MS) {
-      // (b): haven't reached it in REACH_TIMEOUT_MS
+    } else if (!onCurrent && !closingRecently) {
+      // (b): we have STOPPED CLOSING on it for REACH_TIMEOUT_MS. Not "time passed" —
+      // see the note above; that abandoned portals we were walking to perfectly well.
       s._uwPortal = (s._uwPortal + 1) % portals.length;
       s._uwSince = now;
       s._uwSelectedAt = now;
+      s._uwBest = null;               // a new portal gets its own closing record
+      s._uwProgressAt = now;
       portal = portals[s._uwPortal];
-      console.error(`[underworld] ${s.name}: portal ${s._uwPortal + 1}/${portals.length} unreachable after ${REACH_TIMEOUT_MS}ms — trying (${portal.col},${portal.row})`);
+      console.error(`[underworld] ${s.name}: portal ${s._uwPortal + 1}/${portals.length} — no closing for ${REACH_TIMEOUT_MS}ms (stuck at ${distNow.toFixed(1)} squares), trying (${portal.col},${portal.row})`);
     }
     act.step(portal.col, portal.row);
     return { sent: true,

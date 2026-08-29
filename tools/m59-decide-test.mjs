@@ -1032,5 +1032,113 @@ console.log('\nTHE ENGAGEMENT CEILING SURVIVES THE SECOND TICK');
      JSON.stringify([...beast, ...rat].map(s => ({ has: s.has, id: s.id }))));
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\nA PORTAL WE ARE STILL WALKING TOWARDS IS NOT AN UNREACHABLE ONE');
+{
+  // The Underworld escape commits to one portal and rotates when that portal fails. It
+  // used to rotate on ELAPSED TIME since it picked one, which abandons a portal the
+  // character is approaching perfectly well, restarts the mover on another, and arrives
+  // at none of them. Watched live: Lee cycling "portal 1/6 ... 2/6 ... 3/6 ... 4/6
+  // unreachable after 30000ms" while /findpath returned real waypoint lists for three of
+  // the four. Nothing was unreachable; the walk was slower than the clock.
+  //
+  // So the clock measures CLOSING, not time. Same correction the routing notes already
+  // record for stall detection: asking for stillness misses the commonest way to stand
+  // still, so ask the rate instead.
+  const uw = (selfCol, selfRow) => {
+    const objects = new Map([
+      [1, { id: 1, col: 20, row: 20, nameRsc: 1 }],
+      [2, { id: 2, col: 2,  row: 2,  nameRsc: 2 }],
+    ]);
+    const names = new Map([[1, 'portal'], [2, 'portal']]);
+    const client = { state: 'game', selfId: 99, self: { col: selfCol, row: selfRow },
+      room: { id: 10, num: 1, objects }, rsc: { get: r => names.get(r) ?? '?' },
+      moveToSquare: () => {}, go: () => {} };
+    const session = { name: 't-uw', live: true, client,
+      pacer: { depth: 0, submit: (k, fn) => Promise.resolve().then(fn) },
+      _mover: { to: () => {}, tick: () => ({ state: 'moving' }), cancel: () => {} } };
+    return { client, session };
+  };
+  const act = { step: () => {}, walk: () => {}, face: () => {}, go: () => {} };
+  const call = (session, client) =>
+    intend('escape_underworld', { objects: client.room.objects, position: client.self },
+           act, { client, session, ws: { in_underworld: true } });
+
+  // (a) STILL CLOSING. The portal is far and the clock is long past the timeout, but the
+  //     character has been getting nearer, so the commitment must hold.
+  {
+    const { client, session } = uw(10, 10);
+    call(session, client);                       // commit to the nearest portal
+    const first = session._uwPortal;
+    session._uwSelectedAt = Date.now() - 120_000; // long past any elapsed-time timeout
+    for (const [c0, r0] of [[9, 9], [8, 8], [7, 7], [6, 6]]) {
+      client.self = { col: c0, row: r0 };         // closing on (2,2)
+      call(session, client);
+    }
+    ok('a portal we are closing on is NOT abandoned, however long it takes',
+       session._uwPortal === first,
+       `started ${first}, now ${session._uwPortal}`);
+  }
+
+  // (b) NOT CLOSING. Same elapsed time, but the character has not moved — this is what
+  //     an unreachable portal actually looks like, and it must still rotate.
+  {
+    const { client, session } = uw(10, 10);
+    call(session, client);
+    const first = session._uwPortal;
+    session._uwProgressAt = Date.now() - 120_000;  // stopped closing long ago
+    call(session, client);
+    ok('...but one we have stopped closing on IS given up',
+       session._uwPortal !== first,
+       `started ${first}, now ${session._uwPortal}`);
+  }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\nTHE DANGER CAP SITS IN THE GAP BETWEEN WHAT WE SURVIVE AND WHAT KILLS US');
+{
+  // LEVEL IS NOT DANGER; ATTACK ABILITY IS (3*viLevel + 60*viDifficulty, monster.kod).
+  // A level-30 centipede is exactly as dangerous as a level-50 spider, and a baby spider
+  // is 2.1x a giant rat that OUTRANKS it. So a level band alone cannot keep this fleet
+  // alive, and the cap is the layer that does.
+  //
+  // The table has a wide, empty gap in the middle, and the cap belongs in it:
+  //
+  //     150 rat | 195 mummy | 210 fungus beast | 315 baby spider ||  390 centipede/spider/living tree
+  //                                                              ^^ nothing lives here
+  //
+  // 250 sat below the baby spider and starved the fleet in rooms holding both. Raising it
+  // to 500 fixed that and re-admitted the whole 390 band with it — the exact group the
+  // death ledger names as killers. Gountrug engaged a centipede and died.
+  const rooms = JSON.parse(readFileSync(new URL('../substrate/m59-spawns.json', import.meta.url), 'utf8'))?.rooms ?? {};
+  const aa = new Map();
+  for (const list of Object.values(rooms))
+    for (const e of list ?? []) {
+      if (!e?.creature || e.level == null || e.difficulty == null) continue;
+      aa.set(String(e.creature).toLowerCase(), 3 * e.level + 60 * e.difficulty);
+    }
+  const of = (n) => aa.get(n) ?? null;
+
+  // The table itself, so a spawn-data change that moves a creature across the line is
+  // caught here rather than in a postmortem.
+  ok('the fleet\'s prey are all under 350',
+     ['giant rat', 'mummy', 'baby spider'].every(n => of(n) != null && of(n) <= 350),
+     JSON.stringify(['giant rat', 'mummy', 'baby spider'].map(n => n + '=' + of(n))));
+  ok('and the three it dies to are all over it',
+     ['centipede', 'spider', 'living tree'].every(n => of(n) != null && of(n) > 350),
+     JSON.stringify(['centipede', 'spider', 'living tree'].map(n => n + '=' + of(n))));
+
+  // The cap the decider actually uses, read off the module rather than restated.
+  const capSrc = readFileSync(new URL('./m59-decide.mjs', import.meta.url), 'utf8');
+  const cap = Number(capSrc.match(/DEFAULT_ATTACK_ABILITY_CAP = Number\(process\.env\.M59_MAX_ATTACK_ABILITY \|\| (\d+)\)/)?.[1]);
+  ok('the default cap is a real number', Number.isFinite(cap), String(cap));
+  ok('it admits the baby spider — the raise that introduced the bug wanted this',
+     cap >= of('baby spider'), `cap=${cap} baby spider=${of('baby spider')}`);
+  ok('and it refuses the centipede — which that raise gave away',
+     cap < of('centipede'), `cap=${cap} centipede=${of('centipede')}`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
