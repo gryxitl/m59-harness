@@ -903,6 +903,14 @@ try { appendFileSync('/tmp/route-debug-t4.log', `PLAN ${here} dest=${this.dest} 
    */
   tick(frame, act) {
     const t = this.now();
+    if (this.session?.client?.room?.num === 578 && (this.tickCount ?? 0) % 100 === 1) {
+      try { 
+        const geo = this.session?.world?.geometry;
+        const self = this.session?.client?.self;
+        const pathTest = geo?.path ? geo.path(self?.row ?? 0, self?.col ?? 0, this.leg?.standOn?.row ?? 99, this.leg?.standOn?.col ?? 99, {fine: true}) : 'no path method';
+        import('node:fs').then(m => m.appendFileSync('/tmp/r578-log.log', `tick self=(${self?.col},${self?.row}) legStOn=(${this.leg?.standOn?.col},${this.leg?.standOn?.row}) path=${pathTest ? (pathTest.found ? 'FOUND '+JSON.stringify(pathTest.steps?.slice(0,5)) : 'NOT_FOUND') : 'n/a'}\n`));
+      } catch {}
+    }
     if (process.env.M59_ROUTE_DEBUG === '1' && (this.tickCount ?? 0) % 50 === 0) {
       const n = (this.tickCount = (this.tickCount || 0) + 1);
       console.error(`[routedbg] tick#${n} dest=${this.dest} state=${this.lastState} leg=${this.leg?.fromRoom}>${this.leg?.next}`);
