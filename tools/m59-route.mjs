@@ -901,7 +901,28 @@ try { appendFileSync('/tmp/route-debug-t4.log', `PLAN ${here} dest=${this.dest} 
    * The returned state is what a decider reads to know whether to keep going, and it is
    * deliberately observational: 'moving' means a step went out, not that it landed.
    */
-  tick(frame, act) {
+  /**
+   * Advance the route, and — unless told otherwise — STEER THE BODY along it.
+   *
+   * THOSE ARE TWO JOBS AND ONLY ONE OF THEM IS ALWAYS SAFE TO DO.
+   *
+   * Advancing is bookkeeping: notice the room changed, throw away a leg that belonged to
+   * the room we just left, re-plan, sample the position for the oscillation detector.
+   * That has to happen on every tick whatever the character is doing, which is why the
+   * loop calls this unconditionally.
+   *
+   * Steering is aiming the mover and stepping the body, and it must only happen when a
+   * travel goal actually won this tick. The loop's unconditional call did BOTH, so a
+   * character with a stale router destination was being walked toward a travel staging
+   * square while the decider was separately aiming the SAME mover at a quarry — two
+   * writers, one body, one tick, and whichever ran last won. That is the opposition the
+   * operator spotted from the oscillation: the travel path and the attack path pulling
+   * against each other. `sideSteps=14436` in a single stall sample is what it looks like
+   * from the mover's side.
+   *
+   * `steer: false` stops at the end of the bookkeeping and touches no mover.
+   */
+  tick(frame, act, { steer = true } = {}) {
     const t = this.now();
     if (this.session?.client?.room?.num === 578 && (this.tickCount ?? 0) % 100 === 1) {
       try { 
@@ -1116,6 +1137,11 @@ try { appendFileSync('/tmp/route-debug-t4.log', `PLAN ${here} dest=${this.dest} 
         + ` (standOn ${JSON.stringify(this.leg.standOn)}, edgeTarget ${JSON.stringify(this.leg.edgeTarget)})` });
     if (process.env.M59_ROUTE_DEBUG === '1')
       console.error(`[routedbg] t3 here=${here} me=(${me.col},${me.row}) standOn=(${this.leg.standOn?.col},${this.leg.standOn?.row}) sub=(${sub?sub.col+','+sub.row:'-'}) aim=(${aim.col},${aim.row}) dir=${this.leg.direction} kind=${this.leg.kind} subWp=${this.subWp?this.subWp.length:0}`);
+
+    // EVERYTHING ABOVE THIS LINE IS BOOKKEEPING; EVERYTHING BELOW IT MOVES THE BODY.
+    // A caller that only wants the route advanced stops here, having re-planned a stale
+    // leg and sampled the position, without touching a mover somebody else may own.
+    if (!steer) return this._say('advanced', { next: this.leg?.next ?? null });
 
     // Hand the aim to the FINE-MODEL MOVER. It plans on wall segments,
     // moves at most MOVEUNITS per tick, and reports blocked when the

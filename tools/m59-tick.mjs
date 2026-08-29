@@ -715,7 +715,11 @@ export class TickLoop {
       // is false, no plan for travel', forwarding forever to resting.
       try {
         const r = this.session?._router;
-        if (r?.tick && frame.room && frame.position) r.tick(frame, this.actuator);
+        // ADVANCE ONLY — see the note on Router.tick. Steering from here walked the
+        // character toward a stale travel destination while the decider was aiming the
+        // same mover at a quarry, which is the two-writers problem the oscillation was
+        // made of. Travel steers from the decider, when a travel goal has actually won.
+        if (r?.tick && frame.room && frame.position) r.tick(frame, this.actuator, { steer: false });
       } catch (e) { /* the report is not allowed to matter */ }
 
       // ASK WHAT WE ARE WEARING, OR NEVER LEARN IT.

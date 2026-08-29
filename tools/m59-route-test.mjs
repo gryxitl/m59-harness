@@ -699,5 +699,44 @@ console.log('\nsub-waypoint chain: a fresh plan is trimmed too');
   ok('condemning one hop does not blocklist another', !r._doorless.has('50>575'));
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\nADVANCING A ROUTE AND STEERING A BODY ARE TWO JOBS');
+{
+  // THE TRAVEL PATH AND THE ATTACK PATH WERE PULLING AGAINST EACH OTHER.
+  //
+  // The tick loop advances the router on EVERY tick, deliberately, so that a room change
+  // while the character is fighting or resting invalidates a stale leg. But Router.tick
+  // also aimed and stepped the mover — and combat aims the SAME mover at its quarry. Two
+  // writers, one body, one tick, whichever ran last winning. From outside it looks like
+  // the character oscillating; from the mover's side it looks like `sideSteps=14436`.
+  //
+  // These are source-level assertions on purpose. The property is "no mover is touched
+  // on the advance path", and the honest way to check it is to look at where the guard
+  // sits relative to the first mover call, rather than to build a fixture rich enough to
+  // reach the aim and then trust that it did.
+  const src = readFileSync(new URL('./m59-route.mjs', import.meta.url), 'utf8');
+  const start = src.indexOf('tick(frame, act, { steer = true } = {})');
+  ok('Router.tick takes a steer option', start > 0);
+
+  const body = src.slice(start);
+  const guard = body.indexOf('if (!steer) return');
+  const firstMover = body.indexOf('this.mover.');
+  ok('the advance path returns before anything touches the mover',
+     guard > 0 && firstMover > 0 && guard < firstMover,
+     `guard at ${guard}, first this.mover. at ${firstMover}`);
+
+  // And the caller that runs unconditionally must be the one that does not steer.
+  const loop = readFileSync(new URL('./m59-tick.mjs', import.meta.url), 'utf8');
+  ok('the tick loop advances the router without steering it',
+     /r\.tick\(frame, this\.actuator, \{ steer: false \}\)/.test(loop));
+
+  // The decider's own travel path must still steer, or nothing moves at all.
+  const route = readFileSync(new URL('./m59-route.mjs', import.meta.url), 'utf8');
+  const ri = route.slice(route.indexOf('export function routeIntent'));
+  ok('routeIntent still steers — travel is what it is for',
+     /router\.tick\(frame, act\)/.test(ri.slice(0, 400)));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
