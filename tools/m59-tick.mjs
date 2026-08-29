@@ -666,6 +666,20 @@ export class TickLoop {
       try { this.session?._mover?.physicsTick?.(); }
       catch (e) { this.stats.lastError = `physicsTick: ${e?.message}`; }
 
+      // ADVANCE THE ROUTER TOO, so a room change while the character rests (or fights,
+      // or walks via combat, or blinks) invalidates the old leg and the router re-plans.
+      // The router tick is idempotent: if there is no active route it returns 'idle'; if
+      // the room is the same it reuses the leg; if the room changed it re-plans.
+      // Without this, a character that walked into the hunt room via the mechanism the
+      // router used (walking past an edge square, detected as room number change by the
+      // GOAP via frame.room) gets stranded: the router still says 'crossing toward 568'
+      // while the character stands in 568, and the planner keeps saying 'route_reachable
+      // is false, no plan for travel', forwarding forever to resting.
+      try {
+        const r = this.session?._router;
+        if (r?.tick && frame.room && frame.position) r.tick(frame, this.actuator);
+      } catch (e) { /* the report is not allowed to matter */ }
+
       // ASK WHAT WE ARE WEARING, OR NEVER LEARN IT.
       //
       // `client.equipment()` reports known:false until a BP_USE_LIST arrives, and one
