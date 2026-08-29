@@ -593,6 +593,7 @@ export class ControllerMover {
     if (this._plannedFor !== key || !this.ctl.path) {
       const plan = this.ctl.setDestination(geo, this.dest.col, this.dest.row, me);
       this.stats.replans++;
+      { try { const _pt = (this._dbgPlanT ??= 0) + 1; this._dbgPlanT = _pt; if (_pt % 200 === 1) { import('node:fs').then(m => m.appendFileSync('/tmp/plan-debug.log', `${this._agent} plan# ${_pt/200} ctlX=${this.ctl.x} ctlY=${this.ctl.y} plan ok=${plan?.ok} pathLen=${this.ctl.path?.length ?? 0} dest=${this.dest.col},${this.dest.row} geoCollisionReady=${geo?.collisionReady} walkable=${geo?.walkable ? geo.walkable(me.row, me.col) : 'no method'}\n`)); } } catch {} }
       if (!plan?.ok) {
         // NO ROUTE IS A REAL ANSWER AND THE KEEPER ACTS ON IT — it blacklists the target
         // rather than chasing something behind a wall. Only say it when the planner refused,
@@ -644,7 +645,12 @@ export class ControllerMover {
     // rubberband. Hold, keep replicating, and let the confirmations arrive.
     if (this._leadExceeded(c)) return { state: 'moving', to: this.dest, holding: true };
 
-    const before = this.ctl.square();
+    // Use the SERVER'S tile for progress detection, not the controller's belief.
+    // The controller's fine position crosses the tile boundary before the server
+    // updates, which makes `moved` true on the 4th-5th tick even if the server
+    // is rejecting all fine-packets. This hides the stall from every recovery
+    // path.
+    const before = { col: c.self?.col ?? this.ctl.square().col, row: c.self?.row ?? this.ctl.square().row };
     const r = this.ctl.step(dt, { geo, client: c });
     this._lastStep = r;
 
@@ -663,7 +669,7 @@ export class ControllerMover {
       return { state: 'arrived', position: this.ctl.square() };
     }
 
-    const after = this.ctl.square();
+    const after = { col: c.self?.col ?? this.ctl.square().col, row: c.self?.row ?? this.ctl.square().row };
     const moved = after.col !== before.col || after.row !== before.row;
     if (moved) { this._noProgress = 0; this._handedBack = false; }
     else this._noProgress++;
