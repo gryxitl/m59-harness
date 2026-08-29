@@ -201,8 +201,16 @@ export class ControllerMover {
 
   _delegate(posOverride, why) {
     this.stats.delegated++;
+    const fbState = this.fallback?.active ?? 'no fallback active';
+    const fbPath = this.fallback?.path?.length ?? 0;
+    console.error(`[ctlmover] ${this._agent} DELEGATE ${why}| fallback.active=${fbState} fallback.path=${fbPath} fallbackId=null`);
     if (!this.fallback?.tick) return { state: 'blocked', why: why ?? 'no fallback mover' };
-    return this.fallback.tick(posOverride);
+    const r = this.fallback.tick(posOverride);
+    // Don't log every tick, just the state:
+    if (this.fallback?.tick === undefined || r?.state !== 'moving') {
+      console.error(`[ctlmover] ${this._agent} DELEGATE RESULT: ${r?.state} ${r?.why ?? ''}`);
+    }
+    return r;
   }
 
   _summarise(state) {
