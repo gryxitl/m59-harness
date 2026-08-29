@@ -16,6 +16,7 @@ import { chooseFleeExit } from './m59-decide.mjs';
 import { evaluate } from './m59-worldstate.mjs';
 import { isArmed } from './m59-skills.mjs';
 import { planFor } from './m59-plan.mjs';
+import { fakeClient } from './m59-fake-client.mjs';
 import { SYMBOLS } from './m59-worldstate.mjs';
 import { Actuator, TickLoop } from './m59-tick.mjs';
 
@@ -1174,6 +1175,46 @@ console.log('\nA FLEE DOES NOT GO BACK WHERE IT JUST CAME FROM');
      chooseFleeExit(justFled49, oneWay, null, nearest)?.to === 49);
 
   ok('no exits at all is null, not a throw', chooseFleeExit(justFled49, [], null, nearest) === null);
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\nBLINK IS WORTH ONE TRY, AND THEN IT IS NOT A CURE');
+{
+  // Blink IS the right answer to being entombed — any relocation is progress when the
+  // body cannot take a step — and it is far cheaper than a reconnect, so it is offered
+  // first. But it relocates to "a central location in the room" (blink.kod:21), and if
+  // that location is inside the same sealed geometry the character is still entombed.
+  //
+  // Then it is the most expensive loop this keeper can run: 15 mana at roughly one per
+  // ten seconds is about two minutes of resting per attempt, and `unwedge` outranks
+  // everything below it, so nothing else happens in between. Measured on JayB in
+  // Familiars: mana 12, 13, 14, then 0 (the cast), then 1, 2, 3, 4 — climbing toward the
+  // next attempt, 1,919 consecutive unwedge ticks, never free.
+  //
+  // The planner already had a guard and it could never fire: it wanted
+  // `entombed === true && pocket_has_exit === false`, but an entombed body reaches
+  // NOTHING, pocket_has_exit returns null on an empty set, and null means true. The one
+  // character it was written for was the one it excluded. Judge on evidence instead.
+  const c = fakeClient({ selfId: 1, col: 5, row: 5, hp: 20, hpMax: 20, mana: 20, vigor: 150,
+    spells: ['blink'], equipped: [{ id: 1, name: 'mace' }], room: { num: 50, objects: [] } });
+  const ws = { entombed: true, can_pay_blink: true, can_leave: false, pocket_has_exit: null };
+
+  const first = planFor(c, { can_leave: true }, { ws });
+  ok('the first attempt is blink — it is the cheap cure and it often works',
+     first.found && first.names[0] === 'cast blink', JSON.stringify(first.names));
+
+  const after = planFor(c, { can_leave: true }, { ws, filter: new Set(['cast blink']) });
+  ok('once it has failed, the plan is the reconnect instead',
+     after.found && after.names[0] === 'escape_pocket', JSON.stringify(after.names));
+
+  // The decider must be the thing that stops offering it, and must stop counting once
+  // the character can step again — otherwise one bad stranding disables blink for ever.
+  const src = readFileSync(new URL('./m59-decide.mjs', import.meta.url), 'utf8');
+  ok('the counter is cleared when the character is no longer entombed',
+     /ws\.entombed !== true\) \{ session\._unwedgeBlinks = 0; \}/.test(src));
+  ok('and the filter is only applied after a blink has actually been sent',
+     /_unwedgeBlinks \?\? 0\) >= 1/.test(src));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

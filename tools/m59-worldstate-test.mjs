@@ -537,5 +537,42 @@ console.log('\nstarting a fight needs headroom; continuing one does not');
      loot(withList(['red mushroom'], ['mushroom'])) === true);
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\nREACHABILITY IS MEASURED FROM THE SAME PLACE THE EXIT LIST MEASURES IT');
+{
+  // A character can be STANDING on a square the fine model calls solid — a teleport does
+  // it, and so does a reconnect. `world.exits()` has always measured from
+  // `world.origin()` (the nearest real floor) for exactly that reason. These two symbols
+  // measured from `client.self` instead, so they searched from a square nothing connects
+  // to, found a small island with no exit in it, and reported the room as a pocket.
+  //
+  // Live: Gountrug in Yonder Inn of Jasper, /exits reporting one exit, reachable, five
+  // steps away, while the keeper looped on "escape_pocket — this room has no reachable
+  // exit". A reconnect cannot fix a disagreement about where the character is standing,
+  // so it reconnected again, and again.
+  const staged = [{ stand_on: { col: 8, row: 2 }, to: 382 }];
+  const geo = { walkable: () => true };
+  // The reachable set contains the exit — but ONLY when the search starts at the floor
+  // square origin() hands back, not at the solid square the body is on.
+  const router = { _fineReachableSet: (g, col, row) =>
+    (col === 8 && row === 8) ? new Set(['8,2', '8,8']) : new Set(['99,99']) };
+  const session = {
+    _router: router,
+    client: { self: { col: 3, row: 3 } },              // where the body literally is
+    world: { geometry: geo, exits: () => staged,
+             origin: () => ({ col: 8, row: 8 }) },     // the nearest real floor
+  };
+  ok('the pocket verdict follows origin(), not the raw position',
+     SYMBOLS.pocket_has_exit.produce({ session }) === true);
+
+  // And it still says false for a REAL pocket — origin() resolving does not make every
+  // room escapable, or the symbol would be useless.
+  const walled = { ...session,
+    world: { ...session.world, origin: () => ({ col: 1, row: 1 }) } };
+  ok('...and a genuine pocket is still a pocket',
+     SYMBOLS.pocket_has_exit.produce({ session: walled }) === false);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

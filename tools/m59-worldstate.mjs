@@ -718,7 +718,23 @@ export const SYMBOLS = {
     produce: ({ session }) => {
       const router = session?._router;
       const geo = session?.world?.geometry;
-      const me = session?.client?.self;
+      // ROOT THE SEARCH WHERE THE EXIT LIST ROOTS IT.
+      //
+      // `world.exits()` measures reachability from `world.origin()` — the nearest real
+      // floor — precisely because a character can be STANDING on a square the fine model
+      // calls solid. Arriving by teleport does it, and so does a reconnect. A search
+      // rooted on such a square expands into a small island that contains no exit, and
+      // the verdict comes back "this room has no reachable exit" while the exit list, one
+      // method away, reports the same exits as reachable in five steps.
+      //
+      // Measured live: Gountrug in Yonder Inn of Jasper, `/exits` reporting 1 exit,
+      // reachable, 5 steps, while the keeper looped on `unwedge -> escape_pocket
+      // (reconnecting — this room has no reachable exit)`. Reconnecting cannot fix it,
+      // so it ran again, and again.
+      //
+      // World.origin()'s own note says it: "Reachability of objects should not disagree
+      // with reachability of exits about where the character is."
+      const me = session?.world?.origin?.() ?? session?.client?.self;
       if (!router?._fineReachableSet || !geo || !me || me.col == null) return null;
       let exits = null;
       try { exits = session?.world?.exits?.(); } catch { return null; }
@@ -817,7 +833,10 @@ export const SYMBOLS = {
       const stand = leg?.standOn;
       if (!router || !leg || !stand || stand.col == null) return null;   // nothing to judge
       const geo = session?.world?.geometry;
-      const me = session?.client?.self;
+      // Same root as `pocket_has_exit` and `world.exits()`, for the same reason: a body
+      // standing on a square the fine model calls solid reaches nothing from where it
+      // literally is, and every leg then reads unreachable.
+      const me = session?.world?.origin?.() ?? session?.client?.self;
       if (!geo || !me || me.col == null) return null;
       try {
         const reach = router._fineReachableSet(geo, me.col, me.row);

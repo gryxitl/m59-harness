@@ -2356,7 +2356,36 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // A GOAL NAME IS NOT ALWAYS A SYMBOL. `hunt` is the name of a behaviour; the world
     // state it wants is `has_target`. Everything else still asks for its own name.
     const goalState = GOAL_STATE[active.goal] ?? { [active.goal]: true };
-    const p = planFor(client, goalState, { session, policy, ws });
+
+    // A BLINK THAT DID NOT FREE US IS NOT A CURE, AND MUST STOP BEING PLANNED.
+    //
+    // Blink is the right answer to being entombed — any relocation is progress when the
+    // body cannot take a single step — so it is offered first, and it is much cheaper
+    // than a reconnect. But it relocates to "a central location in the room"
+    // (blink.kod:21), and if that location is inside the same sealed piece of geometry
+    // the character is still entombed afterwards.
+    //
+    // Then it becomes the most expensive loop this keeper can run. Blink costs 15 mana
+    // and mana arrives at roughly one per ten seconds, so each attempt is about two
+    // minutes of resting, and `unwedge` outranks everything below it — the character does
+    // nothing else in between. Measured on JayB, entombed in Familiars: mana 12, 13, 14,
+    // then 0 (the cast), then 1, 2, 3, 4 — climbing back toward the next attempt, 1,919
+    // consecutive `unwedge` ticks, never free.
+    //
+    // The planner already had a guard for this and it could never fire: it required
+    // `entombed === true && pocket_has_exit === false`, but an entombed body reaches
+    // NOTHING, `pocket_has_exit` returns null on an empty reachable set, and null means
+    // true. The one character it was written for was the one character it excluded.
+    //
+    // So judge it on evidence instead of prediction: blink is worth ONE try per
+    // stranding. If we are still entombed after casting it, the relocation did not help
+    // and `escape_pocket` — a reconnect, no mana, no precondition — is the remaining
+    // cure. The counter is cleared the moment the character can step again.
+    if (ws.entombed !== true) { session._unwedgeBlinks = 0; }
+    const planFilter = (ws.entombed === true && (session._unwedgeBlinks ?? 0) >= 1)
+      ? new Set(['cast blink']) : null;
+
+    const p = planFor(client, goalState, { session, policy, ws, filter: planFilter });
     const first = p.found ? (p.names?.[0] ?? null) : null;
 
     // A GOAL THAT CANNOT BE PLANNED IS A FAILURE AND MUST COUNT AS ONE. The old keeper
@@ -2402,6 +2431,10 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       actionName = 'buy';
     }
     const r = intend(actionName, frame, act, { client, session, ws });
+    // Count a blink we actually sent while entombed, so a second one is not planned if
+    // the first did not free us. See the note beside `planFilter`.
+    if (r.sent && actionName === 'cast blink' && ws.entombed === true)
+      session._unwedgeBlinks = (session._unwedgeBlinks ?? 0) + 1;
     note(active.goal, r.sent);
     onDecision?.({ ticks, goal: active.goal, action: actionName, sent: r.sent,
                    what: r.what ?? null, why: r.why ?? null });
