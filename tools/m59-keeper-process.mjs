@@ -1181,6 +1181,16 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && path === '/rejoin') {
+      // A REJOIN THAT LIFTS THE BODY IS NOT A NO-OP. The server places a
+      // reconnecting character at their saved position WITHOUT checking floor or
+      // wall geometry for users — so a body wedged inside geometry comes back
+      // wedged, and the decider's pocket detector reads "no reachable exit"
+      // again. Blink is the one cure that moves the body to open ground, and it
+      // is silent when it fails (the server answers with prose, not a result),
+      // so fire it on every rejoin and read whether the position changed.
+      // Cheap when there is nothing to fix: one spell list read, one cast the
+      // server declines, ~2s.
+      const before = (() => { try { const m = session.client?.self; return m ? `${m.col},${m.row}` : null; } catch { return null; } })();
       if (autopilot) autopilot.stop('rejoin');
       if (session.client) {
         try { session.client.close(); } catch {}
@@ -1188,7 +1198,30 @@ const server = createServer(async (req, res) => {
       inGame = false;
       await new Promise(r => setTimeout(r, 1000));
       await join();
-      json({ ok: true });
+      let blink = null;
+      try {
+        const c = session.client;
+        if (c) {
+          if (!(c.spells ?? []).length) { try { await c.requestSpells(); await new Promise(r => setTimeout(r, 1200)); } catch { /* best effort */ } }
+          const b = (c.spells ?? []).find(sp => (c.rsc?.get?.(sp.nameRsc) ?? sp.name ?? '').toLowerCase() === 'blink');
+          if (b) {
+            const loop = session._tickLoop;
+            const since = c.evSeq ?? 0;
+            if (loop) loop.freeze(16000, 'cast blink (post-rejoin lift)');
+            try {
+              c.cast(b.id, []);
+              const w = await c.waitFor({ since, kinds: ['moved'], timeoutMs: 15000 }).catch(() => ({ events: [] }));
+              const moved = (w.events ?? []).filter(e => e.kind === 'moved');
+              const last = moved[moved.length - 1];
+              if (last && Number.isFinite(last.col))
+                try { session._mover?.relocated?.(last.col, last.row); } catch { /* best effort */ }
+              const after = (() => { const m = c.self; return m ? `${m.col},${m.row}` : null; })();
+              blink = { sent: true, relocated: moved.length > 0, from: before, to: after };
+            } finally { if (loop) loop.thaw(); }
+          } else blink = { sent: false, reason: 'does not know blink' };
+        }
+      } catch (e) { blink = { sent: false, reason: e.message }; }
+      json({ ok: true, blink });
       return;
     }
 
@@ -1326,12 +1359,26 @@ const server = createServer(async (req, res) => {
             const c = session.client;
             if (!c) { result = { error: 'no client' }; break; }
             const spellName = String(args.spell ?? '').toLowerCase();
-            const spell = (c.spells ?? []).find(sp => {
+            let spell = (c.spells ?? []).find(sp => {
               const n = c.rsc?.get?.(sp.nameRsc) ?? sp.name ?? '';
               return n.toLowerCase() === spellName;
             });
+            // A FRESH LOGIN HAS NO SPELL LIST YET. joinOnce fires requestSpells()
+            // without awaiting it, so for the first seconds of a session c.spells
+            // is empty and this endpoint answered "spell not found: blink" for a
+            // character that knows blink — exactly when a wedged rejoin needs the
+            // manual cast most. Ask once and wait briefly; the list is then cached
+            // on the client and pushed on every change.
+            if (!spell && !(c.spells ?? []).length) {
+              try { await c.requestSpells(); await new Promise(r => setTimeout(r, 1200)); }
+              catch { /* best effort */ }
+              spell = (c.spells ?? []).find(sp => {
+                const n = c.rsc?.get?.(sp.nameRsc) ?? sp.name ?? '';
+                return n.toLowerCase() === spellName;
+              });
+            }
             if (!spell) {
-              result = { error: `spell not found: ${spellName}` };
+              result = { error: `spell not found: ${spellName} (known: ${(c.spells ?? []).map(sp => c.rsc?.get?.(sp.nameRsc) ?? sp.name).join(', ') || 'none — list may still be loading'})` };
             } else {
               // A cast needs CONCENTRATION: any move or turn packet we send while the
               // spell is charging interrupts it and the cast fails. The tick driver
