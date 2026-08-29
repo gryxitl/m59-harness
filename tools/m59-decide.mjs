@@ -153,6 +153,13 @@ import { trustedBuyer } from './m59-skills.mjs';
 // pack from being handed to a banker for nothing.
 // How long to stand on an Underworld portal before deciding it is unlit and trying another.
 const UNLIT_PORTAL_MS = Number(process.env.M59_UNLIT_PORTAL_MS || 12000);
+// How long before we abandon a portal we can't reach, as distinct from one we can reach
+// but doesn't fire. The geometry in the Underworld creates deep pockets where the target
+// is visible but unwalkable; the old code reset the timer every tick the character hadn't
+// reached the position, so an unreachable portal was tried forever. 30 seconds is long
+// enough to walk across a 30x32 map in a straight line at 2.5 tiles/sec, and gives the fine
+// path a fair number of ticks to find a route.
+const REACH_TIMEOUT_MS = Number(process.env.M59_UW_REACH_TIMEOUT_MS || 30000);
 
 // The most dangerous thing a character will take on, as GetAttackAbility (monster.kod:
 // 3*viLevel + 60*viDifficulty). 250 sits above the mummy (195) and giant rat (150) this fleet
@@ -818,19 +825,36 @@ export const INTENTS = {
     const s = ctx.session;
     const now = Date.now();
     const onIt = (p) => Math.hypot(p.col - me.col, p.row - me.row) <= 1;
-    if (s._uwPortal == null || s._uwSince == null) { s._uwPortal = 0; s._uwSince = now; }
+    if (s._uwPortal == null) { s._uwPortal = 0; s._uwSince = now; s._uwSelectedAt = now; }
     let portal = portals[s._uwPortal % portals.length];
-    // Only start the clock once we have actually reached it — a long walk is not a dead portal.
-    if (!onIt(portal)) s._uwSince = now;
-    else if (now - s._uwSince > UNLIT_PORTAL_MS) {
+    const onCurrent = onIt(portal);
+    // Two failure modes, two independent timeouts:
+    //   (a) on the portal, nothing triggers — unlit, blocked by geometry, or empty. Rotate after UNLIT_PORTAL_MS.
+    //   (b) can't reach the portal — deep-pocket geometry between me and the exit. Rotate after REACH_TIMEOUT_MS.
+    // The original code only tracked (a) with the timer resetting every tick we weren't on it, so a target
+    // we could never reach had its clock kept returning to zero and the timer never fired.
+    if (onCurrent) {
+      // Just reached it; reset the unlit clock so we give the portal a fair try from now.
+      s._uwSince = now;
+    }
+    if (onCurrent && now - (s._uwSince ?? now) > UNLIT_PORTAL_MS) {
+      // (a): on it, it didn't fire
       s._uwPortal = (s._uwPortal + 1) % portals.length;
       s._uwSince = now;
+      s._uwSelectedAt = now;
       portal = portals[s._uwPortal];
-      console.error(`[underworld] ${s.name}: that way out looks dead — trying the next at (${portal.col},${portal.row})`);
+      console.error(`[underworld] ${s.name}: portal ${s._uwPortal + 1}/${portals.length} didn't fire after ${UNLIT_PORTAL_MS}ms — trying (${portal.col},${portal.row})`);
+    } else if (!onCurrent && now - (s._uwSelectedAt ?? now) > REACH_TIMEOUT_MS) {
+      // (b): haven't reached it in REACH_TIMEOUT_MS
+      s._uwPortal = (s._uwPortal + 1) % portals.length;
+      s._uwSince = now;
+      s._uwSelectedAt = now;
+      portal = portals[s._uwPortal];
+      console.error(`[underworld] ${s.name}: portal ${s._uwPortal + 1}/${portals.length} unreachable after ${REACH_TIMEOUT_MS}ms — trying (${portal.col},${portal.row})`);
     }
     act.step(portal.col, portal.row);
     return { sent: true,
-             what: `escape: way out ${s._uwPortal + 1}/${portals.length} at (${portal.col},${portal.row})` };
+             what: `escape: portal ${s._uwPortal + 1}/${portals.length} at (${portal.col},${portal.row})` };
   },
 };
 
