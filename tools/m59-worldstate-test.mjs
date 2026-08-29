@@ -215,8 +215,33 @@ console.log('\nthe engagement ceiling, in the vocabulary');
   ok('a faction soldier at 70 is not', over.target_in_band === false);
   ok('and an unknown ceiling REFUSES rather than permitting',
      evaluate({ ws: { _targetLevel: 25 } }).target_in_band === false);
-  ok('as does an unknown target level',
-     evaluate({ ws: { _threatCeiling: 30 } }).target_in_band === false);
+  // AN UNKNOWN CEILING AND AN UNKNOWN LEVEL ARE NOT THE SAME QUESTION.
+  //
+  // This used to assert that an unknown LEVEL refuses too, by the same "a ceiling that
+  // defaults open is the one that kills somebody" argument. That argument is right about
+  // the ceiling — not knowing what WE can survive is genuinely dangerous — and wrong
+  // about the level, because `creatureLevelOf` has a table for only a handful of
+  // creatures. A baby spider, a spider, a wolf and a scorpion all return null, and baby
+  // spiders are what this fleet mostly hunts.
+  //
+  // The assertion survived because no driver ever ASKED for this symbol — every one of
+  // them hand-wrote it, all of them with `targetLevel == null ? true : ...`. So the strict
+  // rule here was never once exercised against a live fleet. The first time it was
+  // (2026-08-29, when the decider stopped hand-writing target symbols) the fleet refused
+  // every creature it could not name: five keepers, thirty minutes, ZERO `_fight` ticks,
+  // three deaths and no kills, characters walking away from prey they had killed all week
+  // and being eaten while walking.
+  //
+  // The safety net for a creature we cannot name is the danger cap in target selection,
+  // which refuses on attack ability before the quarry is ever chosen. This symbol answers
+  // "is it over MY ceiling", and about an unnameable creature it has nothing to say.
+  ok('but an unknown LEVEL is permissive — the danger cap is what guards that case',
+     evaluate({ ws: { _threatCeiling: 30 } }).target_in_band === true);
+  // The distinction has to hold in the direction that matters: a creature we CAN name and
+  // that IS over the ceiling is still refused. That is the fungus beast that killed
+  // Sasquatch thirteen times.
+  ok('...and naming it brings the ceiling straight back',
+     evaluate({ ws: { _targetLevel: 50, _threatCeiling: 30 } }).target_in_band === false);
 }
 
 console.log('\na producer that throws is "cannot tell", never a crash and never a yes');

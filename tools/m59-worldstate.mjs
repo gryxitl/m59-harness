@@ -583,8 +583,34 @@ export const SYMBOLS = {
     why_unknown: 'A CEILING THAT DEFAULTS OPEN IS THE ONE THAT KILLS SOMEBODY. ' +
                  'threatCeiling() returns null on unknown max health and every caller ' +
                  'reads null as refuse; this is that rule, in the vocabulary',
-    produce: ({ ws }) => (ws?._targetLevel == null || ws?._threatCeiling == null
-      ? null : ws._targetLevel <= ws._threatCeiling),
+    // TWO UNKNOWNS, TWO DIFFERENT ANSWERS — and collapsing them stopped the fleet dead.
+    //
+    // Not knowing OUR OWN CEILING is dangerous: it means we cannot say what we can
+    // survive, and `whenUnknown: false` above is the right answer to that. But not knowing
+    // the QUARRY'S LEVEL is the ordinary case, because `creatureLevelOf` only has a table
+    // for a handful of creatures — a baby spider, a spider, a wolf and a scorpion all
+    // return null, and baby spiders are what this fleet mostly hunts.
+    //
+    // Every driver has always defaulted an unknown level to IN BAND
+    // (`targetLevel == null ? true : ...`), and every driver hand-wrote this symbol
+    // rather than asking for it, so this producer's stricter rule was never once
+    // exercised. The moment the decider started asking (2026-08-29), the fleet refused
+    // every creature it could not name: five keepers, thirty minutes, ZERO `_fight` ticks,
+    // three deaths and no kills. Characters walked away from prey they had been killing
+    // all week and got eaten while walking.
+    //
+    // The safety net for an unnameable creature is not this symbol, it is the danger cap
+    // in target selection: `attackAbility(name) > policy.maxAttackAbility` refuses the
+    // quarry before it is ever selected. That is the layer that knows a baby spider hits
+    // for 315. This one answers "is it above MY ceiling", and about a creature we cannot
+    // name it has nothing to say.
+    produce: ({ ws }) => {
+      const ceiling = ws?._threatCeiling;
+      if (ceiling == null) return null;      // no ceiling: we do not know ourselves, refuse
+      const level = ws?._targetLevel;
+      if (level == null) return true;        // no level: not this symbol's question
+      return level <= ceiling;
+    },
   },
 
   // ── party ─────────────────────────────────────────────────────────────────
