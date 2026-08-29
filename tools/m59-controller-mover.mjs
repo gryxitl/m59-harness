@@ -116,6 +116,7 @@ export class ControllerMover {
       if (this.stats.offMapCrossings <= 3)
         console.error(`[ctlmover] ${this._agent} (${col},${row}) is off the map — a boundary crossing`);
       this.dest = { col, row };
+    this._destAge = Date.now();
       // The room it is a crossing OUT OF. An off-room request is a request to leave one
       // specific room, so it is finished the moment we are in a different one.
       this.crossing = { col, row, room: this.session?.client?.room?.id ?? null };
@@ -358,7 +359,7 @@ export class ControllerMover {
       try { const _tick = (this._dbgTick ??= 0) + 1; this._dbgTick = _tick;
         if (_tick % 100 === 1) {
           import('node:fs').then(m => m.appendFileSync('/tmp/ctl-debug.log',
-            `${this._agent} tick#${_tick} pos=${posOverride?posOverride.col+','+posOverride.row:'?'} dest=${this.dest?this.dest.col+','+this.dest.row:'null'} active=${this.active} crossing=${this.crossing?JSON.stringify(this.crossing):'none'} block=${this.stats.blockedTicks} mv=${this.stats.moving} arr=${this.stats.arrived} step=${this._lastStep?.state}\n`));
+            `${this._agent} tick#${_tick} pos=${posOverride?posOverride.col+','+posOverride.row:'?'} ctlXY=${this.ctl?._x?.toFixed(0)},${this.ctl?._y?.toFixed(0)} dest=${this.dest?this.dest.col+','+this.dest.row:'null'} step=${this._lastStep?.state} pathLen=${this.ctl?._path?.length ?? 0} pathIdx=${this.ctl?._destIdx ?? -1}\n`));
         }
       } catch {}
     }
@@ -693,7 +694,9 @@ export class ControllerMover {
     // hasn't moved the tile in 30 seconds, this is a walkable POCKET: the .roo 
     // geo can't find a path out. Hand back to legacy.
     if (!moved && this._noProgress >= BLOCKED_RESYNC_TICKS && c?.self) {
-      if (this.stats.moving > 200 && this.stats.arrived === 0 && this._noProgress >= 30) {
+      // Separate from _noProgress (which the resync keeps resetting):
+      // how long since the DESTINATION was set.
+      if (this._destAge && Date.now() - this._destAge > 4500) {
         this.stats.handedBack = (this.stats.handedBack ?? 0) + 1;
         console.error(`[ctlmover] ${this._agent} in walkable POCKET: 200+ ticks moving, 0 arrived, no tile progress in 30 ticks — handing back to legacy`);
         return this._delegate(posOverride, 'walkable pocket, no geo route');

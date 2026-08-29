@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { appendFileSync } from 'node:fs';
 // m59-route.mjs -- GETTING SOMEWHERE, UNDER A TICK.
 //
 // A route is the thing that most obviously does not fit a blocking model, and it is why
@@ -189,7 +190,7 @@ export class Router {
   _planLeg(here) {
     // A new room: the reachability cache (keyed by room) is for the old room now.
     this._reachCache = null;
-    console.error(`[routedbg] _planLeg entered for room=${here}`);
+try { appendFileSync('/tmp/route-debug-t4.log', `PLAN ${here} dest=${this.dest} self=${this.session?.client?.self ? JSON.stringify({col:this.session.client.self.col,row:this.session.client.self.row}) : 'null'} frame=${JSON.stringify(frame.position ?? null)}\n`); } catch {}
     const world = this.session?.world;
     if (!world) { console.error(`[routedbg] no world`); return { why: 'no world' }; }
     let hops = null;
@@ -909,7 +910,10 @@ export class Router {
     if (this.dest == null) return this._say('idle');
     const here = resolveRoomNum(frame?.room ?? {}, this.map);
     const me = frame?.position;
-    if (here == null || !me) return this._say('blind', { why: 'no room or position yet' });
+    if (here == null || !me) {
+      try { appendFileSync('/tmp/route-debug-t4.log', `BLIND here=${here} me=${JSON.stringify(me)} room=${JSON.stringify(frame?.room)}\n`); } catch {}
+      return this._say('blind', { why: 'no room or position yet' });
+    }
 
     if (Number(here) === Number(this.dest)) { this.clear(); return this._say('arrived'); }
 
