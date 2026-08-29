@@ -645,6 +645,7 @@ export class ControllerMover {
 
     const before = this.ctl.square();
     const r = this.ctl.step(dt, { geo, client: c });
+    this._lastStep = r;
 
     if (r.state === 'blocked' || r.state === 'no-path') this.stats.blockedTicks++;
     else if (r.state === 'moving') this.stats.moving++;
@@ -688,7 +689,15 @@ export class ControllerMover {
     // Placed before the hand-back below, and BLOCKED_RESYNC_TICKS is deliberately under
     // HANDBACK_TICKS: recovering our own position is cheaper than surrendering the
     // destination, so it gets the first attempt.
+    // If the controller has been 'moving' (sending fine packets) but the SERVER 
+    // hasn't moved the tile in 30 seconds, this is a walkable POCKET: the .roo 
+    // geo can't find a path out. Hand back to legacy.
     if (!moved && this._noProgress >= BLOCKED_RESYNC_TICKS && c?.self) {
+      if (this.stats.moving > 200 && this.stats.arrived === 0 && this._noProgress >= 30) {
+        this.stats.handedBack = (this.stats.handedBack ?? 0) + 1;
+        console.error(`[ctlmover] ${this._agent} in walkable POCKET: 200+ ticks moving, 0 arrived, no tile progress in 30 ticks — handing back to legacy`);
+        return this._delegate(posOverride, 'walkable pocket, no geo route');
+      }
       const sv = c.self;
       // AGREEING ABOUT THE SQUARE IS NOT THE SAME AS BEING FREE TO LEAVE IT.
       //
