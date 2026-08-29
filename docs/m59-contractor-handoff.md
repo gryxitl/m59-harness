@@ -132,6 +132,48 @@ all. `m59-decide-test` asserts that, and sweeps 4,000 random tri-state worlds. I
 fails, goal `none` is back and characters will stand still while every instrument reports
 a healthy 10Hz loop.
 
+## 4a. The engagement ceiling was off, and is now fixed (2026-08-29)
+
+Worth its own section because it is probably the largest single cause of the death rate
+in §3, and because of *how* it came back.
+
+Target selection has two branches — choose a new quarry, or keep the one you have. Both
+branches wrote `has_target`, `in_reach` and `target_in_band` **by hand**, and the keeping
+branch read a `_threatCeiling` that only the choosing branch ever set. `levelInBand(level,
+undefined)` returns `true`, so:
+
+```
+tick 1  _targetLevel=50  _threatCeiling=30     target_in_band=false   <- correct
+tick 2  _targetLevel=und _threatCeiling=und    target_in_band=TRUE    <- ceiling gone
+```
+
+A level-20 character read a level-50 fungus beast as in band on every tick after the
+first — which is nearly all of them. The comment on that line described this exact failure
+as something it had **fixed** (it replaced a literal `// DEBUG: force in-band to test`) and
+named the victim: *"Sasquatch, level 20 with a ceiling of 30, spent 2026-08-27 trading
+blows with level-50 fungus beasts and died thirteen times."* The careful-looking
+replacement reproduced the bug it documented.
+
+**A one-tick test passes against both versions.** That is why it came back. The regression
+test now runs four ticks, and the tick that matters is the second.
+
+The fix is the structural one: the decider chooses a quarry and sets `_targetId`; it no
+longer senses. In one place, for both branches, the ceiling and level are resolved and the
+three symbols are *asked for* through the producers:
+
+```js
+Object.assign(ws, evaluate({ ...ctx, ws }, { only: TARGET_SYMBOLS }));
+```
+
+`evaluate(ctx, { only })` is the supported answer to the two-pass problem — the ceiling
+needs `armed`, and `target_in_band` needs the ceiling, so the honest order is sense,
+choose, re-sense the part choosing unlocked. **Going through the producers is the point.**
+A driver that re-derives a symbol keeps a second private copy of the rule, and that is the
+entire mechanism of this bug. There are no hand-written target symbols left in the decider.
+
+If you take one habit from this repository, take that one: **a branch that decides is not
+also allowed to sense.**
+
 ## 5. Open problems, in the order I would take them
 
 1. **Movement.** The sidestep loop above. Roughly 25 of the last 40 commits are attempts at
@@ -144,7 +186,8 @@ a healthy 10Hz loop.
    pocketed reconnects again immediately — measured at ~39 reconnects in three minutes per
    character. This is the "a trip that cannot fix the thing that opened it will run for
    ever" failure, and it hammers the server unattended. Needs a backoff.
-4. **The three test regressions and the debug leftovers** in §6.
+4. **The three test regressions and the debug leftovers** in §6. None is fixed; all are
+   reproduced there with the evidence, so they are cheap to pick up.
 
 ## 6. Code review findings (2026-08-29, `4935c17..HEAD`, 40 commits)
 
