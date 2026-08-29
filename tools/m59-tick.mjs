@@ -385,6 +385,23 @@ export class Actuator {
     // kind='go', not 'move': the pacer coalesces same-kind packets, so if go() shares
     // the 'move' kind it collides with moveToSquare and only one fires per 200ms slot.
     // 'go' is its own slot; the server sees BP_REQ_GO regardless of the pacer kind.
+    //
+    // THE SERVER DOES NOT FIRE A ROOM TRANSITION ON BP_REQ_GO ALONE. The original
+    // client (clientd3d/intrface.c:391) does MoveUpdatePosition() THEN RequestGo()
+    // so the server has a fresher position before the go is evaluated. Without the
+    // MoveUpdatePosition step, the server may still believe the character is at the
+    // pre-standOn square and refuse the go. One characterized go's monitor, chain ten
+    // go's in a row, and the room never changes.
+    //
+    // We send the position update via moveToSquare with a speed of 0, which is exactly
+    // what MoveUpdatePosition does. Send it in the SAME pacer slot as the go so both
+    // land as fast as we can make them. If the server rejects a zero-speed moveTo, it
+    // already has the character at the standOn (from the last accepted movement) and
+    // ignores it harmlessly.
+    const self = c.self;
+    if (self && self.col != null && self.row != null) {
+      this._send('move', () => c.moveToSquare(self.col, self.row, 0), 0);
+    }
     return this._send('go', () => c.go(), 0);
   }
 
