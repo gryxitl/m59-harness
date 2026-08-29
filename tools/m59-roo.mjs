@@ -3222,6 +3222,45 @@ export function sharedRoomGeometry(roomOrRoo) {
 // rooms so the first tick does no geometry parsing — the cost is paid at startup, off the
 // tick path, while the keeper is already busy. It is idempotent (the cache is checked), so
 // a room already built is untouched.
+/**
+ * Which map room is the character standing in — by NUMBER, corroborated by NAME.
+ *
+ * Two keys, each unsafe alone, and the repository has now been bitten by both.
+ *
+ * The NUMBER is unsafe when it arrives from the wrong namespace: the game server's
+ * runtime room id is not the map's numbering, and runtime 2000 is "Raza Inn" while map
+ * room 2000 is Ko'catan. Resolving geometry from that draws one room's walls over
+ * another room's floor, which is what "two maps overlaid" looks like.
+ *
+ * The NAME is unsafe because it is not unique. Fourteen names in this map are shared by
+ * more than one room and every one of them has a DIFFERENT .roo: "Abandoned Building" is
+ * seven rooms, "The Sewers of Barloque" is three. A name-keyed lookup keeps one file per
+ * name and serves it to all of them — 20 of 264 rooms got another room's geometry,
+ * including two rooms this fleet is sent to hunt in (575 "The King's Way" and 377 "The
+ * Sewers of Jasper"). The same overlay, and silent, because heights are cropped to
+ * whichever dimensions win and a mismatch always "fits".
+ *
+ * So: take the number when the room it names agrees with the name the server gave us,
+ * and fall back to the name when it does not. Agreement is what distinguishes a real map
+ * number from a runtime id — the id lands on a room with the wrong name. Same shape as
+ * the corroboration in m59-which.mjs, and for the same reason.
+ *
+ * Returns the map room object, or null.
+ */
+export function resolveRoomRef(map, roomNum, roomName) {
+  const rooms = map?.rooms ?? null;
+  if (!rooms) return null;
+  const byNum = (roomNum != null) ? (rooms[roomNum] ?? rooms[String(roomNum)] ?? null) : null;
+  if (byNum && roomName && byNum.name === roomName) return byNum;
+  if (roomName) {
+    for (const r of Object.values(rooms)) if (r?.name === roomName) return r;
+  }
+  // A number with no name to check it against is better than nothing, but only just:
+  // it is right whenever the caller is passing a map number, and wrong the same way the
+  // old code was whenever it is passing a runtime id.
+  return byNum;
+}
+
 export function buildAllRoomGeometry(map) {
   const built = [];
   for (const room of Object.values(map?.rooms ?? {})) {

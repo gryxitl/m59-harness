@@ -47,7 +47,7 @@ import { loadMap, movementMapReadiness, resolveRoom, forgetInferredExit, findPat
 // UNION OF BOTH SIDES. Ours added loadRoo/buildAllRoomGeometry for the keeper split;
 // upstream added clientToProtocol for its collision work. Same module, both needed.
 import { CLIENT_FINENESS, elideLoops, protocolToClient, clientToProtocol,
-         loadRoo, buildAllRoomGeometry } from './m59-roo.mjs';
+         loadRoo, buildAllRoomGeometry, resolveRoomRef } from './m59-roo.mjs';
 import { recordTactic } from './m59-tactics.mjs';
 import { recordCrossing } from './m59-crossings.mjs';
 import { recallTrack, strikeTrack, clearStrikes } from './m59-tracks.mjs';
@@ -12399,22 +12399,49 @@ function serveDashboard(port) {
         // Resolve the .roo file. The room NAME is the reliable key (the game server's
         // runtime room id does not match the world map's numbering), so look the room up
         // by name first and keep the match for the dimension lookup below.
-        let rooFile = null;
+        // THE NUMBER, CORROBORATED BY THE NAME — NOT THE NAME ALONE.
+        //
+        // This preferred the name outright, because the number used to arrive as the
+        // game server's RUNTIME room id, which is a different namespace: runtime 2000 is
+        // "Raza Inn" while map room 2000 is Ko'catan. Drawing that room's walls over this
+        // room's floor is what "two maps overlaid" looks like, so the name was safer.
+        //
+        // But the name is not unique, and the map says so — 14 names are shared by more
+        // than one room and EVERY one of them has a different .roo. "Abandoned Building"
+        // is seven rooms; "The Sewers of Barloque" is three. `roomRooLookup` is keyed by
+        // name, so it keeps exactly one .roo per name and serves it to all of them: 20 of
+        // the 264 rooms get another room's geometry, including room 575 "The King's Way"
+        // (wants g5.roo, served g6.roo) and room 377 "The Sewers of Jasper" (wants
+        // jassew1.roo, served jassew3.roo) — both rooms this fleet is sent to hunt in.
+        // Same overlay, different cause, and this one is silent because the heights are
+        // cropped to the live room's dimensions and always "fit".
+        //
+        // `room_num` is the MAP number now (m59-keeper-process.mjs sends
+        // session.world.room.num and no longer falls back to the runtime id), so the
+        // number is the precise key. It is still corroborated against the name before it
+        // is trusted: if the map room that number names has a different name from the one
+        // the server just gave us, the number is from the wrong namespace and the name is
+        // the safer answer. That is the same test m59-which.mjs uses to tell a genuine
+        // claim from a recycled one.
+        const byNum  = (roomNum != null) ? (worldMap?.rooms?.[roomNum] ?? null) : null;
         const byName = roomName ? Object.values(worldMap?.rooms ?? {}).find(r => r.name === roomName) : null;
-        if (roomName && roomRooLookup?.size) rooFile = roomRooLookup.get(roomName);
-        if (!rooFile && byName?.roo?.file) rooFile = byName.roo.file;
-        const roo = worldMap?.rooms?.[roomNum]?.roo;
-        // The name-matched room's .roo (reliable), vs the id-matched one (unreliable).
+        const ref = resolveRoomRef(worldMap, roomNum, roomName);
+
+        let rooFile = ref?.roo?.file ?? null;
+        if (!rooFile && roomName && roomRooLookup?.size) rooFile = roomRooLookup.get(roomName);
+        const roo = byNum?.roo ?? null;
         const rooByName = byName?.roo ?? null;
-        // Use the NAME-matched room's .roo for the geometry (flags/walls/heights). The
-        // id-matched `roo` is wrong when the game server's runtime room id does not match
-        // the world map's numbering (e.g. room_num=2000 for "Raza Inn" is actually
-        // Ko'catan in the map). The name is the reliable key.
-        const rooRef = rooByName ?? roo;
-        // Real room dimensions. Prefer the name-matched room, then the id-matched .roo,
-        // then the .roo file, then fall back to the caller's (default) dims.
+        const rooRef = ref?.roo ?? rooByName ?? roo;
+        // Real room dimensions, from THE SAME ROOM the walls came from.
+        //
+        // This preferred `rooByName` while the walls above now come from `rooRef`, and
+        // taking the two from different rooms is the overlay itself: the right walls
+        // drawn on the wrong floor plan. Nothing errors, because the height array is
+        // cropped to whatever dimensions win (`Math.min(rows, geo.rows)`), so a mismatch
+        // silently fits.
         let realCols = cols, realRows = rows;
-        if (rooByName?.cols && rooByName?.rows) { realCols = rooByName.cols; realRows = rooByName.rows; }
+        if (rooRef?.cols && rooRef?.rows) { realCols = rooRef.cols; realRows = rooRef.rows; }
+        else if (rooByName?.cols && rooByName?.rows) { realCols = rooByName.cols; realRows = rooByName.rows; }
         else if (roo?.cols && roo?.rows) { realCols = roo.cols; realRows = roo.rows; }
         else if (rooFile) {
           try {
