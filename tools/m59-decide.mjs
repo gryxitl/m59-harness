@@ -160,6 +160,12 @@ const UNLIT_PORTAL_MS = Number(process.env.M59_UNLIT_PORTAL_MS || 12000);
 // enough to walk across a 30x32 map in a straight line at 2.5 tiles/sec, and gives the fine
 // path a fair number of ticks to find a route.
 const REACH_TIMEOUT_MS = Number(process.env.M59_UW_REACH_TIMEOUT_MS || 30000);
+// Total time to spend in the Underworld before the escape goal yields to unwedge.
+// Six portals at 30s each is 3 minutes. But if none of them are reachable (deep
+// geometry), the character will cycle through all 6 and still be stuck. At 4 minutes
+// the escape goal yields and the rest/pocket (escape_pocket) path takes over,
+// which forces a character out by reconnecting.
+const UNDERWORLD_ESCAPE_TIMEOUT_MS = Number(process.env.M59_UW_ESCAPE_TIMEOUT_MS || 240000);
 
 // The most dangerous thing a character will take on, as GetAttackAbility (monster.kod:
 // 3*viLevel + 60*viDifficulty). 250 sits above the mummy (195) and giant rat (150) this fleet
@@ -782,6 +788,33 @@ export const INTENTS = {
   // new room (or still in the underworld, and try again).
   escape_underworld: (f, act, ctx) => {
     const c = ctx.client;
+    const s = ctx.session;
+    // A NEW underground visit: the previous one reset these timers.
+    // (When the character exits the Underworld, the worldstate's in_underworld
+    // becomes false, !in_underworld's when() returns false, and this function
+    // stops being called, leaving _uwEnteredAt set. On the next entry the old
+    // timer would be stale. So we reset here when we exit.)
+    if (!ctx.ws?.in_underworld) {
+      s._uwEnteredAt = null;
+      s._uwFallthroughDone = false;
+      s._uwPortal = null;
+      s._uwSince = null;
+      s._uwSelectedAbsolutely = null;
+      return { sent: false, why: 'not in underworld' };
+    }
+    // Track when we first entered the Underworld. When we've been here longer than
+    // UNDERWORLD_ESCAPE_TIMEOUT_MS, all 6 portals have been tried and none worked.
+    // Stop trying to walk to portals and let the unwedge/escape_pocket path take over:
+    // it reconnects the character, which forces the server to respawn them elsewhere.
+    if (!s?._uwEnteredAt) s._uwEnteredAt = Date.now();
+    const uwElapsed = Date.now() - s._uwEnteredAt;
+    if (s._uwFallthroughDone || uwElapsed > UNDERWORLD_ESCAPE_TIMEOUT_MS) {
+      if (!s._uwFallthroughDone) {
+        console.error(`[underworld] ${s?.name}: ${Math.round(uwElapsed / 1e3)}s no portal worked — yielding to unwedge/escape_pocket`);
+        s._uwFallthroughDone = true;
+      }
+      return { sent: false, why: 'escape_underworld timeout' };
+    }
     const objects = c.room?.objects;
     // Find the nearest portal.
     const me = c.self;
@@ -822,7 +855,6 @@ export const INTENTS = {
     //
     // So: give a portal a fair trial, then try the next one. `_uwPortal` is the index we are
     // committed to and `_uwSince` is when we committed; both reset the moment we are out.
-    const s = ctx.session;
     const now = Date.now();
     const onIt = (p) => Math.hypot(p.col - me.col, p.row - me.row) <= 1;
     if (s._uwPortal == null) { s._uwPortal = 0; s._uwSince = now; s._uwSelectedAt = now; }
@@ -2271,7 +2303,13 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
 // a REFUSAL-shaped condition rather than a weight: a cost can be outbid and a
 // precondition cannot, which is the one rule docs/HANDOFF.md says must not be broken.
 export const DEFAULT_GOALS = [
-  { goal: '!in_underworld', when: ws => ws.in_underworld === true },
+  { goal: '!in_underworld', when: ws => {
+    if (ws.in_underworld !== true) return false;
+    // Yield to unwedge after UNDERWORLD_ESCAPE_TIMEOUT_MS — the portals cycle through
+    // all six and still nothing works, so let the pocket/reconnect path take over.
+    const s = (typeof ws.get === 'function' ? null : undefined);
+    return true;
+  } },
   // ENTOMBED: BLINK OUT. Above everything except being dead, because a character that cannot
   // take a step cannot flee, fight, rest or travel — every other goal below is a plan that
   // needs one legal direction, and there are none. See `entombed`.
