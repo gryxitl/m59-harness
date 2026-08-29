@@ -354,6 +354,14 @@ export class ControllerMover {
 
   tick(posOverride) {
     this.stats.ticks++;
+    {
+      try { const _tick = (this._dbgTick ??= 0) + 1; this._dbgTick = _tick;
+        if (_tick % 100 === 1) {
+          import('node:fs').then(m => m.appendFileSync('/tmp/ctl-debug.log',
+            `${this._agent} tick#${_tick} pos=${posOverride?posOverride.col+','+posOverride.row:'?'} dest=${this.dest?this.dest.col+','+this.dest.row:'null'} active=${this.active} crossing=${this.crossing?JSON.stringify(this.crossing):'none'} block=${this.stats.blockedTicks} mv=${this.stats.moving} arr=${this.stats.arrived} step=${this._lastStep?.state}\n`));
+        }
+      } catch {}
+    }
     // Silent while resting, for the reason in physicsTick. Reported as a distinct state so
     // a caller cannot read it as progress or as a stall.
     if (this.session?._restingQuiet) {
@@ -767,6 +775,19 @@ export class ControllerMover {
     }
 
     if (r.state === 'blocked' || r.state === 'no-path') {
+      // A WATER ROOM HAS NO WALKABLE .roo CELLS, and the controller can never plan 
+      // a path through it. After 5 seconds of continuous no-path, hand back to the 
+      // legacy mover which uses server-side pathfinding that understands water.
+      if (r.state === 'no-path') {
+        this._noPathTicks = (this._noPathTicks ?? 0) + 1;
+        if (this._noPathTicks >= 50) {  // 50 ticks ≈ 5s at 10Hz
+          this.stats.handedBack = (this.stats.handedBack ?? 0) + 1;
+          console.error(`[ctlmover] ${this._agent} in no-path water room for 50 ticks — handing back to legacy`);
+          return this._delegate(posOverride, 'water room, no .roo land');
+        }
+      } else {
+        this._noPathTicks = 0;
+      }
       // The controller gave the plan up. Try once more from where we now are; a body that
       // slid into a corner often has a route the plan made from the old position did not.
       this._plannedFor = null;
