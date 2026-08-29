@@ -127,7 +127,14 @@ export function actionsFor(client, { extra = [], costCtx = {}, ws = {}, isTruste
   // Optional filter: remove atomics by name. Used by the GOAP keeper to
   // prevent the planner from picking `rest` when a hostile is present
   // (it should use `recover` instead, which includes fleeing).
-  const filtered = filter ? all.filter(fn => !filter.has(fn.atomic)) : all;
+  let filtered = filter ? all.filter(fn => !filter.has(fn.atomic)) : all;
+  // THED: when TRAPPED in a fine-grid pocket with no exits reachable, blink’s central
+  // location is INSIDE the pocket. Don’t
+  // offer the planner a phantom cure — exclude cast blink. escape_pocket (reconnect)
+  // carries the cost so it remains vairs.
+  if (ws && ws.entombed === true && ws.pocket_has_exit === false) {
+    filtered = filtered.filter(fn => fn.atomic !== 'cast blink');
+  }
   return filtered.map(fn => ({
     name: fn.atomic,
     pre: fn.pre ?? [],
