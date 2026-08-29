@@ -12,6 +12,7 @@ import { makeDecider, intend, INTENTS, DEFAULT_GOALS,
          VIGOR_REST_BELOW, VIGOR_REST_CEILING,
          creatureLevelOf, levelInBand } from './m59-decide.mjs';
 import { readFileSync } from 'node:fs';
+import { chooseFleeExit } from './m59-decide.mjs';
 import { evaluate } from './m59-worldstate.mjs';
 import { isArmed } from './m59-skills.mjs';
 import { planFor } from './m59-plan.mjs';
@@ -1138,6 +1139,41 @@ console.log('\nTHE DANGER CAP SITS IN THE GAP BETWEEN WHAT WE SURVIVE AND WHAT K
      cap >= of('baby spider'), `cap=${cap} baby spider=${of('baby spider')}`);
   ok('and it refuses the centipede — which that raise gave away',
      cap < of('centipede'), `cap=${cap} centipede=${of('centipede')}`);
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\nA FLEE DOES NOT GO BACK WHERE IT JUST CAME FROM');
+{
+  // The two-room bounce. Sasquatch's last ten flee destinations, in order, were
+  // 45 49 45 49 45 49 45 49 — room 49 to 45, back to 49, taking damage the whole way.
+  // He was never failing to flee; he was fleeing in a circle, because the room you have
+  // just escaped is always adjacent to the room you escaped into and `nearestExit` has
+  // no memory. The postmortems from that shape carry no target, because there is no
+  // fight — just a body walked between two rooms until it runs out.
+  const nearest = (list) => list[0] ?? null;      // deterministic stand-in for nearestExit
+  const exits = [{ to: 49 }, { to: 45 }, { to: 102 }];
+
+  ok('with no history it just takes the nearest',
+     chooseFleeExit({}, exits, null, nearest)?.to === 49);
+
+  const justFled49 = { _fledFrom: { room: 49, at: Date.now() } };
+  ok('having just fled 49, it does NOT go back to 49',
+     chooseFleeExit(justFled49, exits, null, nearest)?.to !== 49,
+     JSON.stringify(chooseFleeExit(justFled49, exits, null, nearest)));
+
+  // The exclusion must lapse, or a character that circles a dangerous area is stuck.
+  const longAgo = { _fledFrom: { room: 49, at: Date.now() - 10 * 60_000 } };
+  ok('...but the exclusion lapses, so a real circuit is still possible',
+     chooseFleeExit(longAgo, exits, null, nearest)?.to === 49);
+
+  // A DEAD END STILL HAS TO BE USABLE. Refusing the only door would leave the character
+  // standing in the room being hit, which is worse than going back.
+  const oneWay = [{ to: 49 }];
+  ok('the only way out is taken even if we just came from there',
+     chooseFleeExit(justFled49, oneWay, null, nearest)?.to === 49);
+
+  ok('no exits at all is null, not a throw', chooseFleeExit(justFled49, [], null, nearest) === null);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

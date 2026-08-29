@@ -167,6 +167,14 @@ const REACH_TIMEOUT_MS = Number(process.env.M59_UW_REACH_TIMEOUT_MS || 30000);
 // which forces a character out by reconnecting.
 const UNDERWORLD_ESCAPE_TIMEOUT_MS = Number(process.env.M59_UW_ESCAPE_TIMEOUT_MS || 240000);
 
+// How long a room we have just fled stays off the list of places to flee TO.
+//
+// Long enough to break the two-room bounce (a flee crossing plus the walk to the next
+// door is a handful of seconds), short enough that a genuine circuit around a dangerous
+// area is allowed again once whatever was there has had time to move. It is not a
+// blacklist: an exit is only skipped when another one exists.
+const FLED_FROM_MS = Number(process.env.M59_FLED_FROM_MS || 45000);
+
 // The most dangerous thing a character will take on, as GetAttackAbility (monster.kod:
 // 3*viLevel + 60*viDifficulty). Overridable per character with policy.maxAttackAbility;
 // null disables the check entirely.
@@ -347,6 +355,37 @@ export function creatureLevelOf(client, obj) {
  *
  * Same formula as the GOAP keeper: level + band, and the band is halved unarmed.
  */
+/**
+ * Which way out, for a flee that is choosing fresh.
+ *
+ * DO NOT FLEE BACK INTO THE ROOM YOU JUST FLED. The `_fleeExit` latch stopped the
+ * character flickering between two doors of ONE room. This is the same failure one level
+ * up, and the latch cannot see it: the latch is cleared by the room change, the next flee
+ * starts fresh in the new room, and the nearest way out of THAT room is the door we just
+ * came through.
+ *
+ * Measured on Sasquatch, his last ten flee destinations in order:
+ *
+ *     45s 49n 45s 49n 45s 49n 45s 49n
+ *
+ * Room 49 to 45, back to 49, for ever, taking damage the whole way. He was never failing
+ * to flee — he was fleeing perfectly, in a circle. JayB shows the same shape with room
+ * 564 three times running. This is what the death rate is largely made of, and it is why
+ * the postmortems carry no target: there is no fight, just a body being walked between
+ * two rooms until it runs out.
+ *
+ * The exclusion lapses after FLED_FROM_MS and is skipped entirely when the room we fled
+ * is the ONLY way out — a dead end still has to be usable, and going back is better than
+ * standing still while something hits you.
+ */
+export function chooseFleeExit(session, exits, from, nearest) {
+  if (!exits?.length) return null;
+  const fled = session?._fledFrom;
+  const avoid = (fled && Date.now() - fled.at < FLED_FROM_MS) ? fled.room : null;
+  const usable = avoid != null ? exits.filter(e => e.to !== avoid) : exits;
+  return nearest(usable.length ? usable : exits, from);
+}
+
 export function threatCeilingFor(client, policy = {}, armed = true) {
   const level = client?.vitals?.()?.health?.max ?? null;
   if (level == null) return null;
@@ -1480,12 +1519,31 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           at: now(), hp, max: maxHp, hp_trail: trail.slice(-8),
           room: frame?.room?.name ?? null, room_num: session.world?.room?.num ?? null,
           // The world state carries only the id; resolve it while the room still exists.
+          // THE STICKY TARGET, NOT THIS TICK'S — because this tick has not chosen one yet.
+          //
+          // This read `ws._targetId`, and `ws` is rebuilt from evaluate() at the top of
+          // every tick while `_targetId` is not assigned until target selection, four
+          // hundred lines below this snapshot. So it was undefined EVERY time and
+          // `last_target` was null in every postmortem ever written — 34 of 34 observed
+          // deaths on 2026-08-29 alone. The single most useful field in the record, and
+          // it was structurally incapable of holding a value.
+          //
+          // Worse than useless: it was reasoned FROM. The note beside `under_attack` in
+          // m59-worldstate.mjs argues from a death where "last_target was null and
+          // engaged_by was 0", which is not evidence of anything.
+          //
+          // `_currentTargetId` is the decider's own persistent target and survives the
+          // tick boundary, which is exactly what "the target it had when it died" means.
           target: (() => {
-            const id = ws._targetId;
+            const id = _currentTargetId ?? ws._targetId;
             if (id == null || !(objs instanceof Map)) return null;
             const o = objs.get(id);
             return o ? String(client?.rsc?.get?.(o.nameRsc) ?? o.name ?? id) : null;
           })(),
+          // What the character was DOING. A postmortem that cannot say whether it was
+          // fighting, travelling or resting cannot tell an ambush from a lost fight, and
+          // those want opposite fixes.
+          goal: session._lastGoal ?? null,
           engaged_by: aggro, creatures_within_5: near,
           attackers: [...new Set(names)].slice(0, 6),
           in_safe_spot: !!session._holdingSafeSpot,
@@ -1503,6 +1561,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             died_in: d.room ?? null, room_num: d.room_num ?? null,
             level: d.max ?? null, hp_trail: d.hp_trail ?? null,
             last_target: d.target ?? null,
+            goal: d.goal ?? null,
             engaged_by: d.engaged_by ?? null,
             creatures_within_5: d.creatures_within_5 ?? null,
             attackers: d.attackers?.length ? d.attackers : undefined,
@@ -1942,6 +2001,10 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       return now() >= until;
     });
 
+    // REMEMBERED FOR THE POSTMORTEM. A death record that cannot say what the character
+    // was doing cannot tell an ambush from a lost fight, and those want opposite fixes.
+    session._lastGoal = active?.goal ?? null;
+
     // Track whether we're resting or fighting (suppress
     // stuck detection). A character that's swinging at a
     // mummy or resting at an inn is intentionally not
@@ -1999,6 +2062,10 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       const here = client?.room?.id ?? client?.room?.num ?? null;
       const left = session._fleeRoom != null && here != null && here !== session._fleeRoom;
       if (left || now() > session._fleeUntil) {
+        // WHERE WE JUST FLED FROM, so the next flee does not choose it as the way out.
+        // Only on `left`: a flee that merely timed out never got anywhere, and marking
+        // the room we are still standing in would rule out the door we still need.
+        if (left) session._fledFrom = { room: session._fleeRoom, at: now() };
         session._fleeUntil = 0; session._fleeRoom = null;
         session._fleeExit = null;      // the chosen way out belongs to the flee that chose it
       }
@@ -2172,7 +2239,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             if (session._fleeExit != null)
               exit = exits.find(e => e.to === session._fleeExit) ?? null;
             if (!exit) {
-              exit = nearestExit(exits, frame?.position ?? client?.self);
+              exit = chooseFleeExit(session, exits, frame?.position ?? client?.self, nearestExit);
               session._fleeExit = exit?.to ?? null;
             }
             if (exit && router.dest !== exit.to) {
@@ -2209,7 +2276,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             if (session._fleeExit != null)
               exit = exits.find(e => e.to === session._fleeExit) ?? null;
             if (!exit) {
-              exit = nearestExit(exits, frame?.position ?? client?.self);
+              exit = chooseFleeExit(session, exits, frame?.position ?? client?.self, nearestExit);
               session._fleeExit = exit?.to ?? null;
             }
             if (exit && router.dest !== exit.to) {
