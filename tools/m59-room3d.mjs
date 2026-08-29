@@ -10,7 +10,12 @@ export function renderRoom3D(name, rv, hero) {
     <a href="/hero/${name}" style="color:#4a9">&larr; ${name}</a>
     <p>No room data available.</p></body></html>`;
 
-  const { cols, rows, objects, self } = rv;
+  const { cols, rows, self } = rv;
+  // A room view with no object list (a keeper that answered without one, or an empty
+  // Map) used to crash the WHOLE broker here — renderRoom3D is called from a request
+  // handler with no try/catch, so one bad page took down every session. See the
+  // 2026-08-29 broker death: TypeError on objects.map killed pid 80749 and all five keepers.
+  const objects = Array.isArray(rv.objects) ? rv.objects : [];
   const walkable = rv.walkable ?? [];
   const hasWalls = walkable.length === cols * rows && walkable.some(v => v === 0);
   let roomName = hero?.room?.name ?? '';
