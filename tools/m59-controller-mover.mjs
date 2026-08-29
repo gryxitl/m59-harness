@@ -719,7 +719,11 @@ export class ControllerMover {
     // geo can't find a path out. Hand back to legacy.
     if (!moved && this._noProgress >= BLOCKED_RESYNC_TICKS && c?.self) {
       // Separate from _noProgress (which the resync keeps resetting):
-      // how long since the DESTINATION was set.
+      // log the condition values for debugging:
+      if (process.env.M59_DBG_PROBE === '1' && (this._dbgPool ??= 0) % 5 === 0) {
+        this._dbgPool++;
+        console.error(`[ctlmover dbg] ${this._agent} destAge=${this._destAge ? Date.now() - this._destAge : 'null'}ms noProgress=${this._noProgress} moved=${!!moved} before=(${before.col},${before.row}) after=(${after.col},${after.row})`);
+      }
       if (this._destAge && Date.now() - this._destAge > 4500) {
         this.stats.handedBack = (this.stats.handedBack ?? 0) + 1;
         console.error(`[ctlmover] ${this._agent} in walkable POCKET: 200+ ticks moving, 0 arrived, no tile progress in 30 ticks — handing back to legacy`);
