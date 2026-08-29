@@ -126,6 +126,15 @@ export class ControllerMover {
     }
     this.crossing = null;
 
+    {
+      // One-time debug: log when dest IS set
+      if (this._agent === 't4' && (this._dbgDestCounts ??= 0) < 10) {
+        this._dbgDestCounts++;
+        const prevAge = this._destAge ? Date.now() - this._destAge : 0;
+        import('node:fs').then(m => m.appendFileSync('/tmp/t4-dest.log',
+          `to(${col},${row}) isNew=${!this.dest || this.dest.col !== col || this.dest.row !== row} prevDestAge=${prevAge} newDestAge=${this._destAge ? 'will-reset' : 'null'}\n`));
+      }
+    }
     const isNew = !this.dest || this.dest.col !== col || this.dest.row !== row;
     this.dest = { col, row };
     this.active = true;
@@ -688,6 +697,10 @@ export class ControllerMover {
     }
 
     const after = serverTile;
+    if (this._agent === 't4') {
+      import('node:fs').then(m => m.appendFileSync('/tmp/t4-moved.log',
+        `${this._agent} tick before=(${before.col},${before.row}) after=(${after.col},${after.row}) moved=${moved === (before.col !== after.col || before.row !== after.row)} noProg=${this._noProgress} destAge=${this._destAge ? (Date.now()-this._destAge) : 'null'}\n`));
+    }
     const moved = after.col !== before.col || after.row !== before.row;
     if (moved) { this._noProgress = 0; this._handedBack = false; }
     else this._noProgress++;
@@ -723,6 +736,15 @@ export class ControllerMover {
       if (process.env.M59_DBG_PROBE === '1' && (this._dbgPool ??= 0) % 5 === 0) {
         this._dbgPool++;
         console.error(`[ctlmover dbg] ${this._agent} destAge=${this._destAge ? Date.now() - this._destAge : 'null'}ms noProgress=${this._noProgress} moved=${!!moved} before=(${before.col},${before.row}) after=(${after.col},${after.row})`);
+      }
+      {
+        try { import('node:fs').then(m => m.appendFileSync('/tmp/t4-pocket.log',
+          `${this._agent} POCKET CHECK: noProg=${this._noProgress} destAge=${this._destAge ? Date.now()-this._destAge : 'null'} moved=${moved} cSelf=${!!c?.self}\n`)); } catch {}
+      }
+      const _age = this._destAge ? Date.now() - this._destAge : 0;
+      if (this._agent === 't4' && _age > 4500) {
+        try { import('node:fs').then(m => m.appendFileSync('/tmp/t4-pool-delegate.log',
+          `${this._agent} WILL DELEGATE: age=${_age} noProg=${this._noProgress}\n`)); } catch {}
       }
       if (this._destAge && Date.now() - this._destAge > 4500) {
         this.stats.handedBack = (this.stats.handedBack ?? 0) + 1;
@@ -796,7 +818,26 @@ export class ControllerMover {
         } catch { /* best-effort geometry */ }
         try {
           if (reSyncPx != null) this.ctl.serverMovedPlayer(sv.col, sv.row, reSyncPx, reSyncPy);
-          else this.ctl.serverMovedPlayer(sv.col, sv.row);
+          else {
+            // None of the 3 direction probes free from fine position.
+            // Recenter at the TILE CENTER (the one position the .roo walls
+            // are LEAST likely to block from). This is stronger than serverMovedPlayer
+            // (no fine), which just resets fine to (col*64+32, row*64+32)
+            // in the room's protocol fine (which may still be in the pocket).
+            const TILE = 1024, HALF = TILE / 2;
+            const centerClientX = (sv.col - 0.5) * TILE;
+            const centerClientY = (sv.row - 0.5) * TILE;
+            // Convert client fine to protocol fine:
+            const PROTO_OFFSET = 64, PROTO_SCALE = 16;
+            const px = Math.round(centerClientX / PROTO_SCALE + PROTO_OFFSET);
+            const py = Math.round(centerClientY / PROTO_SCALE + PROTO_OFFSET);
+            console.error(`[ctlmover] ${this._agent} FINE POCKET recency at stand point px=${px} py=${py}`);
+            try {
+              this.ctl.serverMovedPlayer(sv.col, sv.row, px, py);
+              this.ctl.x = centerClientX;
+              this.ctl.y = centerClientY;
+            } catch { /* best effort */ }
+          }
         } catch { /* best effort */ }
         this._plannedFor = null;        // the plan was made from somewhere we are not
         return { state: 'moving', to: this.dest, resynced: true };
