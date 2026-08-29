@@ -424,7 +424,7 @@ export class Actuator {
   }
 
   // -- posture. Sitting down IS the behaviour when recovering; it is not a stall.
-  rest()  { const c = this.session.client; return this._send('rest',  () => c.rest()); }
+  rest()  { const c = this.session.client; this._restedAt = Date.now(); return this._send('rest',  () => c.rest()); }
   stand() {
     // M59_STAND_TRACE=1 prints who asked, once. A stand cancels a rest timer outright
     // (player.kod StopResting deletes it), so "who is standing this character up" is a
@@ -445,6 +445,27 @@ export class Actuator {
   eat(id)        { const c = this.session.client; return this._send('act',  () => c.apply(id, c.selfId)); }
   cast(spellId, targets = []) {
     const c = this.session.client;
+    // A SITTING CHARACTER'S CAST IS SWALLOWED WHOLE -- no mana, no message, no
+    // effect. spell.kod:45 sends `You can't cast spells while resting!`, the
+    // server spams each cast with one refusal, and the GOAP retries until the
+    // character finally stands up (which the planner is not responsible for).
+    //
+    // If we just told this client to sit down (rest within the last 5s), stand it
+    // back up on the next cast so the spell is not silently dropped. No server
+    // packet replies to a posture, so the only way to know we're sitting is to
+    // remember that WE sent a rest.
+    // The server marks a player as resting via `StartResting()` and stays in that
+    // state until it gets a `StopResting()` (any RESET or MOVE packet). There is no
+    // 'we rested X seconds ago' signal, so the only reliable axis is: this Actuator
+    // last told the client to rest N ms ago. The window is generous (60s) so an
+    // actuator that rested ten seconds ago still stands the character up. If the
+    // character has already moved (any movement packet from the Actuator resets the
+    // resting state server-side) the stand is NO-OP (sending it while standing is
+    // harmless; it does not flip into rest).
+    if (this._restedAt && Date.now() - this._restedAt < 60_000) {
+      this._send('stand', () => c.stand?.() ?? Promise.resolve());
+      this._restedAt = 0;
+    }
     return this._send('cast', () => c.cast(spellId, targets), 1050);
   }
 
