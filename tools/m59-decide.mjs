@@ -1047,6 +1047,12 @@ function castIntent(name, f, act, ctx) {
   // the life of the process.
   const c = ctx.client, session = ctx.session;
   const loop = session?._tickLoop;
+  // A RESTING CHARACTER'S CAST IS REFUSED (PFLAG_NO_MAGIC, player.kod:1166).
+  // The Actuator's cast() stands first, but only if IT sent the rest within 60s.
+  // A character that respawned sitting, or rested longer ago, is still sitting
+  // and the blink is refused. Stand unconditionally — it is a no-op while
+  // already standing (spell.kod:45).
+  try { c.stand?.(); } catch { /* best effort */ }
   if (!loop?.freeze) { act.cast(spell.id, []); return { sent: true, what: name }; }
 
   const since = c?.evSeq ?? 0;
@@ -1362,6 +1368,10 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
               // freeze, so the turn lands before the cast begins and no further turn/move
               // packets go out to break it.
               c.turn?.(faceDeg);
+              // A RESTING CHARACTER'S CAST IS REFUSED (PFLAG_NO_MAGIC).
+              // This path bypasses the Actuator entirely (raw c.cast), so the
+              // Actuator's stand-first guard does not apply. Stand unconditionally.
+              try { c.stand?.(); } catch { /* best effort */ }
               const loop = session?._tickLoop;
               if (loop) {
                 const BLINK_MS = 11000;  // blink casts ~10s; hold a beat past it
