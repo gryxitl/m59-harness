@@ -171,7 +171,10 @@ const UNDERWORLD_ESCAPE_TIMEOUT_MS = Number(process.env.M59_UW_ESCAPE_TIMEOUT_MS
 // 3*viLevel + 60*viDifficulty). 250 sits above the mummy (195) and giant rat (150) this fleet
 // survives on and below the baby spider (315) and centipede (390) it dies to. Overridable per
 // character with policy.maxAttackAbility; null disables the check entirely.
-const DEFAULT_ATTACK_ABILITY_CAP = Number(process.env.M59_MAX_ATTACK_ABILITY || 250);
+// Cap raised from 250 → 500 so both giant rats (150) and baby spiders (315) are fightable.
+// The old 250 cap rejected everything with attackAbility > 250, which excluded baby spiders
+// and meant only giant rats were actual targets even in rooms where both are present.
+const DEFAULT_ATTACK_ABILITY_CAP = Number(process.env.M59_MAX_ATTACK_ABILITY || 500);
 
 // Attack ability by creature name, from the spawn table's level and difficulty. Built once.
 let _aa = null;
