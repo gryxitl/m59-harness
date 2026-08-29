@@ -435,6 +435,33 @@ export class ControllerMover {
       }
       this._seenClient = _c;  // first tick: just record the client reference
     }
+    // TELEPORT / DIVERGENCE CORRECTION BEFORE the resting early return.
+    // A character resting HAS a fine position; if that fine position has drifted
+    // > DIVERGENCE_SQUARES (6) tiles from the server's BP_MOVE echo, it will never
+    // heal because the normal glazing path in step() is skipped while resting.
+    if (this.ctl.x != null && _c?.self) {
+      const _me2 = _c.self;
+      const _bel2 = this.ctl.square();
+      const _gap2 = Math.hypot((_me2.col - _bel2.col) * CLIENT_PER_SQUARE,
+                               (_me2.row - _bel2.row) * CLIENT_PER_SQUARE);
+      if (_gap2 > DIVERGENCE_SQUARES * CLIENT_PER_SQUARE) {
+        this.ctl.serverMovedPlayer(_me2.col, _me2.row, _me2.x, _me2.y);
+        this._plannedFor = null;
+        this._divSince = 0;
+        if (_gap2 > TELEPORT_SQUARES * CLIENT_PER_SQUARE) {
+          this.stats.teleports = (this.stats.teleports || 0) + 1;
+          console.error(`[ctlmover] ${this._agent} TELEPORT resync while resting: believed`
+            + ` (${_bel2.col},${_bel2.row}) vs server (${_me2.col},${_me2.row})`
+            + ` - ${Math.round(_gap2 / CLIENT_PER_SQUARE)} tiles; snapping`);
+        } else {
+          this.stats.resyncs = (this.stats.resyncs || 0) + 1;
+          console.error(`[ctlmover] ${this._agent} DIVERGENCE resync while resting: believed`
+            + ` (${_bel2.col},${_bel2.row}) vs server (${_me2.col},${_me2.row})`
+            + ` - ${Math.round(_gap2 / CLIENT_PER_SQUARE)} tiles; adopting server`);
+        }
+        return { state: 'resync' };
+      }
+    }
     // Silent while resting, for the reason in physicsTick. Reported as a distinct state so
     // a caller cannot read it as progress or as a stall.
     if (this.session?._restingQuiet) {
