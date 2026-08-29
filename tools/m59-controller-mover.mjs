@@ -143,6 +143,7 @@ export class ControllerMover {
       // forgiven. Progress is a property of the BODY, not of the aim.
       this._plannedFor = null;           // force a plan on the next tick
       this._handedBack = false;          // a new aim deserves a fresh try
+      this._destAge = Date.now();         // reset the pocket timer only for NEW aims
     }
   }
 
