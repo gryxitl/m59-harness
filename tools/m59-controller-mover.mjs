@@ -359,7 +359,7 @@ export class ControllerMover {
       try { const _tick = (this._dbgTick ??= 0) + 1; this._dbgTick = _tick;
         if (_tick % 100 === 1) {
           import('node:fs').then(m => m.appendFileSync('/tmp/ctl-debug.log',
-            `${this._agent} tick#${_tick} pos=${posOverride?posOverride.col+','+posOverride.row:'?'} ctlXY=${this.ctl?._x?.toFixed(0)},${this.ctl?._y?.toFixed(0)} dest=${this.dest?this.dest.col+','+this.dest.row:'null'} step=${this._lastStep?.state} pathLen=${this.ctl?._path?.length ?? 0} pathIdx=${this.ctl?._destIdx ?? -1}\n`));
+            `${this._agent} tick#${_tick} pos=${posOverride?posOverride.col+','+posOverride.row:'?'} ctlXY=${this.ctl?.x?.toFixed(0)},${this.ctl?.y?.toFixed(0)} dest=${this.dest?this.dest.col+','+this.dest.row:'null'} step=${this._lastStep?.state} pathLen=${this.ctl?.path?.length ?? 0} pathIdx=${this.ctl?.pathIdx ?? -1}\n`));
         }
       } catch {}
     }
@@ -658,9 +658,16 @@ export class ControllerMover {
     else if (r.state === 'moving') this.stats.moving++;
     this._summarise(r.state);
 
-    if (r.state === 'arrived') {
+    // ARRIVAL IS A SERVER TILE, NOT A BELIEF.
+    // The controller's fine position crosses the destination tile's boundary,
+    // causing step() to return "arrived". But the server tile (c.self.col) has
+    // not actually changed because the server rejected the fine-move packets.
+    // Use the server tile for the arrival check.
+    const serverArrived = c.self && this.dest
+      && c.self.col === this.dest.col && c.self.row === this.dest.row;
+    if (r.state === 'arrived' && serverArrived) {
       this.stats.arrived++;
-      console.error(`[ctlmover] ${this._agent} ARRIVED at (${this.ctl.square().col},${this.ctl.square().row})`);
+      console.error(`[ctlmover] ${this._agent} ARRIVED (server confirmed) at (${c.self.col},${c.self.row})`);
       this.active = false;
       // The last position is worth a packet even though the throttle would hold it: the
       // keeper is about to swing, and swinging from where the server thinks we are is the
