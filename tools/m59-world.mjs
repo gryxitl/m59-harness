@@ -299,16 +299,31 @@ export class World {
   origin() {
     const me = this.self, geo = this.geometry;
     if (!me || !geo) return me ?? null;
-    // BOTH MODELS, NOT JUST THE COARSE ONE. `walkable` is the one-byte-per-square
-    // grid; a fence is a wall SEGMENT between squares and it is invisible to that
-    // byte. A character dropped by a portal onto a square whose centre sits inside
-    // an impassable segment passes the coarse test, so origin() returned `me`
-    // unchanged — and every fine-rooted search (pocket_has_exit, _fineReachableSet)
-    // then expanded into a one-square island and reported "no reachable exit"
-    // while the exit was five steps away. Measured 2026-08-29: Gountrug in Yonder
-    // Inn, Lee in West Jasper, Sasquatch in Brownestone Inn, all three wedged on
-    // coarse-walkable / fine-unwalkable squares after Underworld exits.
-    if (geo.walkable(me.row, me.col) && geo.fineWalkable?.(me.row, me.col) !== false) return me;
+    // EVERY MODEL THAT SEARCHES FROM HERE, NOT JUST THE COARSE ONE.
+    //
+    // First attempt (coarse only): a fence is a wall SEGMENT between squares and is
+    // invisible to the one-byte grid, so a body dropped by a portal onto a square
+    // whose centre sits inside an impassable segment passed the test, and every
+    // fine-rooted search (pocket_has_exit, _fineReachableSet) expanded into a
+    // one-square island and reported "no reachable exit" while the exit was five
+    // steps away. Measured 2026-08-29: Gountrug in Yonder Inn, Lee in West Jasper,
+    // Sasquatch in Brownestone Inn, all wedged after Underworld exits.
+    //
+    // Second attempt added `fineWalkable(row,col) !== false` — and it was WRONG IN
+    // THE OTHER DIRECTION. fineWalkable tests whether the cell CENTRE is within 256
+    // fine units of an impassable segment, but a legal stand-off square next to a
+    // fence fails that test even though every step OUT of it is open. The fix then
+    // dragged origin to nearestWalkable — which only searches COARSE-walkable cells
+    // — and the room's exit staging square, sitting against the same fence, failed
+    // the centre test too, so it was never found and the character walked across
+    // the whole room to the wrong edge. JayB, Familiars, 2026-08-29.
+    //
+    // The right question is not "can I stand here" but "can I LEAVE here": can the
+    // body take at least one step? That is exactly what `entombed` asks with
+    // openDirections(), the server's own per-direction adjacency bits, and it
+    // answers correctly for both failure shapes — a body truly inside geometry
+    // has no open direction, and a body hugging a fence has several.
+    if (geo.openDirections?.(me.row, me.col).length > 0) return me;
     const near = geo.nearestWalkable(me.row, me.col);
     return near ? { ...me, row: near.row, col: near.col, offGrid: true } : me;
   }
