@@ -299,7 +299,16 @@ export class World {
   origin() {
     const me = this.self, geo = this.geometry;
     if (!me || !geo) return me ?? null;
-    if (geo.walkable(me.row, me.col)) return me;
+    // BOTH MODELS, NOT JUST THE COARSE ONE. `walkable` is the one-byte-per-square
+    // grid; a fence is a wall SEGMENT between squares and it is invisible to that
+    // byte. A character dropped by a portal onto a square whose centre sits inside
+    // an impassable segment passes the coarse test, so origin() returned `me`
+    // unchanged — and every fine-rooted search (pocket_has_exit, _fineReachableSet)
+    // then expanded into a one-square island and reported "no reachable exit"
+    // while the exit was five steps away. Measured 2026-08-29: Gountrug in Yonder
+    // Inn, Lee in West Jasper, Sasquatch in Brownestone Inn, all three wedged on
+    // coarse-walkable / fine-unwalkable squares after Underworld exits.
+    if (geo.walkable(me.row, me.col) && geo.fineWalkable?.(me.row, me.col) !== false) return me;
     const near = geo.nearestWalkable(me.row, me.col);
     return near ? { ...me, row: near.row, col: near.col, offGrid: true } : me;
   }
