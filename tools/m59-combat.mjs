@@ -297,6 +297,8 @@ export class CombatController {
     this.pullFrom = null;      // position before pull (to walk back to)
     this.stuckTicks = 0;
     this._approachStart = 0;   // wall-clock ms when approach started
+    this._noMovePos = null;    // position we last saw while trying to walk
+    this._noMoveSince = 0;     // wall-clock ms when the position stopped changing
   }
 
   reset() {
@@ -309,6 +311,8 @@ export class CombatController {
     this.swings = 0;
     this.pullFrom = null;
     this.stuckTicks = 0;
+    this._noMovePos = null;
+    this._noMoveSince = 0;
   }
 
   /**
@@ -865,6 +869,7 @@ export class CombatController {
       const r = mover.tick(me ? { col: me.col, row: me.row, x: me.x, y: me.y } : undefined);
       if (r.state === 'arrived') {
         this._walkDest = null;
+        this._noMovePos = null;
         return { kind: 'walk', what: what + ' (arrived)' };
       }
       if (r.state === 'stuck' || r.state === 'no-route') {
@@ -877,7 +882,29 @@ export class CombatController {
         if (r.state === 'no-route' && this.session && this.targetId != null) {
           this.session._moverNoRoute = { targetId: this.targetId, at: Date.now() };
         }
+        this._noMovePos = null;
         return { kind: 'idle', what: `${what}: ${r.state} — ${r.why ?? ''}` };
+      }
+      // A SITTING CHARACTER'S MOVES ARE SILENTLY REFUSED: the server snaps the body
+      // back to its current square on every BP_REQ_MOVE while PFLAG_NO_MOVE is set
+      // (user.kod:2981), and the mover reports 'moving' because it believes the
+      // position is changing. If the position does not change for 3s while we are
+      // actively trying to walk, stand the character up. This covers the case where
+      // the character is sitting for a reason the decider did not cause (respawned
+      // sitting, _wasResting lost after rejoin) and the transition stand never fired.
+      // The stand is a no-op while already standing, so the cost of a false positive
+      // is one extra packet every 3s of genuine immobility (e.g. a real geometry
+      // block) — which is also the case where the 30s stuck-detection will blink.
+      const now = Date.now();
+      if (this._noMovePos && this._noMovePos.col === me.col && this._noMovePos.row === me.row) {
+        if (!this._noMoveSince) this._noMoveSince = now;
+        if (now - this._noMoveSince > 3000) {
+          try { this.session?.client?.stand?.(); } catch { /* best effort */ }
+          this._noMoveSince = now;  // reset: don't spam stand every 3s
+        }
+      } else {
+        this._noMovePos = { col: me.col, row: me.row };
+        this._noMoveSince = 0;
       }
       return { kind: 'walk', what };
     }

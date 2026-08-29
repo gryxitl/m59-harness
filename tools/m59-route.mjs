@@ -147,6 +147,8 @@ export class Router {
     this._badStandOn = new Set();  // `${nextRoom}:${col},${row}` squares to stop aiming at
     this._committedAim = null;     // the staging square this router is walking to
     this._lastOscAim = null;       // the aim that used up its one free dead window
+    this._noMovePos = null;        // position we last saw while trying to walk
+    this._noMoveSince = 0;         // wall-clock ms when the position stopped changing
   }
 
   to(roomNum) {
@@ -1156,6 +1158,7 @@ try { appendFileSync('/tmp/route-debug-t4.log', `PLAN ${here} dest=${this.dest} 
     if (mr.state === 'arrived') {
       // Reached the aim. If the aim was a sub-waypoint, advance the chain. If it was the
       // standOn (chain empty), the crossing fires via the 'at' check next tick.
+      this._noMovePos = null;
       if (sub) this._advanceSubLeg({ col: me.col, row: me.row });
       if (at) return this._say('crossing', { next: this.leg.next });
       return this._say('moving', { to: aim, next: this.leg.next, why: 'sub-leg reached' });
@@ -1163,6 +1166,7 @@ try { appendFileSync('/tmp/route-debug-t4.log', `PLAN ${here} dest=${this.dest} 
     if (mr.state === 'blinked') {
       // The blink worked: the character is in a new position.
       // Replan from here: clear the current leg and re-plan.
+      this._noMovePos = null;
       this.leg = null;
       this.mark = null;
       return this._say('replanning', { why: 'blink changed position, replanning' });
@@ -1172,6 +1176,26 @@ try { appendFileSync('/tmp/route-debug-t4.log', `PLAN ${here} dest=${this.dest} 
       // Let it continue: report as moving so the decider
       // doesn't interrupt.
       return this._say('moving', { to: aim, next: this.leg.next, why: mr.state });
+    }
+    // A SITTING CHARACTER'S MOVES ARE SILENTLY REFUSED (user.kod:2981): the server
+    // snaps the body back on every BP_REQ_MOVE while PFLAG_NO_MOVE is set. The mover
+    // reports 'moving' because it believes the position is changing. If the position
+    // does not change for 3s while we are actively routing, stand the character up.
+    // Covers the case where the character is sitting for a reason the decider did not
+    // cause (respawned sitting, _wasResting lost after rejoin) and the transition
+    // stand never fired. The stand is a no-op while already standing.
+    {
+      const now = this.now();
+      if (this._noMovePos && this._noMovePos.col === me.col && this._noMovePos.row === me.row) {
+        if (!this._noMoveSince) this._noMoveSince = now;
+        if (now - this._noMoveSince > 3000) {
+          try { this.session?.client?.stand?.(); } catch { /* best effort */ }
+          this._noMoveSince = now;  // reset: don't spam stand every 3s
+        }
+      } else {
+        this._noMovePos = { col: me.col, row: me.row };
+        this._noMoveSince = 0;
+      }
     }
     return this._say(at ? 'crossing' : 'moving', { to: aim, next: this.leg.next });
   }
