@@ -637,9 +637,9 @@ export class Mover {
     if (this._movementGateOk(enrProtoX, enrProtoY, myProtoX, myProtoY, serverPX2, serverPY2)) {
       s.walkTo(stepCol, stepRow, { steps: 1 })
         .then(wr => { if (process.env.M59_MOVE_DEBUG !== '0')
-          console.error(`[movedbg] t3 gateOK step=(${stepCol},${stepRow}) me=(${me.col},${me.row}) walkTo=>${JSON.stringify(wr)}`); })
+          console.error(`[movedbg] t3 gateOK step=(${stepCol},${stepRow}) me=(${me.col},${me.row}) walkTo=>${wr ? JSON.stringify(wr, null, 0) : 'null'}`); })
         .catch(e => { if (process.env.M59_MOVE_DEBUG !== '0')
-          console.error(`[movedbg] t3 gateOK step=(${stepCol},${stepRow}) ERR ${e.message}`); });
+          console.error(`[movedbg] t3 gateOK step=(${stepCol},${stepRow}) ERR ${e?.message}`); });
       this._recordReport(enrProtoX, enrProtoY);
     } else {
       if (process.env.M59_MOVE_DEBUG !== '0')
