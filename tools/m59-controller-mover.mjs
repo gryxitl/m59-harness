@@ -515,6 +515,7 @@ export class ControllerMover {
       } else {
         console.error(`[ctlmover] ${this._agent} airlock released: position confirmed in room ${this._room}`
           + ` (${Math.round((Date.now() - this._airlock.since) / 100) / 10}s after the crossing)`);
+        console.error(`  DIAG airlock-release: c.self=(${_c?.self?.col},${_c?.self?.row}) _lastContentsRoom=${_c?._lastContentsRoom} _lastMoveRoom=${_c?._lastMoveRoom}`);
         this._airlock = null;
         // Fall through: ctl.x is null (cleared on entry), so the adoption
         // below picks up the confirmed position.
@@ -698,6 +699,7 @@ export class ControllerMover {
       // (41,27) in room 586, arrived at (4,58) in room 50, the resync
       // adopted (41,27), the divergence check snapped 48 tiles later.
       this._airlock = { from: this._room, to: roomNow, since: Date.now() };
+      console.error(`  DIAG room-change: c.self=(${c.self?.col},${c.self?.row}) _lastMoveRoom=${c._lastMoveRoom} _lastContentsRoom=${c._lastContentsRoom} room.id=${c.room?.id} objects=${c.room?.objects?.size} selfId=${c.selfId}`);
       return { state: 'airlock' };
     }
 
@@ -721,12 +723,17 @@ export class ControllerMover {
     // detected the only way it honestly can be — by a jump we could not have walked.
     if (this.ctl.x == null) {
       // ROOM RESYNC: after a room change, don't syncFrom until we've seen
-      // a BP_MOVE in the new room. BP_PLAYER sets the new room ID but
-      // doesn't update self's position. The arrival position arrives in
-      // the next BP_MOVE. Until then, self still has the old room's
-      // coordinates. The client tracks this via c._lastMoveRoom.
-      if (this._room != null && c._lastMoveRoom != null
-          && Number(c._lastMoveRoom) !== Number(this._room)) {
+      // a BP_ROOM_CONTENTS (or BP_MOVE) in the new room. BP_PLAYER sets the
+      // new room ID but doesn't update self's position. The arrival position
+      // arrives in BP_ROOM_CONTENTS (our character object, at the arrival
+      // square). BP_MOVE is a periodic echo that may not come at all if the
+      // character is standing still. So confirm on room contents first,
+      // with BP_MOVE as a fallback.
+      const confirmed = (c._lastContentsRoom != null
+          && Number(c._lastContentsRoom) === Number(this._room))
+        || (c._lastMoveRoom != null
+          && Number(c._lastMoveRoom) === Number(this._room));
+      if (this._room != null && !confirmed) {
         return { state: 'resync-wait' };
       }
       // DIAGNOSTIC: if we are about to adopt a position that is a go-exit
