@@ -517,8 +517,23 @@ export class ControllerMover {
           + ` (${Math.round((Date.now() - this._airlock.since) / 100) / 10}s after the crossing)`);
         console.error(`  DIAG airlock-release: c.self=(${_c?.self?.col},${_c?.self?.row}) _lastContentsRoom=${_c?._lastContentsRoom} _lastMoveRoom=${_c?._lastMoveRoom}`);
         this._airlock = null;
-        // Fall through: ctl.x is null (cleared on entry), so the adoption
-        // below picks up the confirmed position.
+        // BAD ARRIVAL CHECK: the position is now confirmed (BP_ROOM_CONTENTS
+        // or BP_MOVE). If it has no floor, the server placed us in a bad spot
+        // (util.kod skips ReqSomethingMoved for &User). Delegate to the
+        // fallback with a destination (nearest walkable square) so its
+        // walkTo recovery can fire.
+        const _me = _c?.self;
+        const _geo = this._geo();
+        if (_me && _geo?.walkable && !_geo.walkable(_me.row, _me.col)) {
+          const _near = _geo.nearestWalkable?.(_me.row, _me.col, { maxRadius: 12 });
+          console.error(`[ctlmover] ${this._agent} BAD ARRIVAL: position (${_me.col},${_me.row}) in room ${this._room} has no floor${_near ? ` — nearest walkable (${_near.col},${_near.row})` : ''}`);
+          this.stats.badArrivals = (this.stats.badArrivals ?? 0) + 1;
+          if (_near) {
+            try { this.fallback?.to?.(_near.col, _near.row); } catch { /* best effort */ }
+          }
+          return this._delegate(_me, 'bad arrival (no floor)');
+        }
+        // Fall through: the position is valid, continue with normal movement.
       }
     }
     // TELEPORT / DIVERGENCE CORRECTION BEFORE the resting early return.
