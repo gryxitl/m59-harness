@@ -534,6 +534,16 @@ export class ControllerMover {
           return this._delegate(_me, 'bad arrival (no floor)');
         }
         // Fall through: the position is valid, continue with normal movement.
+        // FORCE-ADOPT THE SERVER'S POSITION. The airlock held all movement,
+        // but ctl.x still has the OLD room's position (ctl.clear() doesn't
+        // clear x). The adoption block below (if ctl.x == null) is skipped
+        // because x is not null. So the server's new position is never
+        // adopted, and the motion path is calculated from the old position
+        // in the new room. Fix: syncFrom the server's position now.
+        if (_me && _me.col != null) {
+          this.ctl.syncFrom(_me);
+          console.error(`  DIAG airlock-adopt: ctl.x synced to server (${_me.col},${_me.row})`);
+        }
       }
     }
     // TELEPORT / DIVERGENCE CORRECTION BEFORE the resting early return.
