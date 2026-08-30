@@ -761,6 +761,8 @@ export class ControllerMover {
       // from there. The divergence check will snap us to the server's position
       // if it disagrees, but at least we're not starting inside a wall.
       const geo = this._geo();
+      // DIAG: log the geometry state at adoption time
+      console.error(`  DIAG adoption: geo=${geo ? 'yes' : 'no'} collisionReady=${geo?.collisionReady} walkable=${geo?.walkable ? geo.walkable(me.row, me.col) : 'no method'} me=(${me.col},${me.row})`);
       if (geo?.walkable && !geo.walkable(me.row, me.col)) {
         const near = geo.nearestWalkable?.(me.row, me.col, { maxRadius: 12 });
         console.error(`[ctlmover] ${this._agent} BAD ARRIVAL: server position (${me.col},${me.row}) in room ${this._room} has no floor${near ? ` — nearest walkable (${near.col},${near.row})` : ' — no nearby walkable square'}`);
