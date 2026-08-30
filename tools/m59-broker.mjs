@@ -10823,6 +10823,11 @@ const TOOLS = [
           // What it is up to, in the words a person would use. `time` says which
           // bucket the seconds landed in; this says what is happening.
           activity: (s instanceof KeeperProxy) ? s.activity() : (ap ? ap.activity() : 'no keeper'),
+          // WHERE THE CHARACTER ACTUALLY IS, and where it is trying to go.
+          // From the keeper's /state endpoint (pos, path, dest).
+          pos: s._state?.pos ?? null,
+          path: s._state?.path ?? null,
+          dest: s._state?.dest ?? null,
           // PUBLISHED ON THE ROW so that waiting for the fleet to park is ONE call
           // rather than one per character. m59-update.mjs polls this every few seconds
           // across twenty-one characters, and twenty-one `autopilot status` calls a

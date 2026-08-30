@@ -422,6 +422,11 @@ function state() {
     // thing a livelock cannot fake.
     stalled: stallVerdict(),
     room: room ? { name: c?.rsc?.get?.(room.nameRsc) ?? room.name, num: room.num } : null,
+    // WHERE THE CHARACTER ACTUALLY IS, and where it is trying to go.
+    // Without these, a stuck character looks identical to a resting one.
+    pos: c?.self ? { col: c.self.col, row: c.self.row } : null,
+    path: session._router?.leg ? { standOn: session._router.leg.standOn, toRoom: session._router.leg.toRoom } : null,
+    dest: session._router?.dest ?? null,
     hp: v.health ? { value: v.health.value, max: v.health.max } : null,
     vigor: v.vigor ? { value: v.vigor.value, max: v.vigor.max } : null,
     mana: v.mana ? { value: v.mana.value, max: v.mana.max } : null,
