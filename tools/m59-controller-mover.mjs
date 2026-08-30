@@ -738,14 +738,39 @@ export class ControllerMover {
       }
       // FLOOR CHECK: the server's arrival position may be invalid — inside a
       // wall, on a dead-end ledge, or off the grid entirely. The server's edge
-      // exit / go exit arrival table is not always correct. Log it so we can
-      // track how often this happens. We still adopt the position (the server
-      // has the character there), but the decider's unwedge/escape_pocket will
-      // detect the stuck state and try to blink.
+      // exit / go exit arrival table is not always correct. The server does NOT
+      // validate user positions against room geometry (util.kod: UtilGoToSquare
+      // skips ReqSomethingMoved for &User), so a bad arrival position is
+      // accepted unconditionally.
+      //
+      // If the position has no floor, find the nearest walkable square and
+      // adopt THAT instead. The server has the character at the bad position,
+      // but our controller can start from the nearest valid square and walk
+      // from there. The divergence check will snap us to the server's position
+      // if it disagrees, but at least we're not starting inside a wall.
       const geo = this._geo();
       if (geo?.walkable && !geo.walkable(me.row, me.col)) {
-        console.error(`[ctlmover] ${this._agent} BAD ARRIVAL: position (${me.col},${me.row}) in room ${this._room} has no floor — adopting anyway, unwedge will handle it`);
-        this.stats.badArrivals = (this.stats.badArrivals ?? 0) + 1;
+        const near = geo.nearestWalkable?.(me.row, me.col, { maxRadius: 12 });
+        if (near) {
+          console.error(`[ctlmover] ${this._agent} BAD ARRIVAL: server position (${me.col},${me.row}) in room ${this._room} has no floor — sending raw move to nearest walkable (${near.col},${near.row})`);
+          this.stats.badArrivals = (this.stats.badArrivals ?? 0) + 1;
+          // Adopt the server's position (so we match the server), but
+          // immediately send a raw move to the nearest walkable square.
+          // The server accepts user moves unconditionally (util.kod skips
+          // ReqSomethingMoved for &User), so this will work even from
+          // inside a wall.
+          this.ctl.syncFrom(me);
+          try {
+            c.moveToSquare?.(near.col, near.row, 0, c.room?.id);
+            console.error(`[ctlmover] ${this._agent} raw move sent to (${near.col},${near.row})`);
+          } catch (e) {
+            console.error(`[ctlmover] ${this._agent} raw move failed: ${e.message}`);
+          }
+          return { state: 'resync' };
+        } else {
+          console.error(`[ctlmover] ${this._agent} BAD ARRIVAL: position (${me.col},${me.row}) in room ${this._room} has no floor and no nearby walkable square — adopting anyway, unwedge will handle it`);
+          this.stats.badArrivals = (this.stats.badArrivals ?? 0) + 1;
+        }
       }
       // DIAGNOSTIC: if we are about to adopt a position that is a go-exit
       // staging square in the current room, log the full state. This is
