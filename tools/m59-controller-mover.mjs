@@ -751,26 +751,17 @@ export class ControllerMover {
       const geo = this._geo();
       if (geo?.walkable && !geo.walkable(me.row, me.col)) {
         const near = geo.nearestWalkable?.(me.row, me.col, { maxRadius: 12 });
+        console.error(`[ctlmover] ${this._agent} BAD ARRIVAL: server position (${me.col},${me.row}) in room ${this._room} has no floor${near ? ` — nearest walkable (${near.col},${near.row})` : ' — no nearby walkable square'}`);
+        this.stats.badArrivals = (this.stats.badArrivals ?? 0) + 1;
+        this.ctl.syncFrom(me);
         if (near) {
-          console.error(`[ctlmover] ${this._agent} BAD ARRIVAL: server position (${me.col},${me.row}) in room ${this._room} has no floor — sending raw move to nearest walkable (${near.col},${near.row})`);
-          this.stats.badArrivals = (this.stats.badArrivals ?? 0) + 1;
-          // Adopt the server's position (so we match the server), but
-          // immediately send a raw move to the nearest walkable square.
-          // The server accepts user moves unconditionally (util.kod skips
-          // ReqSomethingMoved for &User), so this will work even from
-          // inside a wall.
-          this.ctl.syncFrom(me);
-          try {
-            c.moveToSquare?.(near.col, near.row, 0, c.room?.id);
-            console.error(`[ctlmover] ${this._agent} raw move sent to (${near.col},${near.row})`);
-          } catch (e) {
-            console.error(`[ctlmover] ${this._agent} raw move failed: ${e.message}`);
-          }
-          return { state: 'resync' };
-        } else {
-          console.error(`[ctlmover] ${this._agent} BAD ARRIVAL: position (${me.col},${me.row}) in room ${this._room} has no floor and no nearby walkable square — adopting anyway, unwedge will handle it`);
-          this.stats.badArrivals = (this.stats.badArrivals ?? 0) + 1;
+          // Give the fallback mover a destination: the nearest walkable
+          // square. Its walkTo will detect the no-floor start and use
+          // its three-stage recovery (stepFine, walkFine) to get the
+          // character there.
+          try { this.fallback?.to?.(near.col, near.row); } catch { /* best effort */ }
         }
+        return this._delegate(me, 'bad arrival (no floor)');
       }
       // DIAGNOSTIC: if we are about to adopt a position that is a go-exit
       // staging square in the current room, log the full state. This is
