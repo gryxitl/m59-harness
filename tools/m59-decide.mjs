@@ -1340,42 +1340,44 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             // find any path), which is handled elsewhere. Here we just try
             // to escape the stall (walk to an open neighbor / blink) and keep
             // the same target.
-            // Check the 4 neighbors for an open square.
+            // Check the 8 neighbors for an open square, using the server's own
+            // per-direction adjacency bits (openDirections). This is the same test
+            // the `entombed` predicate uses: 0 of 8 directions open means the body
+            // cannot take a single step, and blink is the only thing that moves it.
+            // 1 or more directions open means the character is in navigable ground
+            // and should WALK, not freeze for a blink that might fizzle.
             const geo = session._roomGeo ?? null;
-            const dirs = [[0,-1],[0,1],[-1,0],[1,0]]; // N,S,W,E
-            let escape = null;
-            if (geo) {
-              for (const [dc, dr] of dirs) {
-                const nc = me.col + dc, nr = me.row + dr;
-                const f = geo.fineWalkable ? geo.fineWalkable(nr, nc) : undefined;
-                const s = geo.standable ? geo.standable(nr, nc) : undefined;
-                // Valid if either says true, or no data.
-                if (f === true || s === true || (f === undefined && s === undefined)) {
-                  escape = { col: nc, row: nr };
-                  break;
-                }
+            const openDirs = geo?.openDirections?.(me.row, me.col) ?? [];
+            if (openDirs.length > 0) {
+              // Navigable: walk in the first open direction. Prefer the direction
+              // away from the current target (if any), so the walk is also an escape.
+              const t = _lastTargetId != null && objs instanceof Map ? objs.get(_lastTargetId) : null;
+              let best = openDirs[0];
+              if (t?.col != null && openDirs.length > 1) {
+                const away = Math.atan2(me.row - t.row, me.col - t.col) * 180 / Math.PI;
+                best = openDirs.reduce((a, b) => {
+                  const da = Math.abs(((a.deg - away + 540) % 360) - 180);
+                  const db = Math.abs(((b.deg - away + 540) % 360) - 180);
+                  return db < da ? b : a;
+                });
               }
-            }
-            if (escape) {
-              // Walk to the open neighbor.
-              act.walk?.(escape.col, escape.row) ?? c.moveToSquare?.(escape.col, escape.row, 18);
+              const nc = me.col + best.dc, nr = me.row + best.dr;
+              act.walk?.(nc, nr) ?? c.moveToSquare?.(nc, nr, 18);
               onDecision?.({ ticks, goal: 'unstuck', action: 'walk',
-                what: `stuck at (${me.col},${me.row}), walking to open square (${escape.col},${escape.row})`, sent: true });
+                what: `stuck at (${me.col},${me.row}), walking ${best.name ?? ''} to (${nc},${nr})`, sent: true });
               _lastPosAt = now(); // reset timer
               return;
             }
-            // No open neighbor: blink as last resort — but ONLY when not being hit.
-            // A blink needs concentration, and an incoming attack breaks it. Casting
-            // while fleeing wastes mana and ten seconds of standing still. When the
-            // health trail shows damage, keep walking (the router is already moving
-            // the character toward an exit); do not freeze for a cast that will fizzle.
+            // 0 of 8 directions open: genuinely entombed. Blink is the only thing
+            // that moves a body out of geometry. But NOT while being hit — a blink
+            // needs concentration, and an incoming attack breaks it.
             const hpTrail = session?._hpTrail;
             const beingHit = Array.isArray(hpTrail) && hpTrail.length >= 2 &&
               (hpTrail[hpTrail.length - 2] - hpTrail[hpTrail.length - 1]) >= 2;
             if (beingHit) {
               onDecision?.({ ticks, goal: 'unstuck', action: null,
-                what: `stuck at (${me.col},${me.row}) but being hit — walking, not blinking`, sent: false });
-              _lastPosAt = now(); // reset: don't re-fire every 30s while fleeing
+                what: `entombed at (${me.col},${me.row}) but being hit — cannot blink, waiting`, sent: false });
+              _lastPosAt = now(); // reset: don't re-fire every 30s
               return;
             }
             const blink = (c.spells ?? []).find(sp => {
@@ -2310,8 +2312,40 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             }
           }
         } catch { /* fall through */ }
-        // Already routing to an exit: keep going.
+        // Already routing to an exit: keep going. If the router is stuck
+        // (no valid exit, re-routing, blocked), the character must not stand
+        // still taking hits. Walk away from the nearest mob — no swinging,
+        // just run. A swing interrupts the walk and slows the escape.
         const r = routeIntent(router)(frame, act);
+        if (r.state === 'no-route' || r.state === 'blocked' || r.why?.includes('unusable') || r.why?.includes('re-routing')) {
+          // Router is stuck: run away from the nearest hostile.
+          const me = frame?.position ?? client?.self;
+          const objs = client?.room?.objects;
+          if (me?.col != null && objs instanceof Map) {
+            let nearest = null, nd = Infinity;
+            for (const o of objs.values()) {
+              if (o.is_self || o.col == null || o.row == null) continue;
+              const nm = String(client.rsc?.get?.(o.nameRsc) ?? o.name ?? '').toLowerCase();
+              if (!nm || /shilling|gold|mace|sword|food|mushroom|bone|skull|lever|brazier|target|jump|look|fight|dead/.test(nm)) continue;
+              const d = Math.hypot(o.col - me.col, o.row - me.row);
+              if (d < nd) { nd = d; nearest = o; }
+            }
+            if (nearest && nd < 20) {
+              // Walk directly away from the nearest hostile.
+              const dc = Math.sign(me.col - nearest.col) || 1;
+              const dr = Math.sign(me.row - nearest.row) || 1;
+              const dest = { col: me.col + dc * 5, row: me.row + dr * 5 };
+              act.walk?.(dest.col, dest.row) ?? client.moveToSquare?.(dest.col, dest.row, 18);
+              onDecision?.({ ticks, goal: 'flee_danger', action: 'run',
+                what: `flee stuck (${r.why ?? r.state}), running from ${nearest.name ?? 'mob'} at (${nearest.col},${nearest.row})`, sent: true });
+              return;
+            }
+          }
+          // No nearby hostile to run from: keep trying the router.
+          onDecision?.({ ticks, goal: 'flee_danger', action: 'travel',
+            what: r.what ?? r.why, sent: r.sent });
+          return;
+        }
         onDecision?.({ ticks, goal: 'flee_danger', action: 'travel',
           what: r.what ?? r.why, sent: r.sent });
         return;
