@@ -624,7 +624,19 @@ export class ControllerMover {
 
     const geo = this._geo();
     // A room we cannot collide in is a room the controller has no business steering in.
-    if (!geo?.collisionReady) return this._delegate(posOverride, 'no collision geometry');
+    // If the position also has no floor, give the fallback a destination (the
+    // nearest walkable square) so its walkTo recovery can fire.
+    if (!geo?.collisionReady) {
+      if (geo?.walkable && me && !geo.walkable(me.row, me.col)) {
+        const near = geo.nearestWalkable?.(me.row, me.col, { maxRadius: 12 });
+        if (near) {
+          console.error(`[ctlmover] ${this._agent} BAD ARRIVAL (no geo): position (${me.col},${me.row}) has no floor — delegating with dest (${near.col},${near.row})`);
+          this.stats.badArrivals = (this.stats.badArrivals ?? 0) + 1;
+          try { this.fallback?.to?.(near.col, near.row); } catch { /* best effort */ }
+        }
+      }
+      return this._delegate(posOverride, 'no collision geometry');
+    }
 
     // A ROOM CHANGE INVALIDATES EVERYTHING WE BELIEVE.
     //
