@@ -541,19 +541,12 @@ export const INTENTS = {
   // in-flight errands.
   escape_pocket: (f, act, ctx) => {
     const s = ctx.session;
-    if (s?._escapeInFlight) return { sent: false, why: 'a reconnect is already in flight' };
-    // A RECONNECT THAT JUST HAPPENED HAS ALREADY BEEN TRIED. The server places a
-    // reconnecting character at their saved position without checking geometry for
-    // users, so a body wedged inside a wall comes back wedged — the reconnect is not
-    // a cure, it is a repetition. Without this cooldown the decider re-logged the
-    // character in and out every few seconds for hours (JayB, Familiars, 2026-08-29:
-    // blink refused at low mana, then a fresh login on every unwedge tick). The
-    // post-rejoin blink in m59-keeper-process.mjs /rejoin is what gets the body out;
-    // this just keeps the door from being kicked while it works.
+    if (s?._escapeInFlight) return { sent: false, why: 'an escape is already in flight' };
+    // COOLDOWN: don't re-blink every tick. Blink costs mana and takes
+    // several seconds. 120s is plenty for the relocation to take effect.
     if (Date.now() - (s?._lastEscapeAt ?? 0) < 120_000) {
-      return { sent: false, why: 'just reconnected; waiting for the lift to work' };
+      return { sent: false, why: 'just escaped; waiting for the relocation to work' };
     }
-    if (typeof s?.rejoin !== 'function') return { sent: false, why: 'this session cannot rejoin' };
     s._lastEscapeAt = Date.now();
     s._escapeInFlight = true;
     import('./m59-act/escape-pocket.mjs')
@@ -561,7 +554,7 @@ export const INTENTS = {
       .then(r => console.error(`[escape] ${s?.name ?? 'keeper'}: ${r?.what ?? r?.reason}`))
       .catch(e => console.error(`[escape] ${s?.name ?? 'keeper'} err: ${e.message}`))
       .finally(() => { s._escapeInFlight = false; });
-    return { sent: true, what: 'reconnecting — this room has no reachable exit' };
+    return { sent: true, what: 'blinking to escape pocket' };
   },
   travel_to_hunt_room: (f, act, ctx) => {
     const s = ctx.session;
