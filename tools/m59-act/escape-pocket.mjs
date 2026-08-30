@@ -12,15 +12,17 @@
 // Deliberately expensive: it costs the session, the entry grace period and several seconds
 // of play, so the planner reaches for it only when nothing cheaper achieves `can_leave`.
 export async function escapePocket(client, session) {
-  if (typeof session?.rejoin !== 'function') {
-    return { sent: false, reason: 'this session cannot rejoin' };
-  }
-  try {
-    await session.rejoin();
-    return { sent: true, what: 'reconnected to escape a room with no reachable exit' };
-  } catch (e) {
-    return { sent: false, reason: `rejoin failed: ${e?.message ?? e}` };
-  }
+  // A RECONNECT DOES NOT ESCAPE A POCKET. The server places a reconnecting
+  // character at their saved position without checking geometry for users,
+  // so a body on a dead-end ledge comes back on the same ledge. The reconnect
+  // is not a cure, it is a repetition — and it triggers the broker's rejoin
+  // loop, which respawns the keeper and rejoins the character at the same
+  // spot, over and over.
+  //
+  // The real fix is to move the character to a reachable position (blink, or
+  // walk to the nearest floor that has a path to an exit). Until that is
+  // implemented, do nothing: staying stuck is better than a reconnect loop.
+  return { sent: false, reason: 'reconnect does not escape a pocket; staying put' };
 }
 escapePocket.pre     = [];
 escapePocket.effects = ['can_leave'];
