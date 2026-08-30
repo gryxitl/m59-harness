@@ -550,10 +550,9 @@ export class ControllerMover {
     const roomNow = c.room?.id ?? this.session?.world?.room?.num ?? null;
     if (roomNow !== this._room) {
       if (this._room !== null) {
-        console.error(`[ctlmover] ${this._agent} room ${this._room} -> ${roomNow}: resyncing position, dropping the plan`);
+        console.error(`[ctlmover] ${this._agent} room ${this._room} -> ${roomNow}: dropping the plan, waiting for BP_MOVE`);
         this.stats.roomResyncs = (this.stats.roomResyncs || 0) + 1;
       }
-      const oldRoomNum = this._room;
       this._room = roomNow;
       this.ctl.clear();
       this._plannedFor = null;
@@ -567,37 +566,29 @@ export class ControllerMover {
       // room's geometry. The path is garbage, and the character is walked to
       // the wrong place — effectively skipping ahead an extra zone.
       try { this.fallback?.clear?.(); } catch { /* best effort */ }
-      // A GO-EXIT TELEPORTS THE CHARACTER TO A SPECIFIC SQUARE IN THE NEW ROOM.
-      // The exit data carries arriveRow/arriveCol. On the first tick after the
-      // room changes, c.self still has the OLD room's position (the staging
-      // square) — the server's arrival position hasn't been processed yet. If
-      // we adopt the stale position, the character is placed at the staging
-      // square's coordinates in the NEW room, which is a completely different
-      // location. JayB, Main gate to Tos -> Streets of Tos, 2026-08-29: staged
-      // at (41,27) in room 586, arrived at (4,58) in room 50, the resync
-      // adopted (41,27), the divergence check snapped 48 tiles later.
+      // DO NOT ADOPT THE POSITION ON A ROOM CHANGE.
       //
-      // The fix: if the current position matches a go-exit's staging square in
-      // the OLD room (oldRoomNum, NOT this._room which is already the new room),
-      // do NOT adopt it. Leave ctl.x null so the next tick's syncFrom(me) picks
-      // up the server's arrival position once it arrives.
-      const meNow = c?.self;
-      if (meNow?.col != null && oldRoomNum != null) {
-        const map = this.session?.world?.map;
-        const oldRoom = map?.rooms?.[String(oldRoomNum)];
-        const goExits = oldRoom?.goExits ?? [];
-        const isStaging = goExits.some(e =>
-          e.col == meNow.col && e.row == meNow.row && e.to != null && !e.locked);
-        if (isStaging) {
-          console.error(`[ctlmover] ${this._agent} room change at go-exit staging square`);
-          console.error(`  (${meNow.col},${meNow.row}) in old room ${oldRoomNum} — NOT adopting, waiting for server arrival position`);
-          // Leave ctl.x null: the next tick's syncFrom(me) will adopt the
-          // server's position once it arrives. Do NOT call syncFrom here.
-          return { state: 'resync' };
-        }
-      }
-      // Not at a go-exit staging square: adopt the current position normally.
-      this.ctl.x = null;                 // forces syncFrom(me) below
+      // BP_PLAYER sets the new room ID but does NOT update self's position.
+      // The arrival position arrives in the next BP_MOVE. Between BP_PLAYER
+      // and BP_MOVE, self still has the OLD room's position (the staging
+      // square for a go-exit, or the last walked position for an edge exit).
+      //
+      // If we adopt that stale position (syncFrom(me)), the character is
+      // placed at the old room's coordinates in the NEW room, which is a
+      // completely different location. JayB, Main gate to Tos -> Streets of
+      // Tos: staged at (41,27) in room 586, arrived at (4,58) in room 50,
+      // the resync adopted (41,27), the divergence check snapped 48 tiles
+      // later. Gountrug, Lee, Sasquatch, and JayB were all found at go-exit
+      // staging squares in the wrong room.
+      //
+      // The fix: leave ctl.x null. The next tick's syncFrom(me) will adopt
+      // the position once BP_MOVE has updated self to the arrival position.
+      // The divergence check (TELEPORT_SQUARES) will snap if the gap is
+      // large enough, but by then the position is the correct one.
+      //
+      // This is what the real client does: it just waits for BP_MOVE.
+      // There is no intermediate "resync" step.
+      return { state: 'resync' };
     }
 
     const now = Date.now();
