@@ -585,7 +585,7 @@ export class ControllerMover {
       // syncFrom(me) — even though ctl.x is null. By then, BP_MOVE will
       // have arrived and self will have the correct arrival position.
       // This is what the real client does: it just waits for BP_MOVE.
-      this._roomResyncWait = 3;
+      this._roomResyncWait = 15;
       return { state: 'resync' };
     }
 
