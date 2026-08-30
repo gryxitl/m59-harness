@@ -736,6 +736,17 @@ export class ControllerMover {
       if (this._room != null && !confirmed) {
         return { state: 'resync-wait' };
       }
+      // FLOOR CHECK: the server's arrival position may be invalid — inside a
+      // wall, on a dead-end ledge, or off the grid entirely. The server's edge
+      // exit / go exit arrival table is not always correct. Log it so we can
+      // track how often this happens. We still adopt the position (the server
+      // has the character there), but the decider's unwedge/escape_pocket will
+      // detect the stuck state and try to blink.
+      const geo = this._geo();
+      if (geo?.walkable && !geo.walkable(me.row, me.col)) {
+        console.error(`[ctlmover] ${this._agent} BAD ARRIVAL: position (${me.col},${me.row}) in room ${this._room} has no floor — adopting anyway, unwedge will handle it`);
+        this.stats.badArrivals = (this.stats.badArrivals ?? 0) + 1;
+      }
       // DIAGNOSTIC: if we are about to adopt a position that is a go-exit
       // staging square in the current room, log the full state. This is
       // the symptom of the room-transition bug: the character was placed
