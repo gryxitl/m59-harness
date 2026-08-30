@@ -973,7 +973,7 @@ try { appendFileSync('/tmp/route-debug-t4.log', `PLAN ${here} dest=${this.dest} 
       // a path back through the same exit, and repeats. Just wait: the guard expires
       // in 2 seconds and the next tick plans normally.
       if (this._lastCrossed && Number(this._lastCrossed.to) === Number(here)
-          && t - this._lastCrossed.at < 2000) {
+          && t - this._lastCrossed.at < 5000) {
         return this._say('re-cross-guard', { why: `just crossed into ${here} from ${this._lastCrossed.from}; waiting` });
       }
       const r = this._planLeg(here);

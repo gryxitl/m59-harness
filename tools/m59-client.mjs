@@ -1323,6 +1323,17 @@ export class M59Client {
           o.appearanceRevision = ++this.appearanceRevision;
           return [o.id, o];
         }));
+        // A ROOM CHANGE IS ANNOUNCED BY BP_PLAYER + BP_ROOM_CONTENTS, NOT BY
+        // BP_MOVE. The arrival position is in the room contents (our character
+        // object, at the arrival square), not in a BP_MOVE. BP_MOVE is a
+        // periodic echo (~1/sec) that may not come at all if the character is
+        // standing still. So the airlock confirms on room contents, not on
+        // BP_MOVE: once we've seen the contents for the new room (which
+        // includes our character at the arrival position), the position is
+        // confirmed.
+        if (this.room.objects.has(this.selfId)) {
+          this._lastContentsRoom = this.room.id;
+        }
         // SELF-HEAL A STALE selfId. selfId is set only by the BP.PLAYER packet (one per
         // room entry), and if it ever goes stale — the object map is rebuilt, an id is
         // reassigned — `self` resolves to undefined and the character is BLIND: no

@@ -486,8 +486,18 @@ export class ControllerMover {
     // room. The airlock is set in the room-change block below and released
     // once c._lastMoveRoom confirms a BP_MOVE in the new room.
     if (this._airlock) {
-      const confirmed = _c?._lastMoveRoom != null
-        && Number(_c._lastMoveRoom) === Number(this._room);
+      // A ROOM CHANGE IS ANNOUNCED BY BP_PLAYER + BP_ROOM_CONTENTS, NOT BY
+      // BP_MOVE. The arrival position is in the room contents (our character
+      // object, at the arrival square). BP_MOVE is a periodic echo that may
+      // not come at all if the character is standing still. So confirm on
+      // room contents: once we've seen the contents for the new room (which
+      // includes our character at the arrival position), the position is
+      // confirmed. Fall back to _lastMoveRoom if contents never include us
+      // (shouldn't happen, but belt-and-braces).
+      const confirmed = (_c?._lastContentsRoom != null
+          && Number(_c._lastContentsRoom) === Number(this._room))
+        || (_c?._lastMoveRoom != null
+          && Number(_c._lastMoveRoom) === Number(this._room));
       if (!confirmed) {
         // Safety valve: if the server never confirms (BP_MOVE lost, object
         // map stuck), do not hold forever. After 5s, release and let the
@@ -496,6 +506,7 @@ export class ControllerMover {
         // is not.
         if (Date.now() - this._airlock.since > 5000) {
           console.error(`[ctlmover] ${this._agent} airlock timeout after 5s — releasing with unconfirmed position`);
+          console.error(`  DIAG: _lastMoveRoom=${_c?._lastMoveRoom} this._room=${this._room} room.id=${_c?.room?.id} self=(${_c?.self?.col},${_c?.self?.row}) selfId=${_c?.selfId} objects=${_c?.room?.objects?.size}`);
           this._airlock = null;
           // Fall through to the room-change block, which will adopt.
         } else {
