@@ -581,11 +581,11 @@ export class ControllerMover {
       // later. Gountrug, Lee, Sasquatch, and JayB were all found at go-exit
       // staging squares in the wrong room.
       //
-      // The fix: set a wait counter. For the next 3 ticks, do NOT call
-      // syncFrom(me) — even though ctl.x is null. By then, BP_MOVE will
-      // have arrived and self will have the correct arrival position.
+      // The fix: event-driven, not time-based. The client tracks the room
+      // we last saw a BP_MOVE in (c._lastMoveRoom). On a room change, do
+      // NOT adopt the position until we've seen a BP_MOVE in the new room.
       // This is what the real client does: it just waits for BP_MOVE.
-      this._roomResyncWait = 20;
+      // No fixed timeout — works regardless of how long BP_MOVE takes.
       return { state: 'resync' };
     }
 
@@ -608,12 +608,13 @@ export class ControllerMover {
     // get unstuck), a portal, a death. That is moveobj.c:88 -> ServerMovedPlayer, and it is
     // detected the only way it honestly can be — by a jump we could not have walked.
     if (this.ctl.x == null) {
-      // ROOM RESYNC WAIT: after a room change, don't syncFrom for a few
-      // ticks. BP_MOVE hasn't arrived yet, and self still has the old
-      // room's position. Adopting it places the character at the wrong
-      // spot in the new room.
-      if (this._roomResyncWait > 0) {
-        this._roomResyncWait--;
+      // ROOM RESYNC: after a room change, don't syncFrom until we've seen
+      // a BP_MOVE in the new room. BP_PLAYER sets the new room ID but
+      // doesn't update self's position. The arrival position arrives in
+      // the next BP_MOVE. Until then, self still has the old room's
+      // coordinates. The client tracks this via c._lastMoveRoom.
+      if (this._room != null && c._lastMoveRoom != null
+          && Number(c._lastMoveRoom) !== Number(this._room)) {
         return { state: 'resync-wait' };
       }
       this.ctl.syncFrom(me);

@@ -1400,7 +1400,16 @@ export class M59Client {
         // Our own moves confirm what the server accepted, which is the only
         // trustworthy position — dead reckoning drifts and illegal moves are
         // simply refused with no reply.
-        if (res.id === this.selfId) { this.emit('moved', { col: res.col, row: res.row }); break; }
+        if (res.id === this.selfId) {
+          // Track the room we last saw a BP_MOVE in. The ControllerMover uses
+          // this to know when it's safe to adopt the position after a room
+          // change: BP_PLAYER sets the new room ID but doesn't update self's
+          // position. The arrival position arrives in the next BP_MOVE. Until
+          // we've seen a BP_MOVE in the new room, self still has the old
+          // room's coordinates.
+          this._lastMoveRoom = this.room.id;
+          this.emit('moved', { col: res.col, row: res.row }); break;
+        }
         // SOMEBODY ELSE MOVED, and until now nothing could see it.
         //
         // The room map was being updated from these packets and the fact of the move was
