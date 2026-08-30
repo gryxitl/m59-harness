@@ -149,6 +149,13 @@ export class Router {
     this._lastOscAim = null;       // the aim that used up its one free dead window
     this._noMovePos = null;        // position we last saw while trying to walk
     this._noMoveSince = 0;         // wall-clock ms when the position stopped changing
+    // RE-CROSS GUARD. After crossing a go-exit into room X, do not plan a leg back
+    // to the room we just left for 2 seconds. This breaks the oscillation loop where
+    // the character crosses an exit, ends up in geometry, the router re-plans a path
+    // back through the same exit, crosses again, and repeats. 2 seconds is short
+    // enough that legitimate back-and-forth travel is not affected.
+    this._lastCrossed = null;      // { from, to, at } — the last room crossing
+    this._prevRoom = null;          // the room we were in on the previous tick
   }
 
   to(roomNum) {
@@ -172,6 +179,7 @@ export class Router {
       this.dest = n; this.leg = null; this.mark = null; this.subWp = null; this._subWpReplans = 0;
       this._committedAim = null; this._lastOscAim = null;
       this._progress = []; this._oscillations = 0; this._badStandOn.clear();
+      this._lastCrossed = null;
     }
     return true;
   }
@@ -180,6 +188,7 @@ export class Router {
     this.dest = null; this.leg = null; this.mark = null; this.subWp = null; this._subWpReplans = 0;
     this._committedAim = null; this._lastOscAim = null;
     this._progress = []; this._oscillations = 0; this._badStandOn.clear();
+    this._lastCrossed = null;
     this.lastState = 'idle';
   }
 
@@ -946,11 +955,27 @@ try { appendFileSync('/tmp/route-debug-t4.log', `PLAN ${here} dest=${this.dest} 
       return this._say('blind', { why: 'no room or position yet' });
     }
 
+    // DETECT A ROOM CROSSING. If the room changed since the last tick, record it
+    // for the re-cross guard.
+    if (this._prevRoom != null && Number(this._prevRoom) !== Number(here)) {
+      this._lastCrossed = { from: this._prevRoom, to: here, at: t };
+    }
+    this._prevRoom = here;
+
     if (Number(here) === Number(this.dest)) { this.clear(); return this._say('arrived'); }
 
     // A ROOM CHANGE INVALIDATES THE LEG, always. Where you arrive is not where the
     // return edge is, so nothing about the old leg survives the crossing.
     if (!this.leg || Number(this.leg.fromRoom) !== Number(here)) {
+      // RE-CROSS GUARD: if we just crossed into this room (within 2 seconds), do not
+      // plan a leg back to the room we came from. This breaks the oscillation loop
+      // where the character crosses an exit, ends up in geometry, the router re-plans
+      // a path back through the same exit, and repeats. Just wait: the guard expires
+      // in 2 seconds and the next tick plans normally.
+      if (this._lastCrossed && Number(this._lastCrossed.to) === Number(here)
+          && t - this._lastCrossed.at < 2000) {
+        return this._say('re-cross-guard', { why: `just crossed into ${here} from ${this._lastCrossed.from}; waiting` });
+      }
       const r = this._planLeg(here);
       if (!r.leg) return this._say('no-route', { why: r.why });
       this.leg = r.leg;
