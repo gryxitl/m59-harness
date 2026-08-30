@@ -468,11 +468,50 @@ export class ControllerMover {
       }
       this._seenClient = _c;  // first tick: just record the client reference
     }
+    // AIRLOCK HOLD: the room changed and the server has not confirmed our
+    // position in the new room yet. NOTHING moves while the airlock is
+    // closed — no crossing requests, no delegation to the legacy mover,
+    // no resting-quiet pass, no replication. This is checked before every
+    // other branch so no code path can send a move computed in the old
+    // room. The airlock is set in the room-change block below and released
+    // once c._lastMoveRoom confirms a BP_MOVE in the new room.
+    if (this._airlock) {
+      const confirmed = _c?._lastMoveRoom != null
+        && Number(_c._lastMoveRoom) === Number(this._room);
+      if (!confirmed) {
+        // Safety valve: if the server never confirms (BP_MOVE lost, object
+        // map stuck), do not hold forever. After 5s, release and let the
+        // room-change block's adoption logic take over — a wrong position
+        // is recoverable via the divergence check; an airlocked character
+        // is not.
+        if (Date.now() - this._airlock.since > 5000) {
+          console.error(`[ctlmover] ${this._agent} airlock timeout after 5s — releasing with unconfirmed position`);
+          this._airlock = null;
+          // Fall through to the room-change block, which will adopt.
+        } else {
+          return { state: 'airlock' };
+        }
+      } else {
+        console.error(`[ctlmover] ${this._agent} airlock released: position confirmed in room ${this._room}`
+          + ` (${Math.round((Date.now() - this._airlock.since) / 100) / 10}s after the crossing)`);
+        this._airlock = null;
+        // Fall through: ctl.x is null (cleared on entry), so the adoption
+        // below picks up the confirmed position.
+      }
+    }
     // TELEPORT / DIVERGENCE CORRECTION BEFORE the resting early return.
     // A character resting HAS a fine position; if that fine position has drifted
     // > DIVERGENCE_SQUARES (6) tiles from the server's BP_MOVE echo, it will never
     // heal because the normal glazing path in step() is skipped while resting.
-    if (this.ctl.x != null && _c?.self) {
+    //
+    // SKIP THIS WHEN THE ROOM HAS CHANGED: a large gap across a room boundary
+    // is not drift, it is the distance between two rooms' coordinate systems.
+    // Snapping here would adopt the old room's coordinates in the new room and
+    // preempt the room-change block (which drops the plan, spends the crossing,
+    // and enters the airlock). Let the room-change block handle it.
+    const _roomNow2 = _c?.room?.id ?? this.session?.world?.room?.num ?? null;
+    const _roomChanged2 = this._room != null && _roomNow2 != null && _roomNow2 !== this._room;
+    if (this.ctl.x != null && _c?.self && !_roomChanged2) {
       const _me2 = _c.self;
       const _bel2 = this.ctl.square();
       const _gap2 = Math.hypot((_me2.col - _bel2.col) * CLIENT_PER_SQUARE,
@@ -613,27 +652,32 @@ export class ControllerMover {
       // room's geometry. The path is garbage, and the character is walked to
       // the wrong place — effectively skipping ahead an extra zone.
       try { this.fallback?.clear?.(); } catch { /* best effort */ }
-      // DO NOT ADOPT THE POSITION ON A ROOM CHANGE.
+      // ENTER THE AIRLOCK.
+      //
+      // A room transition is handled as an airlock: the moment the room
+      // changes, ALL movement stops. No plans, no steps, no replication,
+      // no off-room requests, no delegation. The character stands still
+      // until the server has confirmed a position in the NEW room (a
+      // BP_MOVE seen in this room, tracked by c._lastMoveRoom). Only then
+      // do we adopt the position and resume.
+      //
+      // This makes the order-of-operations bug impossible by construction:
+      // there is no window in which a move computed in the old room can be
+      // sent in the new one, because nothing sends moves while the airlock
+      // is closed. It replaces the resync-wait, the _lastMoveRoom gate,
+      // and the room-stamp guards as the primary defence; those remain as
+      // belt-and-braces.
       //
       // BP_PLAYER sets the new room ID but does NOT update self's position.
       // The arrival position arrives in the next BP_MOVE. Between BP_PLAYER
       // and BP_MOVE, self still has the OLD room's position (the staging
       // square for a go-exit, or the last walked position for an edge exit).
-      //
-      // If we adopt that stale position (syncFrom(me)), the character is
-      // placed at the old room's coordinates in the NEW room, which is a
-      // completely different location. JayB, Main gate to Tos -> Streets of
-      // Tos: staged at (41,27) in room 586, arrived at (4,58) in room 50,
-      // the resync adopted (41,27), the divergence check snapped 48 tiles
-      // later. Gountrug, Lee, Sasquatch, and JayB were all found at go-exit
-      // staging squares in the wrong room.
-      //
-      // The fix: event-driven, not time-based. The client tracks the room
-      // we last saw a BP_MOVE in (c._lastMoveRoom). On a room change, do
-      // NOT adopt the position until we've seen a BP_MOVE in the new room.
-      // This is what the real client does: it just waits for BP_MOVE.
-      // No fixed timeout — works regardless of how long BP_MOVE takes.
-      return { state: 'resync' };
+      // Adopting it places the character at the old room's coordinates in
+      // the new room. JayB, Main gate to Tos -> Streets of Tos: staged at
+      // (41,27) in room 586, arrived at (4,58) in room 50, the resync
+      // adopted (41,27), the divergence check snapped 48 tiles later.
+      this._airlock = { from: this._room, to: roomNow, since: Date.now() };
+      return { state: 'airlock' };
     }
 
     const now = Date.now();
