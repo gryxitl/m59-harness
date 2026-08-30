@@ -553,6 +553,7 @@ export class ControllerMover {
         console.error(`[ctlmover] ${this._agent} room ${this._room} -> ${roomNow}: resyncing position, dropping the plan`);
         this.stats.roomResyncs = (this.stats.roomResyncs || 0) + 1;
       }
+      const oldRoomNum = this._room;
       this._room = roomNow;
       this.ctl.clear();
       this._plannedFor = null;
@@ -572,26 +573,24 @@ export class ControllerMover {
       // square) — the server's arrival position hasn't been processed yet. If
       // we adopt the stale position, the character is placed at the staging
       // square's coordinates in the NEW room, which is a completely different
-      // location. JayB, Familiars -> Streets of Tos, 2026-08-29: staged at
-      // (8,10), arrived at (31,55), the resync adopted (8,10), the divergence
-      // check snapped 51 tiles later. The character ended up in a part of the
-      // room he should never have reached by walking.
+      // location. JayB, Main gate to Tos -> Streets of Tos, 2026-08-29: staged
+      // at (41,27) in room 586, arrived at (4,58) in room 50, the resync
+      // adopted (41,27), the divergence check snapped 48 tiles later.
       //
       // The fix: if the current position matches a go-exit's staging square in
-      // the OLD room, do NOT adopt it. Leave ctl.x null so the next tick's
-      // syncFrom(me) picks up the server's arrival position once it arrives.
-      // The divergence check (TELEPORT_SQUARES) will snap if the gap is large
-      // enough, but by then the position is the correct one.
+      // the OLD room (oldRoomNum, NOT this._room which is already the new room),
+      // do NOT adopt it. Leave ctl.x null so the next tick's syncFrom(me) picks
+      // up the server's arrival position once it arrives.
       const meNow = c?.self;
-      if (meNow?.col != null && this._room !== null) {
+      if (meNow?.col != null && oldRoomNum != null) {
         const map = this.session?.world?.map;
-        const oldRoom = map?.rooms?.[String(this._room)];
+        const oldRoom = map?.rooms?.[String(oldRoomNum)];
         const goExits = oldRoom?.goExits ?? [];
         const isStaging = goExits.some(e =>
           e.col == meNow.col && e.row == meNow.row && e.to != null && !e.locked);
         if (isStaging) {
           console.error(`[ctlmover] ${this._agent} room change at go-exit staging square`);
-          console.error(`  (${meNow.col},${meNow.row}) — NOT adopting, waiting for server arrival position`);
+          console.error(`  (${meNow.col},${meNow.row}) in old room ${oldRoomNum} — NOT adopting, waiting for server arrival position`);
           // Leave ctl.x null: the next tick's syncFrom(me) will adopt the
           // server's position once it arrives. Do NOT call syncFrom here.
           return { state: 'resync' };
