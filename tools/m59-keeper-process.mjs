@@ -1585,6 +1585,23 @@ const server = createServer(async (req, res) => {
             result = result ?? { sent: true, id, description: desc };
             break;
           }
+          case 'loot': {
+            // Pick up items from the floor. This is the method the decider's
+            // post-kill loot signal calls (session.lootFloor), and it was
+            // missing from the keeper's /action endpoint — so the broker's
+            // KeeperProxy fell through to its null-returning fallback and
+            // every post-kill loot was silently a no-op. Characters killed
+            // mobs, the drops sat on the floor, and the characters walked
+            // away with an empty purse.
+            const maxItems = Number(args.max_items) || 12;
+            try {
+              const r = await session.lootFloor({ maxItems });
+              result = { taken: r?.taken?.length ?? 0, items: r?.taken?.map(t => t?.name ?? t) ?? [], refused: r?.refused?.length ?? 0 };
+            } catch (e) {
+              result = { error: e.message };
+            }
+            break;
+          }
           default:
             result = { error: `unknown action: ${name}` };
         }

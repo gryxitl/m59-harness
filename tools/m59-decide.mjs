@@ -485,10 +485,39 @@ function combatStep(decision, f, act, ctx) {
     const agentName = session.name;
     if (!session._lastLootAt || now - session._lastLootAt > 5000) {
       session._lastLootAt = now;
-      session.lootFloor?.({ maxItems: 12 }).then(res => {
-        const taken = res?.taken?.length ?? 0;
-        if (taken) console.error(`[tick] ${agentName} looted ${taken} item(s) after kill`);
-      }).catch(e => console.error(`[tick] ${agentName} loot err: ${e.message}`));
+      // lootFloor is a Session method (m59-game.mjs). In the tick keeper the
+      // session IS a real Session, so this works. In the broker the session is
+      // a KeeperProxy that did not proxy lootFloor (it fell through to the
+      // null-returning fallback), so every post-kill loot was silently a
+      // no-op. The keeper's /action endpoint now has a 'loot' case that calls
+      // session.lootFloor directly; route through it when the direct call
+      // is unavailable (proxy) or fails.
+      const tryLoot = async () => {
+        try {
+          const res = await session.lootFloor?.({ maxItems: 12 });
+          if (res?.taken?.length) {
+            console.error(`[tick] ${agentName} looted ${res.taken.length} item(s) after kill`);
+            return;
+          }
+          if (res && !res.error) return; // genuinely nothing on the floor
+        } catch { /* proxy or missing method — fall through */ }
+        // Fallback: ask the keeper process directly (the decider runs inside
+        // the keeper, so the session IS the real Session and the direct call
+        // above should have worked; this path is for the broker-driven case).
+        try {
+          const port = process.env.M59_KEEPER_PORT ?? null;
+          if (port) {
+            const resp = await fetch(`http://127.0.0.1:${port}/action`, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ name: 'loot', args: { max_items: 12 } }),
+              signal: AbortSignal.timeout(15000),
+            });
+            const j = await resp.json();
+            if (j?.taken) console.error(`[tick] ${agentName} looted ${j.taken} item(s) after kill (via keeper)`);
+          }
+        } catch { /* best effort */ }
+      };
+      tryLoot().catch(e => console.error(`[tick] ${agentName} loot err: ${e.message}`));
     }
   }
 
