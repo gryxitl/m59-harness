@@ -45,6 +45,12 @@ export async function escapePocket(client, session) {
     return { sent: false, reason: `no mana for blink (${manaVal}/5); staying put` };
   }
 
+  // A SITTING CHARACTER'S CAST IS REFUSED WHOLE: while resting the server
+  // sets PFLAG_NO_MAGIC (player.kod:1166) and UserCast answers with an error.
+  // Stand up before blinking.
+  try { await c.stand?.(); } catch { /* best effort */ }
+  await new Promise(r => setTimeout(r, 200));  // let the stand packet land
+
   // Freeze the tick loop so move packets don't break concentration.
   const loop = session?._tickLoop;
   let thaw = () => {};
