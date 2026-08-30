@@ -555,7 +555,6 @@ export class ControllerMover {
       }
       this._room = roomNow;
       this.ctl.clear();
-      this.ctl.x = null;                 // forces syncFrom(me) below
       this._plannedFor = null;
       this._noProgress = 0;
       this._handedBack = false;
@@ -565,11 +564,41 @@ export class ControllerMover {
       // its own. If it is not cleared, the next delegation plans a path from
       // its STALE position in the OLD room's coordinate system, using the NEW
       // room's geometry. The path is garbage, and the character is walked to
-      // the wrong place — effectively skipping ahead an extra zone. The
-      // "TELEPORT resync" (55 tiles) is the correction kicking in after the
-      // damage is done. Clearing it here means the next delegation re-plans
-      // from the character's actual position in the new room.
+      // the wrong place — effectively skipping ahead an extra zone.
       try { this.fallback?.clear?.(); } catch { /* best effort */ }
+      // A GO-EXIT TELEPORTS THE CHARACTER TO A SPECIFIC SQUARE IN THE NEW ROOM.
+      // The exit data carries arriveRow/arriveCol. On the first tick after the
+      // room changes, c.self still has the OLD room's position (the staging
+      // square) — the server's arrival position hasn't been processed yet. If
+      // we adopt the stale position, the character is placed at the staging
+      // square's coordinates in the NEW room, which is a completely different
+      // location. JayB, Familiars -> Streets of Tos, 2026-08-29: staged at
+      // (8,10), arrived at (31,55), the resync adopted (8,10), the divergence
+      // check snapped 51 tiles later. The character ended up in a part of the
+      // room he should never have reached by walking.
+      //
+      // The fix: if the current position matches a go-exit's staging square in
+      // the OLD room, do NOT adopt it. Leave ctl.x null so the next tick's
+      // syncFrom(me) picks up the server's arrival position once it arrives.
+      // The divergence check (TELEPORT_SQUARES) will snap if the gap is large
+      // enough, but by then the position is the correct one.
+      const meNow = c?.self;
+      if (meNow?.col != null && this._room !== null) {
+        const map = this.session?.world?.map;
+        const oldRoom = map?.rooms?.[String(this._room)];
+        const goExits = oldRoom?.goExits ?? [];
+        const isStaging = goExits.some(e =>
+          e.col == meNow.col && e.row == meNow.row && e.to != null && !e.locked);
+        if (isStaging) {
+          console.error(`[ctlmover] ${this._agent} room change at go-exit staging square`);
+          console.error(`  (${meNow.col},${meNow.row}) — NOT adopting, waiting for server arrival position`);
+          // Leave ctl.x null: the next tick's syncFrom(me) will adopt the
+          // server's position once it arrives. Do NOT call syncFrom here.
+          return { state: 'resync' };
+        }
+      }
+      // Not at a go-exit staging square: adopt the current position normally.
+      this.ctl.x = null;                 // forces syncFrom(me) below
     }
 
     const now = Date.now();
