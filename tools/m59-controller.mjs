@@ -713,7 +713,7 @@ export class CharacterController {
     this._staleNoted = false;
     const px = Math.round(clientToProtocol(this.x));
     const py = Math.round(clientToProtocol(this.y));
-    try { client.moveTo(px, py, this.run ? 32 : 18, client.room?.id); } catch { return false; }
+    try { client.moveTo(px, py, this.run ? 36 : 18, client.room?.id); } catch { return false; }
     this._lastSentAt = now; this._lastSentX = this.x; this._lastSentY = this.y;
     this.stats.sent++;
     return true;
