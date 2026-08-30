@@ -88,6 +88,39 @@ export class ControllerMover {
 
   _geo() { return this.session?.world?.geometry ?? this.session?._roomGeo ?? null; }
 
+  // DIAGNOSTIC: fire when we are about to adopt (or have just adopted) a
+  // position that is a go-exit staging square in the CURRENT room. This is
+  // the symptom of the room-transition bug. Log the full state so we can
+  // see which code path placed the character there.
+  _checkStagingAdoption(me, c) {
+    if (!me?.col || !me?.row || !this._room) return;
+    const map = this.session?.world?.map;
+    if (!map) return;
+    const room = map.rooms?.[String(this._room)];
+    if (!room) return;
+    // Check if (me.col, me.row) is a go-exit staging square in ANY room
+    // (not just the current one — the bug places the character at the OLD
+    // room's staging coordinates in the NEW room).
+    const matches = [];
+    for (const [num, r] of Object.entries(map.rooms)) {
+      if (num === String(this._room)) continue;
+      for (const e of (r.goExits ?? [])) {
+        if (e.col == me.col && e.row == me.row && e.to != null && !e.locked) {
+          matches.push(`${r.name}[${num}]->${e.to}`);
+        }
+      }
+    }
+    if (!matches.length) return;
+    console.error(`[ctlmover] ${this._agent} STAGING-SQUARE ADOPTION DETECTED`);
+    console.error(`  position: (${me.col},${me.row}) in room ${this._room} (${room.name})`);
+    console.error(`  matches staging in: ${matches.join(', ')}`);
+    console.error(`  _room: ${this._room}, _lastMoveRoom: ${c._lastMoveRoom}, _roomStamp: ${c._roomStamp}`);
+    console.error(`  ctl.x: ${this.ctl.x}, ctl.y: ${this.ctl.y}, _posRoomStamp: ${this.ctl._posRoomStamp}`);
+    console.error(`  self: (${c.self?.col},${c.self?.row}), room.id: ${c.room?.id}`);
+    console.error(`  lastServerTile: ${JSON.stringify(this._lastServerTile)}`);
+    console.error(`  stack: (this is the adoption path — check the tick that called syncFrom)`);
+  }
+
   to(col, row) {
     // A destination that is not a place gets handed straight back. Reporting `no-route` for it
     // is worse than useless: the caller reads that as "this quarry is unreachable" and
@@ -631,6 +664,11 @@ export class ControllerMover {
           && Number(c._lastMoveRoom) !== Number(this._room)) {
         return { state: 'resync-wait' };
       }
+      // DIAGNOSTIC: if we are about to adopt a position that is a go-exit
+      // staging square in the current room, log the full state. This is
+      // the symptom of the room-transition bug: the character was placed
+      // at the old room's staging coordinates in the new room.
+      this._checkStagingAdoption(me, c);
       this.ctl.syncFrom(me);
     }
     else {

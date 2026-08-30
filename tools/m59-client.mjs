@@ -1420,7 +1420,9 @@ export class M59Client {
           // repopulates it. In that case, o is undefined and self's position
           // was NOT updated. Setting _lastMoveRoom would tell the
           // ControllerMover to adopt a stale position.
-          if (o) this._lastMoveRoom = this.room.id;
+          if (o) {
+            this._lastMoveRoom = this.room.id;
+          }
           this.emit('moved', { col: res.col, row: res.row }); break;
         }
         // SOMEBODY ELSE MOVED, and until now nothing could see it.
