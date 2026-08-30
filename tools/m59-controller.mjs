@@ -181,6 +181,10 @@ export class CharacterController {
     const py = me.y ?? (me.row * KOD_FINENESS + HALF_PROTO);
     this.x = protocolToClient(px);
     this.y = protocolToClient(py);
+    // ROOM STAMP: the position we just adopted belongs to the room the client
+    // is in NOW. replicate() refuses to send moves until the client's stamp
+    // matches, so a position adopted in room A can never be walked in room B.
+    this._posRoomStamp = this.session?.client?._roomStamp ?? null;
     return true;
   }
 
@@ -693,6 +697,20 @@ export class CharacterController {
       const moved = Math.hypot(this.x - this._lastSentX, this.y - this._lastSentY);
       if (moved < MOVE_THRESHOLD_CLIENT) return false;
     }
+    // STALE-POSITION GATE: the position we believe in was adopted under a
+    // specific room stamp. If the room has changed since, this position
+    // belongs to the old room's coordinate system and sending it would place
+    // the character at the wrong spot in the new room. Refuse; the next
+    // syncFrom (after BP_MOVE arrives in the new room) re-stamps it.
+    const stamp = client?._roomStamp ?? null;
+    if (this._posRoomStamp != null && stamp != null && this._posRoomStamp !== stamp) {
+      if (!this._staleNoted) {
+        this._staleNoted = true;
+        console.error(`[ctl] replicate refused: position stamped ${this._posRoomStamp}, room now ${stamp} — waiting for BP_MOVE`);
+      }
+      return false;
+    }
+    this._staleNoted = false;
     const px = Math.round(clientToProtocol(this.x));
     const py = Math.round(clientToProtocol(this.y));
     try { client.moveTo(px, py, this.run ? 32 : 18, client.room?.id); } catch { return false; }

@@ -559,6 +559,20 @@ export class ControllerMover {
       this._noProgress = 0;
       this._handedBack = false;
       this._lastServerTile = null;
+      // A COMPLETED CROSSING IS SPENT THE MOMENT THE ROOM CHANGES. The
+      // off-room request named a square outside the OLD room; re-sending it
+      // in the NEW room would ask that room to throw us out of whichever
+      // edge those coordinates fall past — one crossing becomes two. (This
+      // check lives here rather than only in the crossing branch because
+      // the resync return below must not skip it: the room change IS the
+      // completion.)
+      if (this.crossing) {
+        this.stats.crossingsCompleted = (this.stats.crossingsCompleted || 0) + 1;
+        console.error(`[ctlmover] ${this._agent} crossing into room ${roomNow} completed`
+          + ` — dropping the off-room request for room ${this.crossing.room}`);
+        this.crossing = null;
+        this._offRoomAt = 0;
+      }
       // THE LEGACY MOVER MUST HEAR ABOUT THE ROOM CHANGE TOO. It keeps its own
       // path and dead-reckoned position, and it does not detect room changes on
       // its own. If it is not cleared, the next delegation plans a path from

@@ -1286,6 +1286,12 @@ export class M59Client {
       case BP.PLAYER: {
         const p = parsePlayer(body);
         this.selfId = p.id;
+        // ROOM STAMP: a monotonically increasing counter that changes every time
+        // the room changes. Movers stamp their plans with this value; a move
+        // computed under a stale stamp is refused at send time. This makes the
+        // order-of-operations bug impossible: a path planned in room A can never
+        // be sent as a move in room B, no matter how late we react to the change.
+        this._roomStamp = (this._roomStamp ?? 0) + 1;
         this.room.id = p.roomId;
         this.room.security = p.security;
         this.room.flags = p.roomFlags;

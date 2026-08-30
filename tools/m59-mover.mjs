@@ -170,6 +170,26 @@ export class Mover {
     this._blinkPending = false;
     this._blinkFrom = null;
     this._lastWpKey = null;
+    this._pathRoomStamp = null;
+  }
+
+  // STALE-PATH GATE: a path planned in a different room than the one we are in
+  // NOW is garbage — its coordinates belong to the old room's grid. Drop it so
+  // the next tick re-plans in the current room. This makes the order-of-
+  // operations bug impossible: no move computed under room A can be sent in
+  // room B, no matter how late we noticed the crossing.
+  _pathIsStale(c) {
+    if (this.path == null) return false;
+    const stamp = c?._roomStamp ?? null;
+    if (this._pathRoomStamp == null || stamp == null) return false;
+    if (this._pathRoomStamp !== stamp) {
+      console.error(`[mover] stale path dropped: planned under room stamp ${this._pathRoomStamp}, now ${stamp} — re-planning`);
+      this.path = null;
+      this.pathIdx = 0;
+      this._pathRoomStamp = null;
+      return true;
+    }
+    return false;
   }
 
   get active() { return this.dest != null; }
@@ -344,6 +364,12 @@ export class Mover {
       if (result.found) {
         this.path = result.waypoints;
         this.pathIdx = 0;
+        // ROOM STAMP: this path was planned in the room we are in NOW. If the
+        // room changes before we finish walking it, the send gate below drops
+        // it and we re-plan in the new room. Without this, a path planned in
+        // room A gets sent as moves in room B after a go-exit crossing, and
+        // the server places the character at room A's coordinates in room B.
+        this._pathRoomStamp = s.client?._roomStamp ?? null;
       } else {
         // No fine path, or search exhausted. The server is
         // CLIENT-AUTHORITATIVE: it does not check geometry, it
@@ -634,6 +660,11 @@ export class Mover {
     const enrProtoX = stepCol * KOD_FINENESS + HALF, enrProtoY = stepRow * KOD_FINENESS + HALF;
     const serverPX2 = curCol * KOD_FINENESS + HALF;
     const serverPY2 = curRow * KOD_FINENESS + HALF;
+    if (this._pathIsStale(c)) {
+      // Room changed since this path was planned: do not step. The next
+      // tick re-plans in the current room.
+      return { state: 'stale-path', why: 'room changed; re-planning' };
+    }
     if (this._movementGateOk(enrProtoX, enrProtoY, myProtoX, myProtoY, serverPX2, serverPY2)) {
       s.walkTo(stepCol, stepRow, { steps: 1 })
         .then(wr => { if (process.env.M59_MOVE_DEBUG !== '0')
@@ -742,6 +773,7 @@ export class Mover {
 
   // Returns true if a position packet was actually sent this tick.
   _maybeReportPosition(protoX, protoY, c, s, serverX, serverY) {
+    if (this._pathIsStale(c)) return false;
     if (!this._movementGateOk(protoX, protoY, serverX, serverY, serverX, serverY)) return false;
     const px = Math.round(protoX), py = Math.round(protoY);
     Promise.resolve(s.pacer.submit('move', () => c.moveTo(px, py, 18, c.room?.id ?? 0), 100)).catch(() => {});
@@ -772,6 +804,7 @@ export class Mover {
    * Falls back to the raw-move fan if the fine model blocks the step.
    */
   _sendStep(protoX, protoY, c, s, me) {
+    if (this._pathIsStale(c)) return false;
     const myX = this.drX, myY = this.drY;
 
     const px = Math.round(protoX);
