@@ -733,6 +733,23 @@ export class CombatController {
     const now = Date.now();
     if (now - this.lastSwing >= SWING_MS) {
       this.lastSwing = now; this.swings++;   // the round the ledger records as `rounds`
+      // A SITTING CHARACTER'S SWING IS REFUSED: PFLAG_NO_FIGHT answers "You find
+      // yourself unable to lift your weapon" (user.kod:4660). The walk path has a
+      // 3s immobility stand, but the swing path does not — Gountrug, East Merchant
+      // Way, 2026-08-29: adjacent to a baby spider, swinging every 1050ms, every
+      // swing refused, spider hit him free until he died. If the position has not
+      // changed for 3s while we are in the fight phase, stand the character up.
+      // The stand is a no-op while already standing.
+      if (this._noMovePos && this._noMovePos.col === me.col && this._noMovePos.row === me.row) {
+        if (!this._noMoveSince) this._noMoveSince = now;
+        if (now - this._noMoveSince > 3000) {
+          try { this.session?.client?.stand?.(); } catch { /* best effort */ }
+          this._noMoveSince = now;
+        }
+      } else {
+        this._noMovePos = { col: me.col, row: me.row };
+        this._noMoveSince = 0;
+      }
       // 1. Zap enchantment: cast it if it's down and we can afford it.
       const zap = this._maybeCastZap(client);
       if (zap) return zap;
