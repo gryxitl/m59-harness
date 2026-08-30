@@ -54,7 +54,7 @@ export async function escapePocket(client, session) {
   }
 
   // Cast blink. Fire and forget — cast() returns undefined.
-  const since = Date.now();
+  const since = c.evSeq;
   try { c.cast(blink.id, []); } catch (e) { thaw(); return { sent: false, reason: `cast failed: ${e?.message ?? e}` }; }
 
   // Wait for the "moved" event (server confirms relocation) or timeout.
