@@ -581,13 +581,11 @@ export class ControllerMover {
       // later. Gountrug, Lee, Sasquatch, and JayB were all found at go-exit
       // staging squares in the wrong room.
       //
-      // The fix: leave ctl.x null. The next tick's syncFrom(me) will adopt
-      // the position once BP_MOVE has updated self to the arrival position.
-      // The divergence check (TELEPORT_SQUARES) will snap if the gap is
-      // large enough, but by then the position is the correct one.
-      //
+      // The fix: set a wait counter. For the next 3 ticks, do NOT call
+      // syncFrom(me) — even though ctl.x is null. By then, BP_MOVE will
+      // have arrived and self will have the correct arrival position.
       // This is what the real client does: it just waits for BP_MOVE.
-      // There is no intermediate "resync" step.
+      this._roomResyncWait = 3;
       return { state: 'resync' };
     }
 
@@ -609,7 +607,17 @@ export class ControllerMover {
     // The one real exception is the server RELOCATING us: a blink (our own keeper casts it to
     // get unstuck), a portal, a death. That is moveobj.c:88 -> ServerMovedPlayer, and it is
     // detected the only way it honestly can be — by a jump we could not have walked.
-    if (this.ctl.x == null) this.ctl.syncFrom(me);
+    if (this.ctl.x == null) {
+      // ROOM RESYNC WAIT: after a room change, don't syncFrom for a few
+      // ticks. BP_MOVE hasn't arrived yet, and self still has the old
+      // room's position. Adopting it places the character at the wrong
+      // spot in the new room.
+      if (this._roomResyncWait > 0) {
+        this._roomResyncWait--;
+        return { state: 'resync-wait' };
+      }
+      this.ctl.syncFrom(me);
+    }
     else {
       const believed = this.ctl.square();
       const gap = Math.hypot((me.col - believed.col) * CLIENT_PER_SQUARE,
