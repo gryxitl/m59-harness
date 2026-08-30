@@ -544,6 +544,8 @@ export const INTENTS = {
     if (s?._escapeInFlight) return { sent: false, why: 'an escape is already in flight' };
     // COOLDOWN: don't re-blink every tick. Blink costs mana and takes
     // several seconds. 120s is plenty for the relocation to take effect.
+    // If the blink didn't actually relocate the character, the cooldown
+    // is reset so it can try again sooner.
     if (Date.now() - (s?._lastEscapeAt ?? 0) < 120_000) {
       return { sent: false, why: 'just escaped; waiting for the relocation to work' };
     }
@@ -551,8 +553,19 @@ export const INTENTS = {
     s._escapeInFlight = true;
     import('./m59-act/escape-pocket.mjs')
       .then(({ escapePocket }) => escapePocket(ctx.client, s))
-      .then(r => console.error(`[escape] ${s?.name ?? 'keeper'}: ${r?.what ?? r?.reason}`))
-      .catch(e => console.error(`[escape] ${s?.name ?? 'keeper'} err: ${e.message}`))
+      .then(r => {
+        console.error(`[escape] ${s?.name ?? 'keeper'}: ${r?.what ?? r?.reason}`);
+        // If the blink didn't relocate the character, reset the cooldown
+        // so it can try again sooner (the 120s wait is for a successful
+        // relocation to take effect, not for a failed blink).
+        if (!r?.what?.includes('relocated')) {
+          s._lastEscapeAt = 0;
+        }
+      })
+      .catch(e => {
+        console.error(`[escape] ${s?.name ?? 'keeper'} err: ${e.message}`);
+        s._lastEscapeAt = 0;  // reset cooldown on error
+      })
       .finally(() => { s._escapeInFlight = false; });
     return { sent: true, what: 'blinking to escape pocket' };
   },
