@@ -1407,7 +1407,14 @@ export class M59Client {
           // position. The arrival position arrives in the next BP_MOVE. Until
           // we've seen a BP_MOVE in the new room, self still has the old
           // room's coordinates.
-          this._lastMoveRoom = this.room.id;
+          //
+          // IMPORTANT: only set _lastMoveRoom when the position was actually
+          // updated (o is not undefined). After BP_PLAYER clears the objects
+          // map, the first BP_MOVE may arrive before BP_ROOM_CONTENTS
+          // repopulates it. In that case, o is undefined and self's position
+          // was NOT updated. Setting _lastMoveRoom would tell the
+          // ControllerMover to adopt a stale position.
+          if (o) this._lastMoveRoom = this.room.id;
           this.emit('moved', { col: res.col, row: res.row }); break;
         }
         // SOMEBODY ELSE MOVED, and until now nothing could see it.
