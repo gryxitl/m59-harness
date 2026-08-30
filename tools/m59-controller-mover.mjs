@@ -560,6 +560,16 @@ export class ControllerMover {
       this._noProgress = 0;
       this._handedBack = false;
       this._lastServerTile = null;
+      // THE LEGACY MOVER MUST HEAR ABOUT THE ROOM CHANGE TOO. It keeps its own
+      // path and dead-reckoned position, and it does not detect room changes on
+      // its own. If it is not cleared, the next delegation plans a path from
+      // its STALE position in the OLD room's coordinate system, using the NEW
+      // room's geometry. The path is garbage, and the character is walked to
+      // the wrong place — effectively skipping ahead an extra zone. The
+      // "TELEPORT resync" (55 tiles) is the correction kicking in after the
+      // damage is done. Clearing it here means the next delegation re-plans
+      // from the character's actual position in the new room.
+      try { this.fallback?.clear?.(); } catch { /* best effort */ }
     }
 
     const now = Date.now();
