@@ -1224,17 +1224,13 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // special cases (Hall of Heroes -> Tos Forget, Bazman's -> Forgotten Too). There is no
     // direction anywhere in it.
     //
-    // What follows for a POCKET: blink cannot be relied on to escape one. JayB, room 50 at
-    // (2,48), cast it repeatedly — mana 25 -> 11, so it fired — and stayed exactly where
-    // he was, because wherever that room's Teleport puts a body it is not outside his
-    // 340-square region. Blink is the cure for being ENTOMBED, where any relocation is
-    // progress; it is not the cure for being trapped with no reachable exit.
-    //
-    // The original note read: blink teleports
-    // a wall it does nothing. Instead: find an open
-    // neighbor square and walk there. Fall back to blink if
-    // no neighbor is open. Suppressed while resting: a
-    // resting character is intentionally not moving.
+    // NEVER BLINK WHILE BEING HIT. A blink needs concentration, and an incoming attack
+    // breaks it ("Your concentration is broken and the blink spell fizzles"). Casting
+    // it while fleeing combat wastes the mana and the ten seconds of standing still,
+    // and the character is hit the whole time. Lee, Off the beaten path, 2026-08-29:
+    // groundworm larva, blink fizzled, dead. When the health trail shows damage, the
+    // escape is a WALK to an open neighbor, not a blink. The blink is the last resort
+    // for a character that is stuck AND not being hit.
     {
       const me = frame?.position;
       if (me?.col != null) {
@@ -1368,7 +1364,20 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
               _lastPosAt = now(); // reset timer
               return;
             }
-            // No open neighbor: blink as last resort.
+            // No open neighbor: blink as last resort — but ONLY when not being hit.
+            // A blink needs concentration, and an incoming attack breaks it. Casting
+            // while fleeing wastes mana and ten seconds of standing still. When the
+            // health trail shows damage, keep walking (the router is already moving
+            // the character toward an exit); do not freeze for a cast that will fizzle.
+            const hpTrail = session?._hpTrail;
+            const beingHit = Array.isArray(hpTrail) && hpTrail.length >= 2 &&
+              (hpTrail[hpTrail.length - 2] - hpTrail[hpTrail.length - 1]) >= 2;
+            if (beingHit) {
+              onDecision?.({ ticks, goal: 'unstuck', action: null,
+                what: `stuck at (${me.col},${me.row}) but being hit — walking, not blinking`, sent: false });
+              _lastPosAt = now(); // reset: don't re-fire every 30s while fleeing
+              return;
+            }
             const blink = (c.spells ?? []).find(sp => {
               const n = c.rsc?.get?.(sp.nameRsc) ?? sp.name ?? '';
               return n.toLowerCase() === 'blink';
