@@ -173,6 +173,16 @@ export class CharacterController {
                    arrived: 0, replans: 0 };
   }
 
+  // Set the run flag. Run moves at 2x the distance per step (5 squares/sec
+  // vs 2.5) and sends speed 36 instead of 18. The caller decides when to run
+  // (travel) vs walk (hunt, fight, flee, rest) based on the current goal and
+  // vigor. Running costs ~11 vigor/minute (out of 200), so a character at 80
+  // vigor can run for ~7 minutes before the rest system kicks in at 60.
+  setRun(run) {
+    if (this.run === run) return;
+    this.run = run;
+  }
+
   // Adopt the server's position as the starting truth. Called when we have no position yet
   // and on a room change — the two places clientd3d takes a position for the player.
   syncFrom(me) {

@@ -2074,6 +2074,20 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     _resting = active?.goal === 'healthy' || active?.goal === 'vigor_low';
     _fighting = active?.goal === '_fight';
 
+    // RUN AS MUCH AS POSSIBLE. Running moves at 2x the distance per step
+    // (5 squares/sec vs 2.5) and cuts travel time in half. It costs ~11
+    // vigor/minute (out of 200), so a character at 80 vigor can run for ~7
+    // minutes before the rest system kicks in at 60. Walk only when
+    // fighting (precision matters, and a swing interrupts a run). No
+    // movement when resting.
+    {
+      const noRun = active?.goal === '_fight'
+        || active?.goal === 'healthy'
+        || active?.goal === 'vigor_low'
+        || active?.goal === 'idle_rest';
+      try { session._mover?.setRun?.(!noRun); } catch { /* best effort */ }
+    }
+
     // RESTING IS A TIMER, AND A MOVE PACKET DELETES IT.
     //
     //   player.kod StartResting:  ptRest = CreateTimer(self,@RestTimer,GetRestTime())

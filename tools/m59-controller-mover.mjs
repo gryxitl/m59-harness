@@ -223,6 +223,16 @@ export class ControllerMover {
   //
   // So every deliberate relocation must land here. The plan goes with it: it was drawn
   // from a place the body is no longer standing.
+  // Set the run flag on the underlying CharacterController. Run moves at 2x
+  // the distance per step (5 squares/sec vs 2.5) and sends speed 36 instead
+  // of 18. The decider calls this based on the active goal: run when
+  // travelling, walk when hunting/fighting/fleeing/resting. Running costs
+  // ~11 vigor/minute (out of 200), so a character at 80 vigor can run for
+  // ~7 minutes before the rest system kicks in at 60.
+  setRun(run) {
+    try { this.ctl.setRun(!!run); } catch { /* best effort */ }
+  }
+
   relocated(col, row) {
     if (!Number.isFinite(col) || !Number.isFinite(row)) return false;
     let ok = false;
