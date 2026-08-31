@@ -132,6 +132,14 @@ The keeper reads it at startup. A change is: edit file, restart that
 keeper (one command, visible in the log). No roster copy, no broker
 cache, no `POST /policy` mutating a live object nobody re-reads.
 
+**Verified 2026-08-31: upstream did NOT fix this.** Their broker still
+caches policy in memory and mutates it from several places
+(`Object.assign(p.policy, ...)` x3, plus the `autopilot set` handler
+writing `p.policy.assignedRoom` directly), and the `assignedRoom`
+flow is the same shape as the one that made Lee's reassignment a
+four-step dance. There is no loadout-file-as-single-source at keeper
+start. This is genuinely new work, not reconciliation.
+
 ### 5. Validate moves before sending
 
 The official client checks `BSPFindLeafByPoint` before every step and
