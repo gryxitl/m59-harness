@@ -229,10 +229,13 @@ directed and the fallback would send a body to walk at a cliff face for ever.
 | Genuine win? | **Yes.** A capability (offer a proven-walkable exit the live flood missed), not a read, not a blindness-comp. The `oneWayInHere` guard is the safety condition. |
 | Self-contained? | **Mostly.** We already have `from_body` (routes.mjs:205), `anchorFor`, `anchorReach`, `edgeCandidatesOf`. We lack `roomHasDeclaredFallJump` (a small helper) and the fallback block itself (~50 lines in world.mjs). |
 
-**Verdict: a genuine port, but a different subsystem** (routing/bake-time, not
-movement). It is the right kind of win (capability, not blindness-comp) and
-fixes a real bug class (exits vanishing). It is *not* part of the walkTo
-movement port — it belongs in a routing/exit-offering pass.
+**Verdict: PORTED (2026-08-31).** A genuine win, different subsystem
+(routing/bake-time, not movement). Added `roomHasDeclaredFallJump` to
+m59-roo.mjs and the fallback block to m59-world.mjs (before the
+`if (!precise.length) continue;` check). When the live flood finds no
+staging square but the bake proved the anchor walkable (`from_body: true`),
+offer the anchor's own crossing square — guarded by `roomHasDeclaredFallJump`
+so a declared drop jump disables it. 1,775 assertions green.
 
 ## The lens, applied five times
 
