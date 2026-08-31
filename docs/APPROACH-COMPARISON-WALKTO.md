@@ -85,3 +85,54 @@ Still ported (unchanged, self-contained): `QUEUE_PATIENCE` const,
 transplant of theirs: we take the two things that are wins regardless of
 driver model, and leave the three that only exist to patch a blindness we do
 not have.
+
+---
+
+# blinkOut (theirs) vs. escapePocket (ours) — the mirror image
+
+Applying the same lens, this one resolves the **opposite** way from walkTo.
+Ours is better on 3 of 4 dimensions; theirs has one nice-to-have that
+depends on a subsystem we don't have.
+
+| Dimension | Ours (escapePocket) | Theirs (blinkOut) | Verdict |
+|---|---|---|---|
+| **Freeze mechanism** | `loop.freeze(ms)` — a *deadline* (self-thaws; a lost thaw costs at most `ms`) | `loop._frozen = true` — a *boolean* (must be cleared in `finally`) | **Ours.** Their own tick.mjs comment mocks the boolean: "A FREEZE IS A DEADLINE, NEVER A FLAG. A boolean here is how the tick loop came to sit frozen for the life of the process." |
+| **Mana check** | checks `mana >= 5` before casting | does not check | **Ours.** Casting blink with <5 mana is a wasted cast the server refuses. |
+| **Stand first** | stands before casting (a resting character has `PFLAG_NO_MAGIC`, player.kod:1166 — the cast is refused whole) | does not stand | **Ours.** A resting character cannot cast; standing is required. |
+| **`expect`/`arrived`** | reports `relocated` + new position | takes an `expect` square, reports whether it arrived *there* | **Theirs, but only with their strategies system.** `expect` comes from `stuckAnswer.answer.expect` — a *private strategy* that directs the blink to a specific square, with a `settled` callback. We have no strategies system, so `expect` has no caller here; porting it in isolation is dead code. |
+
+## Why this is the mirror image of walkTo
+
+walkTo: their code was ours-plus-measured-fixes, and the "fixes" were mostly
+blindness compensation (re-reads) for a blocking model we don't have. Port the
+policies/capabilities, skip the re-reads.
+
+blinkOut: **our** code is the more complete one. We already solved the three
+things their version gets wrong (deadline-freeze, mana check, stand-first) —
+because we built `escapePocket` *for the tick keeper*, where a resting
+character and a lost thaw are live failure modes. Their `blinkOut` is the
+simpler, earlier version. The one thing they have (`expect`) is real but is the
+tip of their private-strategies subsystem, not a drop-in.
+
+## Verdict
+
+**Keep ours. Do not port `blinkOut`.** If we later adopt their private
+strategies system, the `expect`/`arrived` param (and the `settled` callback)
+come along with it — at which point we add it to `escapePocket` as a small,
+self-contained extension. Until then, porting it would be adding a parameter
+nothing calls.
+
+## The lens, stated generally
+
+When comparing their code to ours, ask two questions in order:
+1. **Does the difference compensate for a limitation of *their* driver model
+   (blocking/blind) that ours (tick/real-time) doesn't have?** If so, it's a
+   patch for a problem we already solved — skip it (walkTo fixes 1-3).
+2. **Is it a policy or capability that wins regardless of driver model?** If
+   so, port it (walkTo fixes 4-5).
+3. **Is it *our* code that is already the more complete version?** If so, keep
+   ours and only take the piece that depends on a subsystem we'd adopt anyway
+   (blinkOut `expect`).
+
+The direction is not always "take theirs." The lens tells you which way each
+specific difference points.
