@@ -5,6 +5,51 @@ characters, and policy that lives in three places. The goal is not to
 rewrite the game client — it is to make the failure modes we hit today
 impossible by construction.
 
+## STOP: read this first — tpeppers/m59-harness already did most of this
+
+Checked 2026-08-31. Our `upstream` remote is `tpeppers/m59-harness`.
+It is **140 commits ahead** of us (43,504 insertions across 187 files),
+and we are 247 ahead of it. The merge base is `502c627`.
+
+Upstream has already solved, more rigorously than we did today, most of
+the exact failure modes in this document:
+
+- **`m59-controller-mover.mjs` is deleted** (our 1204-line file, the one
+  we patched all day). Movement is `m59-mover.mjs` (809 lines) +
+  `m59-movement.mjs` (terminal-reason contract). The three-mover stack
+  is already collapsed.
+- **"a stuck character says so, and can bring you to it"** (`3657303`):
+  a `stuck` flag on every fleet row, plus `m59-stuckwatch.mjs`. This is
+  the pos/path/dest visibility we built ad hoc today, done properly.
+- **"arrived is a fact about the world, and c.self is a belief about it"**
+  (`a34cb74`): the stale-belief bug we hit, root-caused and fixed.
+- **"mover: escape a safe-wall pocket before travel gives up"** (`471b1ba`):
+  pocket escape via proven exit anchors — our `escape_pocket` problem.
+- **"ask a private strategy before reporting a boundary shut, and cast
+  blink if it says so"** (`535f37a`): `Session.blinkOut` as a primitive,
+  with the concentration freeze solved — our stand-then-blink, generalized.
+- **"the bake chose a door by scan order, and 33 of them were in a wall"**
+  (`1596f75`): bad exit anchors — the server-side bad-arrival class we
+  fought, fixed at the bake.
+- **`start_has_no_floor` / `position_outside_room_geometry`** split out as
+  terminal movement reasons, with 1,535/2,361 shadow-fleet failures
+  analysed. This is our bad-arrival detection, with the two cases named
+  apart.
+- Fall-jumps, lanes, gutters, rails, one-square corridors, players-as-
+  queues: an entire body of movement work we do not have.
+
+**The refactor should not be written from scratch. It should be a
+reconciliation with upstream:** take their movement stack, their stuck
+flag, their blink primitive, their exit-anchor bake — and port our
+genuinely new work from today (airlock-on-BP_ROOM_CONTENTS, force-adopt
+after release, the util.kod user-position finding, the loadout-only
+policy rule) on top, where it does not already exist.
+
+The separate-project question becomes: fork from `tpeppers/m59-harness`
+main, not from our `main`.
+
+---
+
 ## The failure modes that motivated this
 
 1. **Stale position across a room transition.** The controller kept the
