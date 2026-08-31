@@ -177,16 +177,17 @@ first). It is deliberately *outside* the keeper so it cannot throw inside a
 pass that must not throw. We don't have this. **Take it** — but it reads the
 `stuck` flag, so it needs the structured shape first.
 
-## Verdict: combine them
+## Verdict: combine them — IMPLEMENTED (2026-08-31)
 
-- **Detection**: keep our `stallVerdict` (outcome-based, catches livelocks).
-- **Shape**: change `stallVerdict` to return their structured form —
-  `{ since, seconds, why }` instead of a bare string — so a board/watcher can
-  branch on it. This is a small, self-contained change to our existing
-  function (wrap the string in `{ since: _lastArrivedAt, seconds, why: <the
-  sentence> }`).
-- **Consumer**: port `m59-stuckwatch.mjs` (it is loopback-guarded, so it is
-  safe to add; it only shouts on a test server).
+- **Detection**: kept our `stallVerdict` (outcome-based, catches livelocks).
+- **Shape**: `stallVerdict` now returns `{ since, seconds, why } | null` instead
+  of a bare string. The broker exposes it as the `stuck` field (upstream's name)
+  in the fleet row, alongside the existing human-readable `stalled` summary.
+- **Consumer**: ported `m59-stuckwatch.mjs` (193 lines, self-contained,
+  loopback-guarded). A stuck character shouts once per hour (cooldown resets on
+  unstick); a `show me` tell relocates the asker to the nearest safe spot that
+  can reach the stuck character. Dependencies (m59-fleetpath.mjs, m59-dm.mjs)
+  were already ours. 1,874 assertions green.
 
 This is the cleanest win of the three: our detection is the better one, their
 shape is the better one, and their watcher is a capability we simply don't
