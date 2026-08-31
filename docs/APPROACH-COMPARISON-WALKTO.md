@@ -136,3 +136,69 @@ When comparing their code to ours, ask two questions in order:
 
 The direction is not always "take theirs." The lens tells you which way each
 specific difference points.
+
+---
+
+# stuck flag (theirs) vs. stallVerdict (ours) — a genuine complement
+
+This one resolves as **take both, in their right roles** — the cleanest
+"best of both worlds" of the three.
+
+## The detection: ours is better (for the tick keeper)
+
+| | Ours (stallVerdict) | Theirs (stuck) |
+|---|---|---|
+| **Source** | `session._mover.stats` — the mover's `arrived` counter, `moving`, `blockedTicks`, `sideSteps` | `autopilot.stalledSince` — set after **5 idle passes** |
+| **Model** | **outcome-based**: has the mover reached *any* waypoint recently? | **pass-based**: did anything happen in the last 5 passes? |
+| **Catches a livelock?** | **Yes** — "no waypoint reached in Ns while moving" is exactly the JayB case (231,626 ticks, 938,856 side-steps, arrived ZERO times) | **No** — the passes aren't idle, they're deciding the same impossible action; "5 idle passes" never fires |
+
+Theirs is a **blindness-comp for their driver model**: in the blocking
+keeper, a *pass* is the unit of time — the only thing that ticks — so "5 idle
+passes" is their way of saying "nothing happened for a while" because their
+model has no finer clock. Our tick keeper *has* a finer clock (100ms ticks +
+the mover's arrival counter), so we detect by outcome, which is more precise
+and model-independent. **Keep our detection.**
+
+## The output shape: theirs is better
+
+| | Ours | Theirs |
+|---|---|---|
+| **Shape** | `false` \| `'no waypoint reached in Ns (moving=.. blocked=.. sideSteps=..)'` — a sentence | `{ since, seconds, why }` \| `null` — a structured flag |
+
+A structured flag is what a fleet board can render and a watcher can branch
+on. Our string is human-readable but not machine-branchable. **Take their
+shape.**
+
+## The consumer: theirs is a whole tool we lack
+
+`m59-stuckwatch.mjs` — a watcher that polls the `stuck` flag and acts (shouts
+"show me" on the maintenance port, once an hour unless the character got free
+first). It is deliberately *outside* the keeper so it cannot throw inside a
+pass that must not throw. We don't have this. **Take it** — but it reads the
+`stuck` flag, so it needs the structured shape first.
+
+## Verdict: combine them
+
+- **Detection**: keep our `stallVerdict` (outcome-based, catches livelocks).
+- **Shape**: change `stallVerdict` to return their structured form —
+  `{ since, seconds, why }` instead of a bare string — so a board/watcher can
+  branch on it. This is a small, self-contained change to our existing
+  function (wrap the string in `{ since: _lastArrivedAt, seconds, why: <the
+  sentence> }`).
+- **Consumer**: port `m59-stuckwatch.mjs` (it is loopback-guarded, so it is
+  safe to add; it only shouts on a test server).
+
+This is the cleanest win of the three: our detection is the better one, their
+shape is the better one, and their watcher is a capability we simply don't
+have. None of it is a blindness-comp — the structured shape and the watcher
+are genuine, model-independent improvements.
+
+## The lens, applied three times
+
+| Candidate | Resolution | Why |
+|---|---|---|
+| walkTo | take theirs (partially) | theirs = ours + measured fixes; port the policies/capabilities (4-5), skip the blindness re-reads (1-3) |
+| blinkOut | keep ours | ours is already the more complete version; their `expect` needs their strategies subsystem |
+| stuck flag | **take both, in their right roles** | our detection (outcome) + their shape (structured) + their consumer (stuckwatch) |
+
+The lens does not always point the same way. It points where the evidence is.
