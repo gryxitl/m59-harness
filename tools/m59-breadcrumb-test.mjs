@@ -128,6 +128,15 @@ function fakeSession({ at = { col: 5, row: 5 }, roomId = 587, legal = () => true
       if (session.selfComesBack && client.missingSelf) client.missingSelf = false;
       return client.self ?? null;
     },
+    // THE SERVER'S ANSWER TO "WHERE ARE YOU, CONFIRMED". The ported walkTo computes
+    // arrived = !!okEnd && ... where okEnd = confirmPosition(), so the fixture must model
+    // "the server agrees with where the body is" (return client.self; null when the server
+    // has gone quiet). Without it the stricter arrival contract reads every walk as not-arrived.
+    async confirmPosition() {
+      if (client.missingSelf && !session.selfComesBack) return null;
+      if (client.missingSelf) client.missingSelf = false;
+      return client.self ?? null;
+    },
     movementWasCancelled() { return false; },
     cancelledMovement(extra) { return { cancelled: true, ...extra }; },
     threatsHere() { return null; },

@@ -1093,6 +1093,11 @@ const walkTo = compileSessionMethod(brokerSource,
     // The dither escape's knobs. See the note at the dither site in m59-game.mjs.
     WALK_ESCAPE_TRIES: 3,
     WALK_ESCAPE_STEPS: 1,
+    // PATIENCE IS FOR PLAYERS (ported from upstream). `walkTo` reads it to decide how many
+    // patient laps a PLAYER standing in the way is worth before the walker treats that
+    // square as taken — a monster still gets one. The dependency map must name it or the
+    // branch that reaches it throws ReferenceError here while working in the broker.
+    QUEUE_PATIENCE: 6,
     // THE REAL FLAGS, not a stub. `walkTo` asks whether the body in its way is a PLAYER —
     // a player is also dodging and needs the object-id tie-break, a monster gets the fixed
     // clockwise-first order — and a fixture that invented its own bit would build a room
@@ -1256,6 +1261,11 @@ function fakeBrokerSession(geometry, {
     queueValidatedMove,
     confirmPosition,
     aimInto,
+    // PORTED walkTo calls this in the "no side to step to" branch. The fixture has no
+    // bodies to thread past, so the real answer is null (no lane, fall through to the
+    // recovery below). Without it the lifted walkTo throws "laneAroundBody is not a
+    // function" the first time a walk reaches that branch.
+    laneAroundBody: () => null,
   };
   return { session, client, packets, turns };
 }
@@ -1340,6 +1350,7 @@ console.log('\nterminal movement propagation and edge packet authority');
     const session = {
       client, world: { geometry }, movementGeneration: 0,
       need() { return this.client; },
+      laneAroundBody() { return null; },
       movementWasCancelled() { return false; },
       // NO BAKED RAIL. `leaveVia` now tries a precomputed exit-to-exit crossing before its
       // ordinary walk (see railAcross), and these fixtures are about the walk — a stub that
@@ -1363,6 +1374,7 @@ console.log('\nterminal movement propagation and edge packet authority');
     const unknown = {
       client: { self: null }, world: { geometry: { path() { pathCalls++; } } },
       need() { return this.client; },
+      laneAroundBody() { return null; },
       // walkTo now ASKS the server before giving up — losing our own object out of the
       // room map is the ordinary state for a moment after a room is rebuilt. This fixture
       // is the OTHER case: the read is made and still cannot answer, which is the only
@@ -1385,6 +1397,7 @@ console.log('\nterminal movement propagation and edge packet authority');
       world: { geometry: { walkable: () => false, standable: () => false,
                            nearestWalkable: () => null } },
       need() { return this.client; }, movementWasCancelled() { return false; },
+      laneAroundBody() { return null; },
     };
     const floorlessResult = await walkTo.call(floorless, 2, 1, { maxSteps: 5, hardCap: 10 });
     ok('walkTo reports a permanently floorless start as terminal',
@@ -1423,6 +1436,7 @@ console.log('\nterminal movement propagation and edge packet authority');
       const session = {
         client, world: { geometry }, movementGeneration: 0,
         need() { return this.client; },
+      laneAroundBody() { return null; },
         movementWasCancelled() { return false; },
         threatsHere() { return []; },
         // No way round, so the walker must fall through to the occupancy path either way.
@@ -1718,6 +1732,7 @@ console.log('\nterminal movement propagation and edge packet authority');
     const session = {
       client, world: { geometry }, movementGeneration: 0,
       need() { return this.client; },
+      laneAroundBody() { return null; },
       movementWasCancelled() { return false; },
       // NO BAKED RAIL. `leaveVia` now tries a precomputed exit-to-exit crossing before its
       // ordinary walk (see railAcross), and these fixtures are about the walk — a stub that
@@ -2585,6 +2600,7 @@ if (typeof walkTo !== 'function' || typeof realSidestepAround !== 'function') {
   const session = {
     client, world: { geometry, room: { num: 50 } }, movementGeneration: 0,
     need() { return this.client; },
+      laneAroundBody() { return null; },
     movementWasCancelled() { return false; },
     threatsHere() { return []; },
     sidestepAround: realSidestepAround,
@@ -2857,6 +2873,7 @@ console.log('AN EDGE THE MOVER CANNOT WALK IS REMEMBERED PAST THE WALK THAT FOUN
     sidestepAround() { return null; },
     threatsHere() { return []; },
     async selfOrResync() { return this.client.self; },
+    laneAroundBody() { return null; },
     async step() { return { moved: false, left_room: false, reason }; },
   });
 

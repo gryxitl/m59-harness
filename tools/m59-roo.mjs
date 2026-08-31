@@ -3612,6 +3612,47 @@ export function canCrossWallAt(wall, _x, _y, z = 0, side = 'pos',
   return stepOk && headOk && !!(sd.flags & WF.PASSABLE);
 }
 
+// PORTED from tpeppers/m59-harness (upstream) — the one-square-corridor pass. When a body
+// is in the way and there is no side square to step to, the pass is a different fine y
+// INSIDE THE SAME SQUARE. `gapAlongLine` measures the clearance along a candidate lane;
+// `lanePastBodies` finds the offset with the most clearance. Used by Session.laneAroundBody
+// (m59-game.mjs), which the merged walkTo calls before writing a blocked square off.
+export function gapAlongLine(ax, ay, bx, by, bodies) {
+  if (!bodies?.length) return { gap: Infinity, who: [] };
+  const vx = bx - ax, vy = by - ay, len2 = vx * vx + vy * vy;
+  let best = Infinity, who = [];
+  for (const o of bodies) {
+    const t = len2 ? Math.max(0, Math.min(1, ((o.x - ax) * vx + (o.y - ay) * vy) / len2)) : 0;
+    const d = Math.hypot(ax + t * vx - o.x, ay + t * vy - o.y);
+    if (d < best) { best = d; who = [o.name]; } else if (d < best + 0.01) who.push(o.name);
+  }
+  return { gap: best, who };
+}
+
+export function lanePastBodies({ fromX, fromY, toX, toY, bodies, hasFloor,
+                                 minGap = MIN_NOMOVEON / (CLIENT_FINENESS / KOD_FINENESS),
+                                 minOffset = 4, maxOffset = 28, step = 1 }) {
+  if (!bodies?.length || typeof hasFloor !== 'function') return null;
+  const dx = toX - fromX, dy = toY - fromY;
+  const len = Math.hypot(dx, dy) || 1;
+  const px = -dy / len, py = dx / len;
+  let best = null;
+  for (let off = minOffset; off <= maxOffset; off += step) {
+    for (const sign of [1, -1]) {
+      const ox = px * off * sign, oy = py * off * sign;
+      const ax = Math.round(fromX + ox), ay = Math.round(fromY + oy);
+      const bx = Math.round(toX + ox), by = Math.round(toY + oy);
+      if (!hasFloor(ax, ay) || !hasFloor(bx, by)) continue;
+      const m = gapAlongLine(ax, ay, bx, by, bodies);
+      if (!(m.gap >= minGap)) continue;
+      if (!best || m.gap > best.gap)
+        best = { x: bx, y: by, fromX: ax, fromY: ay, gap: m.gap, off: off * sign };
+    }
+    if (best) break;
+  }
+  return best;
+}
+
 export function parseRooWalls(buf, version) {
   const mainOff = buf.readInt32LE(12);
   if (mainOff <= 0 || mainOff >= buf.length) return null;
