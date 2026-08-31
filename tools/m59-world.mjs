@@ -18,7 +18,7 @@
 // picture the human client draws in its corner and the densest single artifact either
 // a person or an agent can look at.
 
-import { sharedRoomGeometry } from './m59-roo.mjs';
+import { sharedRoomGeometry, roomHasDeclaredFallJump } from './m59-roo.mjs';
 import { navPath } from './m59-navgrid.mjs';
 import { exitsOf, findPath, inferredExits, codeExits, edgeExitsOf, edgeCandidatesOf, LEAVE,
          AVOID_IN_TRANSIT, selectedEdgeAt } from './m59-map.mjs';
@@ -539,6 +539,37 @@ export class World {
             fine_stand_on: crossing.fine_stand_on, edge_target: crossing.edge_target,
             fine_path: [crossing.fine_stand_on], steps: bestStage.steps + fineSteps,
             ...(onlyCoarse ? { grid_only: true } : {}) });
+        }
+      }
+      // THE BAKE'S FALLBACK. Ported from upstream — a capability, not a read, so it is a
+      // genuine win for the tick keeper. The live flood above found no staging square the
+      // mover can reach (precise is empty), but the OFFLINE BAKE proved this anchor
+      // walkable from the room's own body (`from_body: true`). Offer the anchor's own
+      // crossing square anyway, so the exit does not vanish for a character the live
+      // flood cannot reach. Guarded by `roomHasDeclaredFallJump`: a fall makes a room
+      // DIRECTED, and in a room with a declared drop a door the live flood cannot reach
+      // is probably genuinely unreachable from where the body is standing (the bottom of
+      // a cliff), so the fallback would send a body to walk at a cliff face for ever.
+      if (!precise.length) {
+        const oneWayInHere = roomHasDeclaredFallJump(Number(room?.num ?? 0));
+        const baked = oneWayInHere ? null
+          : anchorFor(activeRoutes(), Number(room?.num ?? 0), Number(e.to));
+        if (baked?.from_body === true && Number.isFinite(baked.row) && Number.isFinite(baked.col)) {
+          let best = null, bestAway = Infinity;
+          for (const crossing of edgeCandidatesOf(room, e, null, { live: true })) {
+            const cr = Math.floor(crossing.fine_stand_on.y / KOD_FINENESS);
+            const cc = Math.floor(crossing.fine_stand_on.x / KOD_FINENESS);
+            const away = Math.max(Math.abs(cr - baked.row), Math.abs(cc - baked.col));
+            if (away < bestAway) { bestAway = away; best = crossing; }
+          }
+          const stage = bestAway <= 2 ? best?.stages?.[0] : null;
+          if (stage) precise.push({
+            col: stage.col, row: stage.row,
+            fine_stand_on: best.fine_stand_on, edge_target: best.edge_target,
+            fine_path: [best.fine_stand_on],
+            // Sorts last among equals, which costs nothing: it is only ever reached when
+            // it is the only entry there is.
+            steps: 9999, grid_only: true, from_bake: true });
         }
       }
       if (!precise.length) continue;

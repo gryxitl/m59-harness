@@ -114,6 +114,23 @@ function declaredFallJumpTable() {
 }
 export const FALL_MAX_SQUARES = Number(process.env.M59_FALL_MAX_SQUARES || 3);
 
+/**
+ * DOES THIS ROOM CONTAIN A DECLARED ONE-WAY DROP. Ported from upstream — a room-level
+ * question where `declaredFallJumps` answers a square-level one. A fall is the one thing
+ * in this game that makes a room DIRECTED: the squares below a cliff can be reached from
+ * above and cannot reach it back, so "these two doors are in the same region" and "I can
+ * get from here to that door" stop being the same question — and every flood in this
+ * repository answers the first. Callers use it as a caution: in a room with a declared
+ * drop, a door the live flood cannot reach is probably genuinely unreachable from there,
+ * and a bake that walked it from the room's body is not evidence about the bottom of a
+ * cliff. Used by the exit-anchor fallback in m59-world.mjs.
+ */
+export function roomHasDeclaredFallJump(roomNum) {
+  const table = declaredFallJumpTable();
+  const n = Number(roomNum);
+  return (table?.jumps ?? []).some(j => Number(j.room) === n && j?.from && j?.to);
+}
+
 // What a planned step onto ground the COARSE GRID calls solid is charged. The argument,
 // the measurement and why it is a cost rather than a refusal are all at `clipCost` in
 // `path`. Zero restores the behaviour from before it existed.
