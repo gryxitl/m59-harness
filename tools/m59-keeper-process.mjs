@@ -382,17 +382,25 @@ function stallVerdict() {
   try {
     const mv = session?._mover;
     const st = mv?.stats;
-    if (!st) return false;
+    if (!st) return null;
     const arrived = st.arrived ?? 0;
-    if (arrived !== _lastArrived) { _lastArrived = arrived; _lastArrivedAt = Date.now(); return false; }
+    if (arrived !== _lastArrived) { _lastArrived = arrived; _lastArrivedAt = Date.now(); return null; }
     // Not travelling: nothing to arrive at, so silence is not a stall.
     const moving = st.moving ?? 0;
-    if (!moving) return false;
+    if (!moving) return null;
     const idleMs = Date.now() - _lastArrivedAt;
-    if (idleMs < STALL_NO_ARRIVAL_MS) return false;
-    return `no waypoint reached in ${Math.round(idleMs / 1000)}s`
-         + ` (moving=${moving} blocked=${st.blockedTicks ?? 0} sideSteps=${mv?.ctl?.stats?.sideSteps ?? 0})`;
-  } catch { return false; }
+    if (idleMs < STALL_NO_ARRIVAL_MS) return null;
+    // STRUCTURED, NOT A SENTENCE. Ported from upstream's shape: a fleet board can render
+    // it and a watcher (m59-stuckwatch.mjs) can branch on it. The detection is still ours
+    // (outcome-based: has the mover reached any waypoint recently?), which catches the
+    // livelock their pass-based '5 idle passes' would miss; only the shape is theirs.
+    return {
+      since: _lastArrivedAt,
+      seconds: Math.round(idleMs / 1000),
+      why: `no waypoint reached in ${Math.round(idleMs / 1000)}s`
+         + ` (moving=${moving} blocked=${st.blockedTicks ?? 0} sideSteps=${mv?.ctl?.stats?.sideSteps ?? 0})`,
+    };
+  } catch { return null; }
 }
 
 function state() {

@@ -11079,6 +11079,13 @@ const TOOLS = [
           stalled: !st ? 'no keeper — nothing is driving this character'
                  : !st.running ? `keeper stopped (mode ${st.mode})`
                  : st.stalled,
+          // THE STRUCTURED STUCK FLAG, in upstream's shape ({ since, seconds, why } | null).
+          // `stalled` above is the human-readable summary (and covers the no-keeper /
+          // keeper-stopped cases); `stuck` is the machine-branchable one that
+          // m59-stuckwatch.mjs reads. Both come from the keeper's stallVerdict, which is
+          // outcome-based (has the mover reached any waypoint recently?) — the detection
+          // is ours, the shape is upstream's.
+          stuck: st?.stalled ?? null,
           ...(s.jobReport() ?? {}),
           // Whether anyone has been talking to this character, and whether anything is
           // waiting on an answer. This used to be unrepresentable here, which made the
