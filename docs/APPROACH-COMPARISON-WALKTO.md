@@ -202,3 +202,44 @@ are genuine, model-independent improvements.
 | stuck flag | **take both, in their right roles** | our detection (outcome) + their shape (structured) + their consumer (stuckwatch) |
 
 The lens does not always point the same way. It points where the evidence is.
+
+---
+
+# Two more candidates through the lens
+
+## Terminal-reason send-gate (theirs m59-movement.mjs) — already ours
+
+We already have `tools/m59-movement.mjs` with `isTerminalMovementReason`, and
+`m59-game.mjs` already references `TERMINAL_MOVEMENT_REASONS` (lines 3534,
+3541, 6425) and returns `position_outside_room_geometry` as a terminal
+reason. **Not a port — already ours.** Nothing to do.
+
+## Exit-anchor fallback (theirs world.mjs) — a genuine win, different subsystem
+
+Their `m59-world.mjs` has a fallback we lack: when the **live flood** cannot
+reach an exit anchor the **offline bake** proved walkable (`from_body: true`),
+offer the anchor's own crossing square anyway — *unless* the room has a
+declared one-way drop jump (`oneWayInHere`), because a fall makes a room
+directed and the fallback would send a body to walk at a cliff face for ever.
+
+| Lens question | Answer |
+|---|---|
+| Blindness-comp for their driver model? | **No.** It is a bake-time fix in `m59-world.mjs` (runs at room load, not during a walk). Nothing to do with blocking vs tick. |
+| Do we have the same bug? | **Yes.** We have the anchor *ranking* (witness > anchored > grid_only > steps) but not the *fallback*. If the live flood misses an anchor the bake proved walkable, we don't offer it — the exit vanishes for that character. This is the "346 anchors the bake cannot reach" class. |
+| Genuine win? | **Yes.** A capability (offer a proven-walkable exit the live flood missed), not a read, not a blindness-comp. The `oneWayInHere` guard is the safety condition. |
+| Self-contained? | **Mostly.** We already have `from_body` (routes.mjs:205), `anchorFor`, `anchorReach`, `edgeCandidatesOf`. We lack `roomHasDeclaredFallJump` (a small helper) and the fallback block itself (~50 lines in world.mjs). |
+
+**Verdict: a genuine port, but a different subsystem** (routing/bake-time, not
+movement). It is the right kind of win (capability, not blindness-comp) and
+fixes a real bug class (exits vanishing). It is *not* part of the walkTo
+movement port — it belongs in a routing/exit-offering pass.
+
+## The lens, applied five times
+
+| Candidate | Resolution | Why |
+|---|---|---|
+| walkTo | take theirs (partially) | theirs = ours + measured fixes; port policies/capabilities (4-5), skip blindness re-reads (1-3) |
+| blinkOut | keep ours | ours already more complete; their `expect` needs their strategies subsystem |
+| stuck flag | take both, in their right roles | our detection (outcome) + their shape (structured) + their consumer (stuckwatch) |
+| terminal-reason send-gate | already ours | we have m59-movement.mjs + the terminal reasons |
+| exit-anchor fallback | genuine win, different subsystem | a capability (offer proven-walkable exits the live flood missed), bake-time, not movement |
