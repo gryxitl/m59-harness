@@ -155,3 +155,51 @@ fragment.
 
 The good news: there is no hidden sixth place. The fragmentation is real but
 bounded — four active copies, one dormant system that could make it five.
+
+---
+
+# Unification — IMPLEMENTED (2026-08-31)
+
+**Option A, implemented.** `autopilot set` now writes the loadout (for
+POLICY_KEYS) in addition to the roster (for everything else). The loadout is
+the source of truth for per-character standing preferences; a restart
+re-applies the latest values (the overlay wins, and the loadout has the
+latest). The "lost on restart" surprise is gone for those keys.
+
+## What changed
+
+- `autopilot set` (m59-broker.mjs) now calls `writeLoadoutPolicy(character,
+  policy)` after `rememberAutopilot` (the roster write). The helper reads the
+  existing loadout, merges in the changed POLICY_KEYS (the closed set: hunt,
+  assigned_room, karma, buy_reagents, pulls_before_barren, fight_rounds,
+  use_bt, conflict_response_hops), and writes it back (read-modify-write,
+  preserves gear/plan/carry/sell). Best-effort: a failure must not fail the
+  tool call (the roster write already happened).
+
+## What did NOT change
+
+- The other three places (roster, broker Autopilot, keeper-process) are
+  unchanged — they remain caches/derivations of the loadout + roster.
+- The read path is unchanged: keeper startup reads roster overlaid by loadout
+  → keeper-process; broker Autopilot creation seeds from roster.
+- The protected faculties (restBelow, fleeBelow, maxCarry, etc.) are NOT in
+  POLICY_KEYS and stay in the roster only. The loadout overlay does not touch
+  them, so they do not get "lost on restart" (the loadout does not have them
+  to override).
+
+## The four places, after unification
+
+1. **Loadout** — source of truth for POLICY_KEYS (per-character standing
+   preferences). Written by `autopilot set` (NEW) and by human edit.
+2. **Roster** — source of truth for everything else (protected faculties,
+   strategy, goals, etc.). Written by `autopilot set` (as before).
+3. **Broker Autopilot** — live cache, seeded from roster, mutated by
+   `autopilot set` (as before). A cache of the loadout + roster, not an
+   independent source.
+4. **Keeper-process** — live, derived from roster + loadout at startup,
+   pushed by `autopilot set` (as before). Re-derived from the loadout on
+   restart, so it always gets the latest.
+
+The fragmentation is reduced from "four independent copies that drift" to
+"one source of truth (loadout for POLICY_KEYS, roster for the rest) + three
+caches/derivations that are kept in sync by the write path."
