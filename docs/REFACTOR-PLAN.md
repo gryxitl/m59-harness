@@ -5,37 +5,35 @@ characters, and policy that lives in three places. The goal is not to
 rewrite the game client — it is to make the failure modes we hit today
 impossible by construction.
 
-## STOP: read this first — tpeppers/m59-harness is the real-time one
+## STOP: read this first — we share the tick driver; the fork is in the mover
 
 Checked 2026-08-31. Our `upstream` remote is `tpeppers/m59-harness`.
 It is **140 commits ahead** of us (43,504 insertions across 187 files),
 and we are 247 ahead of it. The merge base is `502c627`.
 
-**The two forks are different driver models, and upstream is the
-real-time one.**
+**Both forks run the real-time tick driver.** `m59-tick.mjs` is in the
+merge base (commit `eb53e90`, "a real-time core — sense, decide,
+actuate at a fixed rate"). Our keeper-process runs it (`new TickLoop`
+→ `loop.start()`), and we have extended it further: our
+`m59-tick.mjs` is 785 lines, upstream's is still 484. **We wrote the
+real-time driver; this is not a real-time-vs-blocking difference.**
 
-- **Upstream (`tpeppers`)** runs `m59-tick.mjs`: a fixed 10Hz
-  sense→decide→actuate loop. The sensor reads pushed state (never
-  sends, never blocks). A tick never awaits an actuation. Effects are
-  observed by the next tick, not returned. A slow decide skips, it
-  does not queue. Their header names our model as the bug: "the keeper
-  is a blocking RPC script... `await stepPlan` BLOCKS, seconds at a
-  time... 82% of deaths had the keeper blind at the moment of death."
-- **Ours (`gryxitl`)** is that blocking model: `loop { sense; decide;
-  await stepPlan }`. The actuation blocks the next sense, so the
-  character acts on a stale snapshot. Everything we built today — the
-  airlock, the room stamps, the resync-wait, the force-adopt — is
-  patching that staleness. The `m59-controller-mover.mjs` (1,204
-  lines, added by us after the split, never on their side) is the
-  blocking model's position authority.
+The actual fork is the **movement layer on top of the shared tick
+loop**:
+
+- **Us (`gryxitl`):** added `m59-controller-mover.mjs` (1,204 lines) —
+  a `CharacterController` as a separate position authority, with the
+  airlock, room stamps, resync-wait, and force-adopt we built on
+  2026-08-31.
+- **Upstream (`tpeppers`):** kept the single `m59-mover.mjs` (809
+  lines) + `m59-movement.mjs` (terminal-reason contract) and hardened
+  it: the `stuck` flag, belief-vs-fact, pocket escape, `blinkOut`
+  primitive, exit-anchor bake, fall-jumps, lanes, gutters, rails.
 
 Upstream has already solved, more rigorously than we did today, most
-of the exact failure modes in this document — *because their driver
-model does not have the staleness our patches are fighting*:
+of the exact failure modes in this document — by hardening the single
+mover rather than adding a second position authority on top:
 
-- **The mover stack is already collapsed.** No controller-mover.
-  `m59-mover.mjs` (809 lines) + `m59-movement.mjs` (terminal-reason
-  contract), driven by the tick loop.
 - **"a stuck character says so, and can bring you to it"** (`3657303`):
   a `stuck` flag on every fleet row, plus `m59-stuckwatch.mjs`.
 - **"arrived is a fact about the world, and c.self is a belief about
@@ -52,16 +50,17 @@ model does not have the staleness our patches are fighting*:
 - Fall-jumps, lanes, gutters, rails, one-square corridors,
   players-as-queues: an entire body of movement work we do not have.
 
-**The refactor is: adopt upstream's tick driver + mover stack as the
-base, and port our genuinely new work on top** — the airlock-on-
-BP_ROOM_CONTENTS idea (re-expressed as "position is always the latest
-pushed state"), the `util.kod` user-position finding, and the
-loadout-only policy rule. Our controller-mover, room stamps,
-resync-wait, and force-adopt are the blocking model's band-aids and
-should be dropped, not ported.
+**The open question is which movement architecture to carry forward:**
+our controller (a second position authority with an airlock) or
+upstream's hardened single mover. The evidence from 2026-08-31 is
+that the controller's airlock/stamps/force-adopt are six mechanisms
+fighting a staleness that the single mover + "position is always the
+latest pushed state" avoids. Leaning: adopt upstream's mover, keep
+our tick-driver extensions, port our genuinely-new findings on top.
 
 The separate-project question becomes: **fork from
-`tpeppers/m59-harness` main, not from our `main`.**
+`tpeppers/m59-harness` main, then re-merge our 247 ahead-commits,
+keeping the tick-driver work and dropping the controller-mover.**
 
 ---
 
@@ -103,23 +102,17 @@ The separate-project question becomes: **fork from
 
 ## The refactor
 
-### 1. Adopt the tick driver (the big one)
+### 1. Decide the movement architecture (the big one)
 
-Replace the blocking `loop { sense; decide; await stepPlan }` keeper
-with upstream's `m59-tick.mjs` model: a fixed 10Hz loop where the
-sensor reads pushed state (free, synchronous, sends nothing), a tick
-never awaits an actuation, effects are observed by the next tick, and
-a slow decide skips rather than queues. This is what makes the
-room-transition staleness bugs impossible: there is no blocking
-actuation to leave the position stale, so the airlock, room stamps,
-resync-wait, and force-adopt all become unnecessary.
-
-### 2. One mover
-
-Upstream already has this: `m59-mover.mjs` (809 lines) +
-`m59-movement.mjs` (terminal-reason contract), driven by the tick
-loop. No controller-mover. Our 1,204-line `m59-controller-mover.mjs`
-is dropped.
+Both forks share the tick driver. The decision is the mover on top of
+it: our `m59-controller-mover.mjs` (a second position authority with
+an airlock, room stamps, resync-wait, force-adopt) vs upstream's
+hardened single `m59-mover.mjs` + `m59-movement.mjs` terminal-reason
+contract. The 2026-08-31 evidence leans upstream: the controller's
+six mechanisms fight a staleness that "position is always the latest
+pushed state" in a single mover avoids. If we adopt upstream's mover,
+our controller-mover and its band-aids are dropped; our tick-driver
+extensions (785 vs 484 lines) are kept.
 
 ### 3. Broker goes back to being a pipe
 
@@ -188,17 +181,18 @@ server.c and user.kod.
 
 ## Migration order (if done in this repo first)
 
-1. **Port the tick driver** from upstream — the foundation everything
-   else depends on. Do it behind a flag (`M59_TICK=1`) and run one
+1. **Reconcile the mover** — decide controller vs upstream's single
+   mover. If upstream's: drop our controller-mover, take their
+   `m59-mover.mjs` + `m59-movement.mjs`, keep our tick-driver
+   extensions. Do it behind a flag (`M59_MOVER=upstream`) and run one
    character on it before the rest.
-2. **Adopt upstream's mover + movement contract** — drop our
-   controller-mover.
-3. **Adopt the `stuck` flag + stuckwatch** — visibility.
-4. **Policy: loadout file only, read at startup**; delete the
-   broker's policy cache and `POST /policy`.
-5. **Rejoin moves into the keeper**; broker stops making rejoin
+2. **Adopt the `stuck` flag + stuckwatch** — visibility.
+3. **Policy: loadout file only, read at startup**; delete the
+   broker's policy cache and `POST /policy` (verify upstream still
+   has the cache before assuming).
+4. **Rejoin moves into the keeper**; broker stops making rejoin
    decisions.
-6. **Delete the dead code**: our controller-mover, room stamps,
+5. **Delete the dead code**: our controller-mover, room stamps,
    `_lastMoveRoom`, `_lastContentsRoom`, resync-wait, force-adopt,
    the delegation path.
 
