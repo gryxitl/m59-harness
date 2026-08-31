@@ -113,3 +113,45 @@ The one wrinkle: `autopilot set` rewriting a human-edited JSON file. Mitigate
 by read-modify-write (preserve untouched fields) and treating the loadout as
 canonical (if a human edit races the tool, the human's file wins on next
 restart, which is the safe direction).
+
+---
+
+# Full sweep — are there more places?
+
+A thorough sweep for other policy carriers found:
+
+## NOT separate places (ruled out)
+
+- **Fleet file** (`substrate/fleets/*.json`, e.g. `lab.json`): credentials only,
+  no policy. Not a policy carrier.
+- **Environment variables**: `M59_REST_REPEAT_MS`, `M59_FLEE_COMMIT_MS`,
+  `M59_TRACK_REST_BELOW`, etc. are *tuning knobs* (timings, thresholds for
+  specific subsystems), not per-character policy. They don't carry
+  hunt/rest/flee/carry orders.
+- **Command-line args to the keeper**: `--fleet` only (which roster to read).
+  No policy args.
+- **Per-room policy**: `assignedRoom` is per-character (in the roster/loadout),
+  not a separate per-room policy surface.
+- **`strategy` / `goals` fields**: these are *fields within* the policy object
+  (place 2/3/4), not separate places.
+
+## A FIFTH potential place (orphaned, not wired in)
+
+- **Tuning system** (`substrate/tuning.json`, gitignored): a layered
+  defaults → profiles → characters system that carries per-character policy
+  like `flee_below` and `weapon_priority`. Built (`m59-tuning.mjs`,
+  `m59-profiles.mjs`, `m59-profiles-test.mjs`) but **orphaned** — nothing in
+  the keeper, decider, or broker imports it. It is a *potential* fifth place
+  that would fragment policy further if wired in without unifying the other
+  four first.
+
+## Verdict
+
+The **four** active places are the ones documented above (loadout, roster,
+broker Autopilot, keeper-process). The tuning system is a fifth *potential*
+place, currently dormant. If it is ever wired in, it should be wired in as the
+unified source of truth (Option A, generalized) rather than as a fifth
+fragment.
+
+The good news: there is no hidden sixth place. The fragmentation is real but
+bounded — four active copies, one dormant system that could make it five.
