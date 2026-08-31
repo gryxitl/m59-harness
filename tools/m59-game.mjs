@@ -2791,7 +2791,7 @@ class Session {
     if (c.room.id !== roomId) return {
       moved: false, position: c.self ? { x: c.self.x, y: c.self.y,
         col: c.self.col, row: c.self.row } : null,
-      left_room: true, reason: 'room_changed_before_move',
+      left_room: true, reason: 'room_changed_before_move', room_changed: true,
     };
     const speed = this.moveSpeed();
     // PACE BY DISTANCE, NOT BY PACKET. A hop may now cover several squares, so a fixed
