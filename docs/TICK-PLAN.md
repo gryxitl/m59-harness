@@ -1,6 +1,6 @@
 # The real-time bot: a tick loop over pushed state
 
-**Status: the core is built and green offline; nothing drives a character with it yet.**
+**Status: the tick keeper is now the live path for this fleet.** (Updated 2026-09-01.) The legacy keeper (`m59-autopilot.mjs`) is still in the codebase and is used by other fleets in parallel. See `docs/architecture.md` for the current architecture.
 This is the plan for the next iteration. Read `docs/HANDOFF.md` first for the GOAP
 layer it reuses, and `CLAUDE.md` for the rules that outrank everything here.
 
@@ -14,7 +14,7 @@ Three drivers now exist in the tree. Only the first runs the fleet.
 |---|---|---|
 | the ladder | `m59-autopilot.mjs` | **drives every character today.** 13,196 lines |
 | GOAP-in-the-ladder | `m59-keeper-goap.mjs` | opt-in via `policy.useGOAP`, a branch INSIDE `pass()` |
-| the tick loop | `m59-tick.mjs` + `m59-decide.mjs` + `m59-route.mjs` | **built, tested, wired to nothing** |
+| the tick loop | `m59-tick.mjs` + `m59-decide.mjs` + `m59-route.mjs` | **the live path for the fleet** |
 
 The first two share a defect that is architectural rather than a bug:
 
