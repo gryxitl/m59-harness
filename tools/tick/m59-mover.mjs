@@ -105,6 +105,24 @@ export class Mover {
     this._blinkPending = false;
     this._blinkFrom = null;
     this._lastWpKey = null;
+    // PHASE 0a: the velocity-declaration hold. The server moves the character
+    // toward the declared target at the declared speed. We issue moveTo once
+    // per target; the server carries the character. We re-issue only when the
+    // target changes or the character stalls (no progress since the last send).
+    // _lastSentKey: the target (x,y) we last sent. _lastSentPos: the character
+    // position at send time (to detect progress).
+    this._lastSentKey = null;
+    this._lastSentPos = null;
+  }
+
+  /**
+   * PHASE 0a: record that we sent a move toward (keyX, keyY) while the
+   * character was at (posX, posY). The hold gate uses this to decide
+   * whether to skip the next send (target unchanged + progress).
+   */
+  _recordSend(keyX, keyY, posX, posY) {
+    this._lastSentKey = `${Math.round(keyX)},${Math.round(keyY)}`;
+    this._lastSentPos = { x: posX, y: posY };
   }
 
   /**
@@ -254,6 +272,31 @@ export class Mover {
       return { state: 'standing' };
     }
 
+    // PHASE 0c fix: BLINK PROGRESS + HOLD. When a blink is pending (cast in
+    // progress), check if the position changed (blink worked) or timed out
+    // (blink failed). If the position changed, clear the pending flag and
+    // re-plan. If not, hold the character still (movement breaks
+    // concentration and the cast fails). The hold ends when the blink
+    // resolves (position change) or the pending flag is cleared.
+    if (this._blinkPending) {
+      const curX = protocolToClient(me.x ?? (me.col * KOD_FINENESS + HALF));
+      const curY = protocolToClient(me.y ?? (me.row * KOD_FINENESS + HALF));
+      if (this._blinkFrom != null) {
+        if (Math.hypot(curX - this._blinkFrom.x, curY - this._blinkFrom.y) > 8) {
+          this.drX = curX;
+          this.drY = curY;
+          this._blinkPending = false;
+          this._blinkFrom = null;
+          this._lastWpKey = null;
+          this.stuckTicks = 0;
+          this.path = null; // replan from new position
+          return { state: 'blinked', why: 'position changed after blink' };
+        }
+      }
+      // Blink is still in progress — hold the character still.
+      return { state: 'blinking', hold: true };
+    }
+
     // Use the CURRENT position for waypoint distance and the lazy-report gate.
     // client.self is updated by every position packet (the source the probe/room-view
     // use) and is more current than world.position (updated by confirmPosition at 2s
@@ -271,26 +314,8 @@ export class Mover {
     // The 'arrived' and gate checks below use curCol/curRow (the current position).
     const effMe = { col: curCol, row: curRow, x: myProtoX, y: myProtoY };
 
-    // BLINK PROGRESS: if we cast blink last tick, check if position changed.
-    if (this._blinkPending) {
-      const curX = protocolToClient(me.x ?? (me.col * KOD_FINENESS + HALF));
-      const curY = protocolToClient(me.y ?? (me.row * KOD_FINENESS + HALF));
-      if (this._blinkFrom != null) {
-        if (Math.hypot(curX - this._blinkFrom.x, curY - this._blinkFrom.y) > 8) {
-          this.drX = curX;
-          this.drY = curY;
-          this._blinkPending = false;
-          this._blinkFrom = null;
-    this._lastWpKey = null;
-          this.stuckTicks = 0;
-          this.path = null; // replan from new position
-          return { state: 'blinked', why: 'position changed after blink' };
-        }
-      }
-      this._blinkPending = false;
-      this._blinkFrom = null;
-    this._lastWpKey = null;
-    }
+    // (Blink progress check moved to the top of tick() — see the BLINK
+    // PROGRESS + HOLD block above.)
 
     // FAN PROGRESS: if we fired a raw move last tick, check position.
     if (this._fanTarget != null) {
@@ -330,7 +355,25 @@ export class Mover {
       return { state: 'arrived', position: { col: effMe.col, row: effMe.row } };
     }
 
+    // PHASE 0a: the velocity-declaration hold (computed here, applied after PLAN).
+    // The server moves the character toward the declared target at the declared
+    // speed. If we've already sent this target AND the character is making
+    // progress (moved since the last send), hold the SEND (not the PLAN) —
+    // the A* path is still planned (to get the route), but the moveTo is not
+    // re-sent. GATED: only active when policy.ownPhysics is on (opt-in).
+    const ownPhysics = this.session?.policy?.ownPhysics === true;
+    const targetKey = `${Math.round(this.destProto.x)},${Math.round(this.destProto.y)}`;
+    let holdSend = false;
+    if (ownPhysics && this._lastSentKey === targetKey && this._lastSentPos) {
+      const progress = Math.hypot(myProtoX - this._lastSentPos.x, myProtoY - this._lastSentPos.y);
+      if (progress > 4) { // moved > 4 protocol units since the last send
+        holdSend = true;
+      }
+    }
+
     // PLAN: if no path yet, or we're stuck, plan a new one.
+    // ALWAYS RUN — the A* path gives the character the route. The hold gate
+    // only suppresses the SEND, not the PLAN.
     const needPlan = this.path == null
       || this.pathIdx >= this.path.length
       || this.stuckTicks > 10;
@@ -353,6 +396,37 @@ export class Mover {
       this.stuckTicks = 0;
     }
 
+    // PHASE 0a: if we're holding the send (target unchanged + progress),
+    // skip the send logic entirely. The A* path was planned (above); the
+    // server is carrying the character. Return 'moving' with hold=true.
+    if (holdSend) {
+      return { state: 'moving', hold: true };
+    }
+
+    // PHASE 0c: the slide-along-wall check. When ownPhysics is on and we're
+    // about to send (not holding), check the direct path to the target. If
+    // the fine model says it's blocked by a wall segment, don't send the
+    // direct velocity (that walks into the wall) — fire the fan (slide along
+    // the wall) instead. The fan tries 8 headings; the one that clears the
+    // wall is the slide.
+    if (ownPhysics) {
+      const geo = this.session?.world?.geometry;
+      if (geo?.traceFineMoveClient) {
+        const clientX = protocolToClient(myProtoX), clientY = protocolToClient(myProtoY);
+        const destClientX = protocolToClient(this.destProto.x), destClientY = protocolToClient(this.destProto.y);
+        const trace = geo.traceFineMoveClient(clientX, clientY, destClientX, destClientY, { slide: false, playerRadius: 1 });
+        if (trace.blocked && !trace.arrived) {
+          // Direct path is blocked by a wall. Fire the fan (slide) instead of
+          // the direct velocity.
+          if (this._fanIndex == null && this._fanTarget == null) {
+            this._fanIndex = 0;
+            this._fanFrom = { x: clientX, y: clientY };
+            return { state: 'raw-move', fanIndex: 0, why: '0c: direct path blocked, sliding along wall' };
+          }
+        }
+      }
+    }
+
     // If the fan is active (we were in raw-move fallback), fire the next heading.
     if (this._fanTarget != null || (this._fanIndex != null && this._fanIndex < 9)) {
       const FAN = [0, -0.35, 0.35, -0.75, 0.75, -1.2, 1.2, -1.7, 1.7];
@@ -370,6 +444,7 @@ export class Mover {
       const px = Math.round(fx);
       const py = Math.round(fy);
       Promise.resolve(s.pacer.submit('move', () => c.moveTo(px, py, 18, c.room?.id ?? 0), 100)).catch(() => {});
+      this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
       this._fanTarget = { x: protocolToClient(fx), y: protocolToClient(fy) };
       this._fanFrom = { x: myX, y: myY };
       this._fanIndex = idx;
@@ -432,6 +507,7 @@ export class Mover {
         if (Date.now() - (this._lastRawPushAt ?? 0) >= 500) {
           this._lastRawPushAt = Date.now();
           Promise.resolve(s.pacer.submit('move', () => s.client.moveTo(rawX, rawY, 18, s.client.room?.id ?? 0), 100)).catch(() => {});
+          this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
         }
         if (Date.now() - (this._lastRawLogAt ?? 0) > 5000) {
           this._lastRawLogAt = Date.now();
@@ -505,6 +581,7 @@ export class Mover {
         // ("goal square has no floor") no longer gates our movement. The server
         // is the collision authority; it records what we say.
         Promise.resolve(s.client.moveTo(stepProtoX, stepProtoY, 18, s.client.room?.id ?? 0)).catch(() => {});
+        this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
         this._recordReport(stepProtoX, stepProtoY);
       }
       return { state: 'moving', to: { col: stepCol, row: stepRow } };
@@ -647,6 +724,7 @@ export class Mover {
           console.error(`[movedbg] t3 gateOK step=(${stepCol},${stepRow}) me=(${me.col},${me.row}) moveTo sent`); })
         .catch(e => { if (process.env.M59_MOVE_DEBUG !== '0')
           console.error(`[movedbg] t3 gateOK step=(${stepCol},${stepRow}) ERR ${e.message}`); });
+      this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
       this._recordReport(enrProtoX, enrProtoY);
     } else {
       if (process.env.M59_MOVE_DEBUG !== '0')
@@ -730,6 +808,7 @@ export class Mover {
     if (!this._movementGateOk(protoX, protoY, serverX, serverY, serverX, serverY)) return false;
     const px = Math.round(protoX), py = Math.round(protoY);
     Promise.resolve(s.pacer.submit('move', () => c.moveTo(px, py, 18, c.room?.id ?? 0), 100)).catch(() => {});
+    this._recordSend(this.destProto?.x ?? protoX, this.destProto?.y ?? protoY, protoX, protoY);
     this._recordReport(protoX, protoY);
     return true;
   }
@@ -811,6 +890,10 @@ export class Mover {
    * Try to cast blink to escape a geometry pocket.
    */
   _tryBlink() {
+    // PHASE 0c fix: don't cast blink while moving. Movement breaks
+    // concentration and the cast fails. Only blink when the character is
+    // stalled (stuckTicks > 0 = no position change since the last tick).
+    if (this.stuckTicks === 0) return false; // moving, don't blink
     const c = this.session?.client;
     if (!c?.cast) return false;
     const blink = (c.spells ?? []).find(sp => {

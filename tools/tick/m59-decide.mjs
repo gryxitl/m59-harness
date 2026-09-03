@@ -1210,6 +1210,30 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     if (active?.goal === 'leave_raza') {
       const router = session._router;
       if (router) {
+        // If the character is already in the Grand Museum (1018), walk to
+        // the portal (col 11, row 2) and hold. The portal is a floor tile
+        // that triggers a teleport when stepped on. The location is from
+        // the go action's exit list (kind: 'portal', col: 11, row: 2).
+        // TODO: query dynamically from session.world.exits() once the
+        // cache is reliable.
+        const roomNum = session?.world?.room?.num;
+        if (roomNum === 1018) {
+          const pc = 11, pr = 2; // portal location (from go action exit list)
+          const c = session.client;
+          const me = c?.self;
+          const atPortal = me && Math.abs(me.col - pc) <= 1 && Math.abs(me.row - pr) <= 1;
+          if (!atPortal) {
+            // Route to the portal.
+            act.walk?.(pc, pr) ?? c?.moveToSquare?.(pc, pr, 18);
+            onDecision?.({ ticks, goal: 'leave_raza', action: 'travel',
+              what: `walking to the portal (${pc}, ${pr})`, sent: true });
+            return;
+          }
+          // At the portal — hold and wait for the teleport to trigger.
+          onDecision?.({ ticks, goal: 'leave_raza', action: null,
+            what: `at the portal (${pc}, ${pr}) — waiting for the teleport`, sent: false });
+          return;
+        }
         if (router.dest !== 1018) {
           router.to(1018);
           onDecision?.({ ticks, goal: 'leave_raza', action: 'travel',

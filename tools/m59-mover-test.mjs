@@ -252,5 +252,67 @@ console.log('\nno fine path: falls back to direct step');
   ok('a step was sent', s2.length === 1, JSON.stringify(s2));
 }
 
+console.log('\nPHASE 0a: the velocity-declaration hold (ownPhysics on)');
+{
+  const { mover, sent, session } = rig({ geo: clearGeometry() });
+  session.policy = { ownPhysics: true };
+  mover.to(4, 2); // 2 squares away
+  const r1 = mover.tick();
+  ok('first tick: sends a move', r1.state === 'moving', r1.state);
+  ok('exactly one move sent', sent.length === 1, JSON.stringify(sent));
+  // Advance the position (the server carried the character).
+  advance(session, sent);
+  const r2 = mover.tick();
+  ok('second tick: holds (no send)', r2.state === 'moving' && r2.hold === true, r2.state + ' hold=' + r2.hold);
+  ok('still exactly one move sent (held)', sent.length === 0, JSON.stringify(sent));
+  const r3 = mover.tick();
+  ok('third tick: still holds', r3.state === 'moving' && r3.hold === true, r3.state + ' hold=' + r3.hold);
+  ok('still exactly one move sent (held)', sent.length === 0, JSON.stringify(sent));
+}
+
+console.log('\nPHASE 0a: the hold gate is off by default (ownPhysics off)');
+{
+  const { mover, sent, session } = rig({ geo: clearGeometry() });
+  // No policy.ownPhysics — the default step model.
+  mover.to(4, 2);
+  const r1 = mover.tick();
+  ok('first tick: sends a move', r1.state === 'moving', r1.state);
+  ok('exactly one move sent', sent.length === 1, JSON.stringify(sent));
+  advance(session, sent);
+  const r2 = mover.tick();
+  ok('second tick: sends again (no hold, step model)', r2.state === 'moving' && r2.hold !== true, r2.state);
+  ok('a second move was sent (step model re-sends)', sent.length === 1, JSON.stringify(sent));
+}
+
+console.log('\nPHASE 0c: the slide-along-wall check (ownPhysics on, direct path blocked)');
+{
+  // Geometry where the direct path to the dest is blocked by a wall.
+  const wallGeo = {
+    collisionReady: true,
+    traceFineMoveClient() { return { blocked: true, moved: false, arrived: false }; },
+    finePathProtocol() { return { found: false, reason: 'wall', waypoints: [] }; },
+  };
+  const { mover, sent, session } = rig({ geo: wallGeo });
+  session.policy = { ownPhysics: true };
+  mover.to(4, 2); // 2 squares away, direct path blocked
+  const r1 = mover.tick();
+  ok('first tick: fires the fan (slide), not the direct velocity', r1.state === 'raw-move', r1.state + ' ' + (r1.why ?? ''));
+  ok('fan index 0', r1.fanIndex === 0, r1.fanIndex);
+}
+
+console.log('\nPHASE 0c: the slide check is off by default (ownPhysics off)');
+{
+  const wallGeo = {
+    collisionReady: true,
+    traceFineMoveClient() { return { blocked: true, moved: false, arrived: false }; },
+    finePathProtocol() { return { found: false, reason: 'wall', waypoints: [] }; },
+  };
+  const { mover, sent, session } = rig({ geo: wallGeo });
+  // No policy.ownPhysics — the default step model.
+  mover.to(4, 2);
+  const r1 = mover.tick();
+  ok('first tick: does NOT fire the 0c slide (step model)', r1.state !== 'raw-move' || r1.why !== '0c: direct path blocked, sliding along wall', r1.state + ' ' + (r1.why ?? ''));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
