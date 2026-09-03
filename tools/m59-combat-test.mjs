@@ -3,7 +3,7 @@
 //
 // Design: engage the mob directly (no safe-spot-first). Retreat to cover only
 // when HP is low. Phases: idle/close (approach), fight (swing), retreat (cover).
-import { CombatController } from './m59-combat.mjs';
+import { CombatController } from './tick/m59-combat.mjs';
 
 let pass = 0, fail = 0;
 const ok = (what, cond, detail) => {
@@ -139,7 +139,7 @@ console.log('\ncasts zap when it has blue mushrooms and the enchantment is down'
   };
   const act = { face: () => {}, swing: () => {} };
   const frame = { position: { col: 5, row: 5 }, objects, vitals: { health: { value: 100, max: 100, pct: 100 } } };
-  const { CombatController } = await import('./m59-combat.mjs');
+  const { CombatController } = await import('./tick/m59-combat.mjs');
   const controller = new CombatController(session);
   const r = controller.tick(frame, act, { has_target: true });
   ok('casts zap (kind=zap-cast)', r.kind === 'zap-cast', r.kind + ' ' + (r.what ?? ''));
@@ -177,7 +177,7 @@ console.log('\ndoes not cast zap when the enchantment is already active');
   };
   const act = { face: () => {}, swing: (id) => sent.push({ swing: id }) };
   const frame = { position: { col: 5, row: 5 }, objects, vitals: { health: { value: 100, max: 100, pct: 100 } } };
-  const { CombatController } = await import('./m59-combat.mjs');
+  const { CombatController } = await import('./tick/m59-combat.mjs');
   const controller = new CombatController(session);
   const r = controller.tick(frame, act, { has_target: true });
   ok('does not cast (already active)', r.kind !== 'zap-cast', r.kind);

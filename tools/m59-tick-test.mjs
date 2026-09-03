@@ -6,7 +6,7 @@
 // Every one of these pins a rule that is easy to undo by accident, and each undoing
 // puts the fleet back in the model this replaced: a blocking script whose sense rate is
 // decided by how long its last action took.
-import { Sensor, Actuator, TickLoop } from './m59-tick.mjs';
+import { Sensor, Actuator, TickLoop } from './tick/m59-tick.mjs';
 
 let pass = 0, fail = 0;
 const ok = (what, cond, detail) => {
@@ -178,7 +178,7 @@ console.log('\na throwing decide does not kill the loop');
 console.log('\nthe legacy driver is untouched');
 {
   const src = await import('node:fs').then(fs =>
-    fs.readFileSync(new URL('./m59-tick.mjs', import.meta.url), 'utf8'));
+    fs.readFileSync(new URL('./tick/m59-tick.mjs', import.meta.url), 'utf8'));
   // The prose discusses the old model at length; what matters is that nothing IMPORTS
   // it. Testing for the string alone would forbid explaining what this replaced.
   ok('nothing here imports the autopilot',

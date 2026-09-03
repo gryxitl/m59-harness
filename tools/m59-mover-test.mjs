@@ -8,7 +8,7 @@
 // gets this wrong (it sees no blocked squares); the fine model routes
 // around the segment.
 
-import { Mover, MOVEUNITS_PROTO } from './m59-mover.mjs';
+import { Mover, MOVEUNITS_PROTO } from './tick/m59-mover.mjs';
 
 let pass = 0, fail = 0;
 const ok = (what, cond, detail) => {
@@ -109,7 +109,7 @@ function rig({ col = 2, row = 2, destCol = 8, destRow = 2, geo } = {}) {
     walkTo: (col, row) => { sent.push([col * 64 + 32, row * 64 + 32]); return Promise.resolve({ arrived: true }); },
     world: { geometry: geo ?? wallGeometry() },
   };
-  const mover = new Mover(session);
+  const mover = new Mover(session, { reportIntervalMs: 0 });  // the rig ticks in microseconds; the 1s client gate is a LIVE constraint
   return { mover, sent, session };
 }
 

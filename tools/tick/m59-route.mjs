@@ -33,10 +33,10 @@
 // Walking from A to B does not put you where the return trip starts, and the edge back
 // to A can be most of a room away from where you arrive. So the leg is recomputed from
 // scratch on every room change rather than reversed, inverted, or remembered.
-import { loadMap, findPath } from './m59-map.mjs';
-import { objIdToNum } from './m59-hunt-room.mjs';
+import { loadMap, findPath } from '../m59-map.mjs';
+import { objIdToNum } from '../m59-hunt-room.mjs';
 import { Mover } from './m59-mover.mjs';
-import { KOD_FINENESS } from './m59-roo.mjs';
+import { KOD_FINENESS } from '../m59-roo.mjs';
 
 // WHICH MAP ROOM ARE WE ACTUALLY IN.
 //

@@ -31,14 +31,14 @@
 // copy of that judgement -- the shape this repository keeps paying for -- it imports the
 // SAME pure helpers the atomics bind with: pickWeapon, pickFood, knownSpells. Those are
 // synchronous by construction, which is why they can be shared at all.
-import { evaluate } from './m59-worldstate.mjs';
-import { KOD_FINENESS } from './m59-roo.mjs';
-import { planFor } from './m59-plan.mjs';
-import { pickWeapon } from './m59-act/equip.mjs';
-import { pickFood } from './m59-act/eat.mjs';
-import { knownSpells } from './m59-act/cast.mjs';
-import { affordances } from './m59-parse.mjs';
-import './m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
+import { evaluate } from '../m59-worldstate.mjs';
+import { KOD_FINENESS } from '../m59-roo.mjs';
+import { planFor } from '../m59-plan.mjs';
+import { pickWeapon } from '../m59-act/equip.mjs';
+import { pickFood } from '../m59-act/eat.mjs';
+import { knownSpells } from '../m59-act/cast.mjs';
+import { affordances } from '../m59-parse.mjs';
+import '../m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
 
 // BROKEN-WEAPON TRACKING (the fix for the shattered-mace loop).
 //
@@ -122,15 +122,16 @@ function pickWieldableWeapon(client, session = null) {
       && WEAPON.test(String(client.rsc?.get?.(o.nameRsc) ?? o.name ?? '')));
   return candidates.sort((a, b) => String(client.rsc?.get?.(b.nameRsc) ?? b.name ?? '').localeCompare(String(client.rsc?.get?.(a.nameRsc) ?? a.name ?? '')))[0] ?? null;
 }
-import { nearestHuntRoom } from './m59-hunt-room.mjs';
-import { loadSpawns } from './m59-spawns.mjs';
+import { nearestHuntRoom } from '../m59-hunt-room.mjs';
+import { loadSpawns } from '../m59-spawns.mjs';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SPAWNS_FILE = join(__dirname, '..', 'compendium', 'data', 'spawns.json');
-import { loadMap } from './m59-map.mjs';
+import { loadMap } from '../m59-map.mjs';
+import { loadoutFor } from '../m59-loadout.mjs';
 import { resolveRoomNum, routeIntent } from './m59-route.mjs';
 import { CombatController } from './m59-combat.mjs';
 
@@ -275,7 +276,7 @@ export const INTENTS = {
       }
     }
     if (s) { s._buyInFlight = true; s._buyingActive = true; }
-    import('./m59-act/buy.mjs').then(({ buy }) => {
+    import('../m59-act/buy.mjs').then(({ buy }) => {
       return buy(c, s, {});   // no itemId/wantName: the atomic picks a weapon if unarmed
     }).then(res => {
       console.error(`[buy] ${s?.name ?? 'keeper'}: ${res?.bought ? 'bought ' + res.bought : 'no buy (' + (res?.reason ?? 'unknown') + ')'}`);
@@ -550,10 +551,18 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
               // freeze, so the turn lands before the cast begins and no further turn/move
               // packets go out to break it.
               c.turn?.(faceDeg);
+              // STAND BEFORE BLINK: a resting character has PFLAG_NO_MAGIC set
+              // (player.kod:1166) and the server refuses the cast whole. UC_STAND ->
+              // StopResting() -> ResetPlayerFlagList() clears the flag; wait 2s for
+              // the server to process it before the cast begins. This is a sync context
+              // (the decider's tick handler), so we can't await — send the stand packet
+              // and delay the cast via the freeze window below (the loop is frozen for
+              // BLINK_MS, which includes the 2s stand delay).
+              try { session.pacer?.submit?.('stand', () => c.stand?.()); } catch {}
               const loop = session?._tickLoop;
               if (loop) {
                 loop._frozen = true;
-                const BLINK_MS = 11000;  // blink casts ~10s; hold a beat past it
+                const BLINK_MS = 13000;  // blink casts ~10s + 2s stand delay; hold a beat past it
                 // Unfreeze when the relocation lands OR after the cast window, whichever
                 // first. The moved-event path is the reliable one (the server confirms the
                 // teleport); the timeout is the backstop so a failed cast can't hold the
@@ -561,9 +570,14 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
                 const since = c.evSeq;
                 let unfrozen = false;
                 const unfreeze = () => { if (!unfrozen) { unfrozen = true; loop._frozen = false; } };
-                c.cast(blink.id, [])
-                  .then?.(() => { try { c.waitFor?.({ since, kinds: ['moved'], timeoutMs: BLINK_MS }).then(() => unfreeze()).catch(() => unfreeze()); } catch { unfreeze(); } })
-                  .catch?.(() => unfreeze());
+                // c.cast() is a fire-and-forget send that returns undefined, not a
+                // promise. Promise.resolve() wraps it so .then() is safe. The
+                // moved-event path is the reliable one (the server confirms the
+                // teleport); the timeout is the backstop so a failed cast can't
+                // hold the character frozen for ever.
+                Promise.resolve(c.cast(blink.id, []))
+                  .then(() => { try { c.waitFor?.({ since, kinds: ['moved'], timeoutMs: BLINK_MS }).then(() => unfreeze()).catch(() => unfreeze()); } catch { unfreeze(); } })
+                  .catch(() => unfreeze());
                 setTimeout(unfreeze, BLINK_MS);  // backstop
               } else {
                 // No tick loop to freeze (shouldn't happen in the tick driver, but the
@@ -588,6 +602,35 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     const ws = evaluate({ client, session, policy, agent: session.name });
     // Expose the raw vigor value for the vigor_low goal.
     ws._vigor = client?.vitals?.()?.vigor?.value ?? null;
+    // Expose room number and max HP for the hunt goal's Raza check.
+    ws._roomNum = session?.world?.room?.num ?? client?.room?.num ?? null;
+    ws._maxHp = client?.vitals?.()?.health?.max ?? null;
+
+    // CASTER GATE (decorated here, NOT in worldstate: the loadout is a file read and
+    // worldstate producers are pure by contract — see its header). A caster is a
+    // character whose loadout plans SCHOOLS but no weaponcraft track
+    // (plan.weapon_level == null and no weaponcraft row in the learning queue).
+    // For such a build the `armed` goal is a livelock: there is no weapon to equip,
+    // the broken-weapon fallthrough refuses to escalate to `buy` on an empty pack,
+    // and `armed` sits above `hunt` in the ladder so travel is preempted every tick
+    // (Kage, a pure Shal'ille caster, stood in Marion for an hour on exactly this).
+    // Unarmed combat is legal — the threat band just halves (the game's own rule) —
+    // so the safe default is `false` (NOT a caster), preserving the old behavior for
+    // every character without an explicit caster loadout.
+    ws.is_caster = (() => {
+      try {
+        const who = client?.me?.name;
+        if (!who) return false;
+        const l = loadoutFor(who);
+        if (!l) return false;
+        const plan = l.plan ?? {};
+        const hasWeaponTrack = Number(plan.weapon_level) > 0
+          || (Array.isArray(plan.learning_queue) && plan.learning_queue.some(
+            q => String(q?.track ?? '').toLowerCase().startsWith('weaponcraft')));
+        const hasSchools = Object.keys(plan.schools ?? {}).length > 0;
+        return hasSchools && !hasWeaponTrack;
+      } catch { return false; }
+    })();
 
     // CLEAR THE BUY-ROUTE FLAG ONCE ARMED. The `armed` goal set _buyingRoute while
     // routing to the smith to buy a weapon. Once the character is armed (the buy
@@ -1160,6 +1203,28 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       return;
     }
 
+    // 2c2. LEAVE RAZA: route to the Grand Museum (1018) where the
+    // portal out is. The portal is one-way: step on it twice and
+    // you're out. This goal just sets the router's destination; the
+    // operator (or a future intent) steps on the portal.
+    if (active?.goal === 'leave_raza') {
+      const router = session._router;
+      if (router) {
+        if (router.dest !== 1018) {
+          router.to(1018);
+          onDecision?.({ ticks, goal: 'leave_raza', action: 'travel',
+            what: 'route to the Grand Museum (1018) for the portal out', sent: true });
+          return;
+        }
+        const r = routeIntent(router)(frame, act);
+        onDecision?.({ ticks, goal: 'leave_raza', action: 'travel',
+          what: r.what ?? r.why, sent: r.sent });
+        return;
+      }
+      onDecision?.({ ticks, goal: 'leave_raza', action: null, why: 'no router' });
+      return;
+    }
+
     // 2d. HUNT GOAL: if nothing better to do and no target in band,
     // pick a hunt room and set the router's destination. This is a
     // directional decision, not a world-state transition — it sets
@@ -1323,19 +1388,40 @@ export const DEFAULT_GOALS = [
       const v = ws._vigor;
       return v != null && v < 60 && ws.in_reach !== true;
     } },
+  // LEAVE RAZA: in the newbie zone at level >= 25, route to the Grand
+  // Museum (1018) where the portal out is. This takes priority over
+  // _fight: Raza generates only level-25 mummies; from 25 onward the
+  // entire zone pays nothing. The character should leave, not fight.
+  { goal: 'leave_raza', when: ws => {
+      const roomNum = ws._roomNum;
+      if (roomNum == null) return false;
+      if (roomNum < 1011 || roomNum > 1018) return false;
+      const maxHp = ws._maxHp;
+      return maxHp != null && maxHp >= 25;
+    } },
   { goal: '_fight',   when: ws => ws.has_target === true && ws.target_in_band === true
                                  && ws.critical !== true
                                  && (ws.hurt === true || ws.vigor_floor !== false)
                                  // Don't fight if the target is on a
                                  // different elevation (unreachable).
                                  && ws._targetElevated !== true },
-  { goal: 'armed',    when: ws => ws.armed === false },
+  { goal: 'armed',    when: ws => ws.armed === false && ws.is_caster !== true },
   // HUNT before eating: the character should go find work (a mob to fight)
   // rather than sitting in town eating. Vigor management matters during
   // combat, not while idle. If vigor is truly too low to fight, the
   // _fight goal's vigor_floor check prevents engagement, and vigor_low
   // (above) handles resting. Eating while idle just delays the hunt.
-  { goal: 'hunt',     when: ws => ws.has_target === false || ws.target_in_band === false },
+  // DO NOT HUNT WHEN THE CHARACTER IS IN THE RAZA CLUSTER AT LEVEL >= 25.
+  // Raza generates only level-25 mummies; from 25 onward the entire
+  // newbie zone pays nothing. The character should leave, not hunt.
+  { goal: 'hunt',     when: ws => {
+      const roomNum = ws._roomNum;
+      if (roomNum != null && roomNum >= 1011 && roomNum <= 1018) {
+        const maxHp = ws._maxHp;
+        if (maxHp != null && maxHp >= 25) return false;
+      }
+      return ws.has_target === false || ws.target_in_band === false;
+    } },
   { goal: 'vigor_ok', when: ws => ws.vigor_ok === false && ws.has_food === true
                                  && ws.has_target !== true },
   { goal: 'has_food', when: ws => ws.has_food === false && ws.has_reagents === true },

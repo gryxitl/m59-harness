@@ -30,8 +30,8 @@
 // The raw-move fallback remains as a last resort for stale geometry where
 // the fine model says "wall" but the server says "floor".
 
-import { protocolToClient, clientToProtocol, KOD_FINENESS, PLAYER_RADIUS } from './m59-roo.mjs';
-import './m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
+import { protocolToClient, clientToProtocol, KOD_FINENESS, PLAYER_RADIUS } from '../m59-roo.mjs';
+import '../m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
 
 // 256 client units = 16 protocol units per 100ms tick (walking).
 // Running is 2 * MOVEUNITS = 32 protocol units.
@@ -70,8 +70,12 @@ const HALF = KOD_FINENESS / 2; // 32 protocol units = half a square
  *   mover.clear();               // stop
  */
 export class Mover {
-  constructor(session) {
+  constructor(session, { reportIntervalMs = MOVE_INTERVAL_MS } = {}) {
     this.session = session;
+    // The move gate's interval, injectable so the test rig can tick faster than
+    // one step per second of wall time (the live default, MOVE_INTERVAL_MS, matches
+    // the client's own report rate — move.c:60 — and must not change).
+    this.reportIntervalMs = reportIntervalMs;
     this.dest = null;       // { col, row } in protocol square coordinates
     this.destProto = null;  // { x, y } in protocol units (centre of dest square)
     this.path = null;       // [ {x, y} ] waypoints in protocol units, index 0 = next
@@ -624,7 +628,7 @@ export class Mover {
         .then(wr => { if (process.env.M59_MOVE_DEBUG !== '0')
           console.error(`[movedbg] t3 gateOK step=(${stepCol},${stepRow}) me=(${me.col},${me.row}) walkTo=>${JSON.stringify(wr)}`); })
         .catch(e => { if (process.env.M59_MOVE_DEBUG !== '0')
-          console.error(`[movedbg] t3 gateOK step=(${stepCol},${stepRow}) ERR ${e.message}`); });
+          console.error(`[movedbg] t3 gateOK step=(${stepCol},${stepRow}) ERR ${e.message}\n${e.stack}`); });
       this._recordReport(enrProtoX, enrProtoY);
     } else {
       if (process.env.M59_MOVE_DEBUG !== '0')
@@ -694,7 +698,7 @@ export class Mover {
     const dy = refY == null ? Infinity : (protoY - refY);
     const moved2 = refX == null ? Infinity : (dx * dx + dy * dy);
     const movedEnough = moved2 > MOVE_THRESHOLD_PROTO2;
-    const intervalOk = (now - this._lastReportAt) >= MOVE_INTERVAL_MS;
+    const intervalOk = (now - this._lastReportAt) >= (this.reportIntervalMs ?? MOVE_INTERVAL_MS);
     return movedEnough && intervalOk;
   }
   _recordReport(protoX, protoY) {
@@ -800,9 +804,16 @@ export class Mover {
     });
     if (!blink) return false;
     try {
-      const rec = this.session.pacer.submit('blink', () => c.cast(blink.id, []), 1500);
-      Promise.resolve(rec).catch(() => {});
-      this._blinkPending = true;
+      // STAND BEFORE BLINK: a resting character has PFLAG_NO_MAGIC set
+      // (player.kod:1166) and the server refuses the cast whole. UC_STAND ->
+      // StopResting() -> ResetPlayerFlagList() clears the flag; wait 2s for
+      // the server to process it before the cast begins.
+      this.session.pacer.submit('stand', () => c.stand?.()).catch(() => {});
+      setTimeout(() => {
+        const rec = this.session.pacer.submit('blink', () => c.cast(blink.id, []), 1500);
+        Promise.resolve(rec).catch(() => {});
+        this._blinkPending = true;
+      }, 2000);
       return true;
     } catch { return false; }
   }

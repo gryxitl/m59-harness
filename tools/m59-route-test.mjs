@@ -6,8 +6,8 @@
 // A route is the case that most obviously does not fit a blocking model, and the thing
 // under test is that it is STATE: each tick sends at most one square and returns, and
 // progress is observed between ticks rather than assumed within a call.
-import { Router, routeIntent } from './m59-route.mjs';
-import { Actuator } from './m59-tick.mjs';
+import { Router, routeIntent } from './tick/m59-route.mjs';
+import { Actuator } from './tick/m59-tick.mjs';
 
 let pass = 0, fail = 0;
 const ok = (what, cond, detail) => {

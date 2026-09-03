@@ -19,9 +19,9 @@ import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { createServer } from 'http';
 import { Session, Pacer } from './m59-session.mjs';
 import { autopilotFor, dropAutopilot, autopilotIfAny } from './m59-autopilot.mjs';
-import { TickLoop } from './m59-tick.mjs';
-import { makeDecider, DEFAULT_GOALS, intend, INTENTS } from './m59-decide.mjs';
-import { Router, routeIntent } from './m59-route.mjs';
+import { TickLoop } from './tick/m59-tick.mjs';
+import { makeDecider, DEFAULT_GOALS, intend, INTENTS } from './tick/m59-decide.mjs';
+import { Router, routeIntent } from './tick/m59-route.mjs';
 import { protocolToClient, clientToProtocol, buildAllRoomGeometry } from './m59-roo.mjs';
 import { loadMap, buildReverseEdges } from './m59-map.mjs';
 import { attachStepMasks } from './m59-routes.mjs';
@@ -469,12 +469,20 @@ const server = createServer(async (req, res) => {
         // is the same source the /health endpoint uses (1011 for Raza Inn).
         room_num: session.world?.room?.num ?? c?.room?.id ?? null,
         // The decider's current target, for the 3D viewer.
+        // Prefer the combat target; fall back to the router's travel destination.
         target: (() => {
           const tid = session._tickDecide?.state?.()?.targetId ?? null;
-          if (tid == null) return null;
-          const t = room.objects.get(tid);
-          if (!t) return null;
-          return { col: t.col, row: t.row, name: c?.rsc?.get?.(t.nameRsc) ?? '' };
+          if (tid != null) {
+            const t = room.objects.get(tid);
+            if (t) return { col: t.col, row: t.row, name: c?.rsc?.get?.(t.nameRsc) ?? '' };
+          }
+          const router = session._router;
+          if (router?.status?.()) {
+            const st = router.status();
+            const so = st.leg?.stand_on;
+            if (so && so.col != null) return { col: so.col, row: so.row, name: `travel to room ${st.dest}` };
+          }
+          return null;
         })(),
       });
       return;
@@ -603,8 +611,26 @@ const server = createServer(async (req, res) => {
       const me = c?.self;
       const geo = session?.world?.geometry;
       if (!me) return json({ error: 'no self' });
-      const tid = session._tickDecide?.state?.()?.targetId ?? null;
-      const t = tid != null ? c?.room?.objects?.get?.(tid) : null;
+      // The target: prefer the decider's combat target; fall back to the
+      // router's current leg staging square (the travel destination).
+      let tid = session._tickDecide?.state?.()?.targetId ?? null;
+      let t = tid != null ? c?.room?.objects?.get?.(tid) : null;
+      let isTravel = false;
+      if (!t || t.col == null) {
+        // No combat target — check the router's current leg for a travel destination.
+        const router = session._router;
+        if (router?.status?.()) {
+          const st = router.status();
+          console.error(`[path3d] router status: ${JSON.stringify(st).slice(0,200)}`);
+          const so = st.leg?.stand_on;
+          if (so && so.col != null && so.row != null) {
+            t = { col: so.col, row: so.row, name: `travel to room ${st.dest}` };
+            isTravel = true;
+          }
+        } else {
+          console.error(`[path3d] no router or no status`);
+        }
+      }
       if (!t || t.col == null) return json({ path: [], direct: null });
       const F = 64, H = 32; // KOD_FINENESS, half
       const sx = me.col * F + H, sy = me.row * F + H;
@@ -636,7 +662,7 @@ const server = createServer(async (req, res) => {
           };
         } catch (e) { direct = { blocked: false, error: e.message }; }
       }
-      json({ path, direct, self: { x: me.col - 1, z: me.row - 1 }, target: { x: t.col - 1, z: t.row - 1 } });
+      json({ path, direct, self: { x: me.col - 1, z: me.row - 1 }, target: { x: t.col - 1, z: t.row - 1 }, is_travel: isTravel });
       return;
     }
     if (req.method === 'GET' && path === '/probe') {
@@ -889,7 +915,18 @@ const server = createServer(async (req, res) => {
               break;
             }
             const maxHops = args.maxHops ?? 5;
-            result = await session.travel(dest, { maxHops });
+            // FIRE-AND-FORGET ON THE TICK DRIVER. The old model awaited the
+            // entire journey (blocking the HTTP handler for minutes). On the
+            // tick driver, set the router's destination and return immediately;
+            // the tick loop's travel/hunt goal drives the hops one per tick.
+            const router = session._router;
+            if (router) {
+              router.to(Number(dest));
+              result = { sent: true, what: `travel to room ${dest} (router set, tick-driven)` };
+            } else {
+              // No router (standalone session): fall back to the blocking call.
+              result = await session.travel(dest, { maxHops });
+            }
             break;
           }
           case 'go': {
@@ -899,7 +936,14 @@ const server = createServer(async (req, res) => {
             if (!candidates.length) {
               result = { error: `no exit to ${dest}`, exits: exits.map(e => ({ kind: e.kind, to: e.to, col: e.stand_on?.col, row: e.stand_on?.row })) };
             } else {
-              result = await session.leaveViaAny(candidates);
+              // FIRE-AND-FORGET ON THE TICK DRIVER. `leaveViaAny` is a long
+              // operation (walk to the exit square, then go through). Awaiting
+              // it blocks the HTTP handler for the entire walk. Kick it off
+              // and return immediately; the tick loop drives the movement.
+              session.leaveViaAny(candidates)
+                .then(r => { console.error(`[go] ${session.name ?? '?'}: ${JSON.stringify(r).slice(0,200)}`); })
+                .catch(e => console.error(`[go] ${session.name ?? '?'} err: ${e.message}`));
+              result = { sent: true, what: `go to ${dest} (fire-and-forget)` };
             }
             break;
           }
@@ -957,6 +1001,12 @@ const server = createServer(async (req, res) => {
               // the character relocated) or a max timeout, rather than a fixed short
               // hold that would unfreeze too early and let the next move packet kill
               // the cast.
+              // STAND BEFORE CAST: a resting character has PFLAG_NO_MAGIC set
+              // (player.kod:1166) and the server refuses the cast whole. UC_STAND ->
+              // StopResting() -> ResetPlayerFlagList() clears the flag; wait 2s for
+              // the server to process it before the cast begins.
+              await session.pacer.submit('stand', () => c.stand?.()).catch(() => {});
+              await new Promise(r => setTimeout(r, 2000));
               const loop = session._tickLoop;
               if (loop) {
                 const since = c.evSeq;  // events after this are from the cast
@@ -1128,6 +1178,11 @@ const server = createServer(async (req, res) => {
               if (ev?.events?.length) desc = ev.events.map(e => e.text ?? e.description ?? e.what ?? e.kind).join('\n');
             } catch {}
             result = result ?? { sent: true, id, description: desc };
+            break;
+          }
+          case 'escape_pocket': {
+            const { escapePocket } = await import('./m59-act/escape-pocket.mjs');
+            result = await escapePocket(session.client, session);
             break;
           }
           default:

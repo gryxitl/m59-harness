@@ -7,8 +7,8 @@
 // SYNCHRONOUS. Most of this file is that, plus the two failures that were watched live
 // on this fleet and must not come back: a plan that cannot be made counting as nothing,
 // and an action reporting success it did not have.
-import { makeDecider, intend, INTENTS, DEFAULT_GOALS } from './m59-decide.mjs';
-import { Actuator, TickLoop } from './m59-tick.mjs';
+import { makeDecider, intend, INTENTS, DEFAULT_GOALS } from './tick/m59-decide.mjs';
+import { Actuator, TickLoop } from './tick/m59-tick.mjs';
 
 let pass = 0, fail = 0;
 const ok = (what, cond, detail) => {
