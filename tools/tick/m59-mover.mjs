@@ -410,24 +410,27 @@ export class Mover {
     }
 
     // PHASE 0c: the slide-along-wall check. When ownPhysics is on and we're
-    // about to send (not holding), check the direct path to the target. If
-    // the fine model says it's blocked by a wall segment, don't send the
-    // direct velocity (that walks into the wall) — fire the fan (slide along
-    // the wall) instead. The fan tries 8 headings; the one that clears the
-    // wall is the slide.
+    // about to send (not holding), check the direct path to the AIM (waypoint
+    // if path exists, target if not). If the fine model says it's blocked by
+    // a wall segment, don't send the direct velocity (that walks into the
+    // wall) — fire the fan (slide along the wall) instead. The fan tries 8
+    // headings; the one that clears the wall is the slide.
+    // FIX: check the path to the AIM (not the target) — the velocity
+    // declaration sends the character toward the aim (waypoint), not the
+    // target (beeline).
     if (ownPhysics) {
       const geo = this.session?.world?.geometry;
       if (geo?.traceFineMoveClient) {
         const clientX = protocolToClient(myProtoX), clientY = protocolToClient(myProtoY);
-        const destClientX = protocolToClient(this.destProto.x), destClientY = protocolToClient(this.destProto.y);
-        const trace = geo.traceFineMoveClient(clientX, clientY, destClientX, destClientY, { slide: false, playerRadius: 1 });
+        const aimClientX = protocolToClient(aimX), aimClientY = protocolToClient(aimY);
+        const trace = geo.traceFineMoveClient(clientX, clientY, aimClientX, aimClientY, { slide: false, playerRadius: 1 });
         if (trace.blocked && !trace.arrived) {
-          // Direct path is blocked by a wall. Fire the fan (slide) instead of
-          // the direct velocity.
+          // Direct path to the aim is blocked by a wall. Fire the fan
+          // (slide) instead of the direct velocity.
           if (this._fanIndex == null && this._fanTarget == null) {
             this._fanIndex = 0;
             this._fanFrom = { x: clientX, y: clientY };
-            return { state: 'raw-move', fanIndex: 0, why: '0c: direct path blocked, sliding along wall' };
+            return { state: 'raw-move', fanIndex: 0, why: '0c: path to aim blocked, sliding along wall' };
           }
         }
       }

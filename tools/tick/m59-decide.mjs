@@ -151,6 +151,9 @@ export const INTENTS = {
     // Resting recovers HP and vigor. At an inn it's fast;
     // outside an inn it's slower but still works. The GOAP
     // driver rests outside inns all the time. Always allow.
+    // PHASE 0a fix: mark the mover as sitting so the sitting-trap
+    // check fires and stands the character before the next move.
+    if (ctx.session?._mover?.markSitting) ctx.session._mover.markSitting();
     return { sent: !!act.rest(),  what: 'rest' };
   },
   stand: (f, act) => ({ sent: !!act.stand(), what: 'stand' }),
