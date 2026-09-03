@@ -484,16 +484,47 @@ export class Mover {
       }
     }
 
+    // PHASE 0a: RAYCAST-AHEAD CHECK. Before sending the velocity
+    // declaration, check if the character's NEXT position (one step ahead
+    // at the declared speed) would collide with a wall. This is the
+    // proper physics engine approach: check the trajectory, not just the
+    // direct line. At running speed, the character covers more ground per
+    // tick, so a wall that's clear on the direct line might not be clear
+    // on the trajectory. If the next position is invalid (wall, out of
+    // bounds), fire the fan (slide) instead of the velocity declaration.
+    if (ownPhysics) {
+      const geo = this.session?.world?.geometry;
+      // Compute the next position: one step ahead in the aim direction.
+      const dx = aimX - myProtoX, dy = aimY - myProtoY;
+      const dist = Math.hypot(dx, dy) || 1;
+      const nextX = myProtoX + (dx / dist) * MOVEUNITS_PROTO;
+      const nextY = myProtoY + (dy / dist) * MOVEUNITS_PROTO;
+      const nextCol = Math.floor(nextX / KOD_FINENESS);
+      const nextRow = Math.floor(nextY / KOD_FINENESS);
+      // Check if the next position is valid (not a wall, not out of bounds).
+      const nextValid = geo?.fineWalkable?.(nextRow, nextCol) !== false
+        && geo?.inBounds?.(nextRow, nextCol) !== false;
+      if (!nextValid) {
+        // Next position is invalid (wall or out of bounds). Fire the fan
+        // (slide) instead of the velocity declaration.
+        if (this._fanIndex == null && this._fanTarget == null) {
+          const clientX = protocolToClient(myProtoX), clientY = protocolToClient(myProtoY);
+          this._fanIndex = 0;
+          this._fanFrom = { x: clientX, y: clientY };
+          return { state: 'raw-move', fanIndex: 0, why: '0a: raycast-ahead blocked, sliding' };
+        }
+      }
+    }
+
     // PHASE 0a: VELOCITY DECLARATION. When ownPhysics is on and the slide/fan
     // didn't fire, declare a velocity: send moveTo(aimX, aimY, speed) ONCE.
     // The server carries the character at the declared speed. WALKING = 18
-    // units/tick (2.5 squares/s). RUNNING (36) is too fast — the 0c slide
-    // check can't catch the wall in time, and the character gets carried
-    // through walls. Walking speed gives the slide check enough time to
-    // fire. TODO: add a wall-check before the velocity declaration (not
-    // just the direct-path check) to enable running speed safely.
+    // units/tick (2.5 squares/s). RUNNING (36) is now safe — the raycast-ahead
+    // check validates the trajectory before the send.
     if (ownPhysics) {
-      const speed = 18; // walking speed (running is too fast for the slide check)
+      const vigor = s.client?.vitals?.()?.vigor?.value ?? 0;
+      const VIGOR_RUN_THRESHOLD = 10;
+      const speed = vigor >= VIGOR_RUN_THRESHOLD ? 36 : 18;
       Promise.resolve(s.pacer.submit('move', () => c.moveTo(Math.round(aimX), Math.round(aimY), speed, c.room?.id ?? 0), 100)).catch(() => {});
       this._recordSend(aimX, aimY, myProtoX, myProtoY);
       return { state: 'moving', velocity: true, speed };
