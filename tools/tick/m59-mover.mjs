@@ -468,6 +468,22 @@ export class Mover {
       return { state: 'raw-move', fanIndex: idx, velocity: true };
     }
 
+    // PHASE 0a: BOUNDARY CROSSING. When the destination is a stand_on
+    // (exit) square and the character is close to it, use the go() command
+    // (REQ_GO) instead of the velocity declaration. The go() command tells
+    // the server "I'm going through this door" — the server processes the
+    // transition. The velocity declaration (moveTo) does not trigger the
+    // door crossing; the character gets stuck at the boundary.
+    if (ownPhysics && this._destIsStandOn) {
+      const distToDest = Math.hypot(this.destProto.x - myProtoX, this.destProto.y - myProtoY);
+      if (distToDest < KOD_FINENESS * 2) { // within 2 squares of the exit
+        // Send the go() command to trigger the door crossing.
+        Promise.resolve(s.pacer.submit('go', () => c.go(), 100)).catch(() => {});
+        this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
+        return { state: 'crossing', go: true };
+      }
+    }
+
     // PHASE 0a: VELOCITY DECLARATION. When ownPhysics is on and the slide/fan
     // didn't fire, declare a velocity: send moveTo(aimX, aimY, speed) ONCE.
     // The server carries the character at the declared speed. WALKING = 18
