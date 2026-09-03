@@ -437,27 +437,35 @@ export class Mover {
     }
 
     // If the fan is active (we were in raw-move fallback), fire the next heading.
+    // PHASE 0a: the fan uses a VELOCITY DECLARATION (not a step). The server
+    // carries the character at the declared speed. Walking = 18 units/tick.
     if (this._fanTarget != null || (this._fanIndex != null && this._fanIndex < 9)) {
       const FAN = [0, -0.35, 0.35, -0.75, 0.75, -1.2, 1.2, -1.7, 1.7];
       const idx = this._fanIndex ?? 0;
       const angle = FAN[idx % FAN.length];
-      // Direction to destination for the base angle.
-      const dx = this.destProto.x - myProtoX;
-      const dy = this.destProto.y - myProtoY;
+      // Direction to the AIM (waypoint if path exists, target if not) for
+      // the base angle. The fan slides along the wall toward the aim.
+      const dx = aimX - myProtoX;
+      const dy = aimY - myProtoY;
       const dist = Math.hypot(dx, dy);
       const baseAngle = Math.atan2(dy, dx);
       const finalAngle = baseAngle + angle;
-      const stepProto = Math.min(dist, MOVEUNITS_PROTO);
-      const fx = myProtoX + Math.cos(finalAngle) * stepProto;
-      const fy = myProtoY + Math.sin(finalAngle) * stepProto;
-      const px = Math.round(fx);
-      const py = Math.round(fy);
-      Promise.resolve(s.pacer.submit('move', () => c.moveTo(px, py, 18, c.room?.id ?? 0), 100)).catch(() => {});
-      this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
-      this._fanTarget = { x: protocolToClient(fx), y: protocolToClient(fy) };
+      // VELOCITY DECLARATION: send moveTo(fanX, fanY, speed) — the server
+
+      // carries the character at the declared speed. The fan heading is the
+      // direction; the target is ONE STEP ahead (16 units = MOVEUNITS), not
+      // 100 units (which would carry the character through a wall). The
+      // server carries the character at the declared speed toward the target;
+      // the hold gate re-sends when the character stalls.
+      const fanX = myProtoX + Math.cos(finalAngle) * MOVEUNITS_PROTO; // one step ahead
+      const fanY = myProtoY + Math.sin(finalAngle) * MOVEUNITS_PROTO;
+      const speed = 18; // walking speed
+      Promise.resolve(s.pacer.submit('move', () => c.moveTo(Math.round(fanX), Math.round(fanY), speed, c.room?.id ?? 0), 100)).catch(() => {});
+      this._recordSend(aimX, aimY, myProtoX, myProtoY);
+      this._fanTarget = { x: protocolToClient(fanX), y: protocolToClient(fanY) };
       this._fanFrom = { x: myX, y: myY };
       this._fanIndex = idx;
-      return { state: 'raw-move', fanIndex: idx };
+      return { state: 'raw-move', fanIndex: idx, velocity: true };
     }
 
     // PHASE 0a: VELOCITY DECLARATION. When ownPhysics is on and the slide/fan
