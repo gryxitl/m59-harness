@@ -700,7 +700,13 @@ export class Router {
     // moves at most MOVEUNITS per tick, and reports blocked when the
     // geometry says no. The actuator is still used for the actual send
     // (the mover goes through the session's pacer).
-    this.mover.to(aim.col, aim.row);
+    // PHASE 2: tell the mover when the aim is a stand_on (exit) square so
+    // it can bypass the floor check. The standOn is the square the character
+    // stands on to trigger the transition; the edgeTarget is the square
+    // beyond the boundary (for the actual crossing). Both are "exit" squares
+    // the geometry may mark "no floor" for.
+    const isStandOn = (at && this.leg.edgeTarget) ? true : (aim.col === this.leg.standOn?.col && aim.row === this.leg.standOn?.row);
+    this.mover.to(aim.col, aim.row, { standOn: isStandOn });
     const mr = this.mover.tick({ col: me.col, row: me.row, x: me.x, y: me.y });
     if (mr.state === 'blocked')
       return this._say('blocked', { why: mr.why, next: this.leg.next });

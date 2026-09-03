@@ -111,13 +111,19 @@ export class Mover {
    * Set the destination. col/row are protocol square coordinates
    * (the same space as client.self.col/.row).
    */
-  to(col, row) {
+  to(col, row, { standOn = false } = {}) {
     // A NEW destination (different from the current one) resets the lazy-report gate so the
     // first position packet goes out immediately. The router calls to() every tick with the
     // same aim while walking, so we must NOT reset on a no-op to() — that would defeat the
     // gate and send a packet every tick again. Only a genuine re-route resets it.
     const isNewDest = !this.dest || this.dest.col !== col || this.dest.row !== row;
     this.dest = { col, row };
+    // PHASE 2: the stand_on flag. When true, the destination is an exit square
+    // (stand_on) — a square the character is meant to stand on to trigger a
+    // transition. The geometry's "no floor" answer is wrong for that square;
+    // the server handles the transition. The mover skips the floor check and
+    // lets the raw-move fallback carry the character onto it.
+    this._destIsStandOn = standOn;
     // Centre of the destination square in protocol units.
     this.destProto = {
       x: col * KOD_FINENESS + HALF,
@@ -397,7 +403,12 @@ export class Mover {
       // "walled gap" the raw push exists for; the server is client-authoritative and accepts
       // a step the fine model refuses.
       const noPathToNearDest = this.path == null && this._noRouteReason != null;
-      if (distToDest0 < KOD_FINENESS * 4 && (destFineOk === false || noPathToNearDest)) {
+      // PHASE 2: the stand_on trigger. When the destination is an exit square
+      // (stand_on), the geometry's "no floor" answer is wrong — the character is
+      // meant to stand on this square to trigger a transition. Fire the raw push
+      // whenever we are near it, regardless of the fine model's answer.
+      const standOnNear = this._destIsStandOn && distToDest0 < KOD_FINENESS * 4;
+      if (distToDest0 < KOD_FINENESS * 4 && (destFineOk === false || noPathToNearDest || standOnNear)) {
         const rx = this.destProto.x - myProtoX, ry = this.destProto.y - myProtoY;
         const rd = Math.hypot(rx, ry) || 1;
         const stepProto = Math.min(rd, KOD_FINENESS);
@@ -488,7 +499,12 @@ export class Mover {
       const serverPX = curCol * KOD_FINENESS + HALF;
       const serverPY = curRow * KOD_FINENESS + HALF;
       if (this._movementGateOk(stepProtoX, stepProtoY, myProtoX, myProtoY, serverPX, serverPY)) {
-        Promise.resolve(s.walkTo(stepCol, stepRow, { steps: 1 })).catch(() => {});
+        // PHASE 1: un-gate from session.walkTo. The Mover has already validated
+        // this step against the fine model (the gate check above). Sending the
+        // raw moveTo directly means the shared geometry's floor check
+        // ("goal square has no floor") no longer gates our movement. The server
+        // is the collision authority; it records what we say.
+        Promise.resolve(s.client.moveTo(stepProtoX, stepProtoY, 18, s.client.room?.id ?? 0)).catch(() => {});
         this._recordReport(stepProtoX, stepProtoY);
       }
       return { state: 'moving', to: { col: stepCol, row: stepRow } };
@@ -624,11 +640,13 @@ export class Mover {
     const serverPX2 = curCol * KOD_FINENESS + HALF;
     const serverPY2 = curRow * KOD_FINENESS + HALF;
     if (this._movementGateOk(enrProtoX, enrProtoY, myProtoX, myProtoY, serverPX2, serverPY2)) {
-      s.walkTo(stepCol, stepRow, { steps: 1 })
-        .then(wr => { if (process.env.M59_MOVE_DEBUG !== '0')
-          console.error(`[movedbg] t3 gateOK step=(${stepCol},${stepRow}) me=(${me.col},${me.row}) walkTo=>${JSON.stringify(wr)}`); })
+      // PHASE 1: un-gate from session.walkTo. Same rationale as the waypoint
+      // branch — the step is fine-model-validated, send it raw.
+      Promise.resolve(s.client.moveTo(enrProtoX, enrProtoY, 18, s.client.room?.id ?? 0))
+        .then(() => { if (process.env.M59_MOVE_DEBUG !== '0')
+          console.error(`[movedbg] t3 gateOK step=(${stepCol},${stepRow}) me=(${me.col},${me.row}) moveTo sent`); })
         .catch(e => { if (process.env.M59_MOVE_DEBUG !== '0')
-          console.error(`[movedbg] t3 gateOK step=(${stepCol},${stepRow}) ERR ${e.message}\n${e.stack}`); });
+          console.error(`[movedbg] t3 gateOK step=(${stepCol},${stepRow}) ERR ${e.message}`); });
       this._recordReport(enrProtoX, enrProtoY);
     } else {
       if (process.env.M59_MOVE_DEBUG !== '0')
