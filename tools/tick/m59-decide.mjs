@@ -608,6 +608,10 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // Expose room number and max HP for the hunt goal's Raza check.
     ws._roomNum = session?.world?.room?.num ?? client?.room?.num ?? null;
     ws._maxHp = client?.vitals?.()?.health?.max ?? null;
+    // Expose whether the character is moving (the router has a destination).
+    // The vigor_low goal yields when the character is moving — resting would
+    // stop the movement.
+    ws._moving = session?._router?.dest != null;
 
     // CASTER GATE (decorated here, NOT in worldstate: the loadout is a file read and
     // worldstate producers are pure by contract — see its header). A caster is a
@@ -1445,6 +1449,10 @@ export const DEFAULT_GOALS = [
   // in reach even at 40 vigor.
   { goal: 'vigor_low', when: ws => {
       const v = ws._vigor;
+      // YIELD when the character is moving (the router has a destination).
+      // Resting would stop the movement. The character can rest when he
+      // arrives (the router clears the destination).
+      if (ws._moving) return false;
       return v != null && v < 60 && ws.in_reach !== true;
     } },
   // LEAVE RAZA: in the newbie zone at level >= 25, route to the Grand

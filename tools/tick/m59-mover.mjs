@@ -269,7 +269,17 @@ export class Mover {
       this.sitting = false;
       const rec = s.pacer.submit('stand', () => c.stand(), 0);
       Promise.resolve(rec).catch(() => {});
-      return { state: 'standing' };
+      // PHASE 0a: when ownPhysics is on, do NOT return — let the tick
+      // continue to the velocity declaration. The stand() command is
+      // fire-and-forget (the server processes it asynchronously). The
+      // velocity declaration fires on the same tick. The server might
+      // refuse the move (the character is still sitting), but the next
+      // tick the character is standing, and the velocity declaration
+      // fires again. This breaks the stand/sit loop caused by the
+      // vigor_low goal.
+      if (!this.session?.policy?.ownPhysics) {
+        return { state: 'standing' };
+      }
     }
 
     // PHASE 0c fix: BLINK PROGRESS + HOLD. When a blink is pending (cast in
@@ -474,9 +484,18 @@ export class Mover {
     // the server "I'm going through this door" — the server processes the
     // transition. The velocity declaration (moveTo) does not trigger the
     // door crossing; the character gets stuck at the boundary.
+    // PHASE 0a: BOUNDARY CROSSING. When the destination is a stand_on
+    // (exit) square and the character is close to it, OR when the aim is
+    // OUT OF BOUNDS for the current room (the aim is in the other room),
+    // use the go() command (REQ_GO) instead of the velocity declaration.
+    // The go() command tells the server "I'm going through this door" —
+    // the server processes the transition. The velocity declaration
+    // (moveTo) does not trigger the door crossing; the character gets
+    // stuck at the boundary.
     if (ownPhysics && this._destIsStandOn) {
       const distToDest = Math.hypot(this.destProto.x - myProtoX, this.destProto.y - myProtoY);
-      if (distToDest < KOD_FINENESS * 2) { // within 2 squares of the exit
+      const aimOOB = geo?.inBounds?.(Math.floor(aimY / KOD_FINENESS), Math.floor(aimX / KOD_FINENESS)) === false;
+      if (distToDest < KOD_FINENESS * 4 || aimOOB) {
         // Send the go() command to trigger the door crossing.
         Promise.resolve(s.pacer.submit('go', () => c.go(), 100)).catch(() => {});
         this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
@@ -492,18 +511,22 @@ export class Mover {
     // tick, so a wall that's clear on the direct line might not be clear
     // on the trajectory. If the next position is invalid (wall, out of
     // bounds), fire the fan (slide) instead of the velocity declaration.
-    if (ownPhysics) {
+    // BOUNDARY EXCEPTION: if the destination is a stand_on (exit) square,
+    // skip the block — the character is at a boundary (a door/exit), and
+    // the next position is in the other room (out of bounds for the
+    // current room). The boundary-crossing check (below) fires the go()
+    // command. The raycast-ahead check should not block the velocity
+    // declaration when the character is at a boundary.
+    if (ownPhysics && !this._destIsStandOn) {
       const geo = this.session?.world?.geometry;
       // Compute the next position: one step ahead in the aim direction.
       const dx = aimX - myProtoX, dy = aimY - myProtoY;
       const dist = Math.hypot(dx, dy) || 1;
       const nextX = myProtoX + (dx / dist) * MOVEUNITS_PROTO;
       const nextY = myProtoY + (dy / dist) * MOVEUNITS_PROTO;
-      const nextCol = Math.floor(nextX / KOD_FINENESS);
-      const nextRow = Math.floor(nextY / KOD_FINENESS);
       // Check if the next position is valid (not a wall, not out of bounds).
-      const nextValid = geo?.fineWalkable?.(nextRow, nextCol) !== false
-        && geo?.inBounds?.(nextRow, nextCol) !== false;
+      const nextValid = geo?.fineWalkable?.(Math.floor(nextY / KOD_FINENESS), Math.floor(nextX / KOD_FINENESS)) !== false
+        && geo?.inBounds?.(Math.floor(nextY / KOD_FINENESS), Math.floor(nextX / KOD_FINENESS)) !== false;
       if (!nextValid) {
         // Next position is invalid (wall or out of bounds). Fire the fan
         // (slide) instead of the velocity declaration.
