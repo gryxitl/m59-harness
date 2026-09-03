@@ -260,11 +260,35 @@ console.log('\nPHASE 0a: the velocity-declaration hold (ownPhysics on)');
   const r1 = mover.tick();
   ok('first tick: sends a move', r1.state === 'moving', r1.state);
   ok('exactly one move sent', sent.length === 1, JSON.stringify(sent));
-  // Advance the position (the server carried the character).
-  advance(session, sent);
+  // Advance the position ONE STEP toward the aim (the server carries the
+  // character at the declared speed, not a teleport to the aim).
+  if (sent.length === 1) {
+    const aimX = sent[0][0], aimY = sent[0][1];
+    const meX = session.client.self.x, meY = session.client.self.y;
+    const dx = aimX - meX, dy = aimY - meY;
+    const dist = Math.hypot(dx, dy) || 1;
+    const step = Math.min(dist, 16); // one step = 16 protocol units (MOVEUNITS)
+    session.client.self.x = meX + (dx / dist) * step;
+    session.client.self.y = meY + (dy / dist) * step;
+    session.client.self.col = Math.floor((session.client.self.x - 32) / 64);
+    session.client.self.row = Math.floor((session.client.self.y - 32) / 64);
+  }
+  sent.length = 0;
   const r2 = mover.tick();
   ok('second tick: holds (no send)', r2.state === 'moving' && r2.hold === true, r2.state + ' hold=' + r2.hold);
   ok('still exactly one move sent (held)', sent.length === 0, JSON.stringify(sent));
+  // Advance one more step.
+  if (r2.hold) {
+    const aimX = 4 * 64 + 32, aimY = 2 * 64 + 32;
+    const meX = session.client.self.x, meY = session.client.self.y;
+    const dx = aimX - meX, dy = aimY - meY;
+    const dist = Math.hypot(dx, dy) || 1;
+    const step = Math.min(dist, 16);
+    session.client.self.x = meX + (dx / dist) * step;
+    session.client.self.y = meY + (dy / dist) * step;
+    session.client.self.col = Math.floor((session.client.self.x - 32) / 64);
+    session.client.self.row = Math.floor((session.client.self.y - 32) / 64);
+  }
   const r3 = mover.tick();
   ok('third tick: still holds', r3.state === 'moving' && r3.hold === true, r3.state + ' hold=' + r3.hold);
   ok('still exactly one move sent (held)', sent.length === 0, JSON.stringify(sent));

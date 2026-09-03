@@ -361,8 +361,14 @@ export class Mover {
     // progress (moved since the last send), hold the SEND (not the PLAN) —
     // the A* path is still planned (to get the route), but the moveTo is not
     // re-sent. GATED: only active when policy.ownPhysics is on (opt-in).
+    // FIX: measure progress toward the CURRENT AIM (waypoint if path exists,
+    // target if not), not the target. The character is moving toward the
+    // waypoint (the A* path), not the target (beeline).
     const ownPhysics = this.session?.policy?.ownPhysics === true;
-    const targetKey = `${Math.round(this.destProto.x)},${Math.round(this.destProto.y)}`;
+    const holdWp = this.path ? this.path[this.pathIdx] : null;
+    const aimX = holdWp ? holdWp.x : this.destProto.x;
+    const aimY = holdWp ? holdWp.y : this.destProto.y;
+    const targetKey = `${Math.round(aimX)},${Math.round(aimY)}`;
     let holdSend = false;
     if (ownPhysics && this._lastSentKey === targetKey && this._lastSentPos) {
       const progress = Math.hypot(myProtoX - this._lastSentPos.x, myProtoY - this._lastSentPos.y);
@@ -449,6 +455,21 @@ export class Mover {
       this._fanFrom = { x: myX, y: myY };
       this._fanIndex = idx;
       return { state: 'raw-move', fanIndex: idx };
+    }
+
+    // PHASE 0a: VELOCITY DECLARATION. When ownPhysics is on and the slide/fan
+    // didn't fire, declare a velocity: send moveTo(aimX, aimY, speed) ONCE.
+    // The server carries the character at the declared speed. WALKING = 18
+    // units/tick (2.5 squares/s). RUNNING (36) is too fast — the 0c slide
+    // check can't catch the wall in time, and the character gets carried
+    // through walls. Walking speed gives the slide check enough time to
+    // fire. TODO: add a wall-check before the velocity declaration (not
+    // just the direct-path check) to enable running speed safely.
+    if (ownPhysics) {
+      const speed = 18; // walking speed (running is too fast for the slide check)
+      Promise.resolve(s.pacer.submit('move', () => c.moveTo(Math.round(aimX), Math.round(aimY), speed, c.room?.id ?? 0), 100)).catch(() => {});
+      this._recordSend(aimX, aimY, myProtoX, myProtoY);
+      return { state: 'moving', velocity: true, speed };
     }
 
     // FOLLOW THE PATH: head toward the current waypoint.

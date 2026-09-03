@@ -1292,6 +1292,18 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           const band = isArmed ? fullBand : Math.floor(fullBand / 2);
           const ceiling = level + band;
           const hunt = nearestHuntRoom(resolved, ceiling);
+          // MAX LEVEL DELTA: the mob's level should not be more than 12 above
+          // the character's level. This matches the original ceiling formula
+          // (level + floor(level/2)): for a lv24 character, the ceiling is
+          // 24 + 12 = 36, so a lv35 mob is in band (35 ≤ 36). The max delta
+          // of 12 allows the character to hunt mobs up to 12 levels above
+          // their own, which is the game's own rule.
+          const MAX_LEVEL_DELTA = 12;
+          if (hunt && hunt.level > level + MAX_LEVEL_DELTA) {
+            onDecision?.({ ticks, goal: 'hunt', action: null,
+              what: `hunt ${hunt.creature} lv${hunt.level} is too far above level ${level} (max delta ${MAX_LEVEL_DELTA}); not entering`, sent: false });
+            return;
+          }
           if (hunt && hunt.room !== resolved) {
             router.to(hunt.room);
             onDecision?.({ ticks, goal: 'hunt', action: 'travel',
@@ -1303,7 +1315,27 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           // (there is none) — that produced "exhausted 5 nodes" every tick.
           // The character is in the right room; it waits for a target (mobs
           // respawn, or the target-selection picks one up next tick).
+          // PATROL: if the character has been standing still for a while
+          // (no movement for 30+ ticks = 3 seconds), nudge him a few squares
+          // in a random direction to break the stuck state and increase the
+          // chance of a target spawning.
           if (hunt && hunt.room === resolved) {
+            const me = client?.self;
+            const now = Date.now();
+            // PATROL: nudge every 5 seconds (or on the first tick if
+            // _lastHuntNudge is unset).
+            if (me && (session._lastHuntNudge == null || now - session._lastHuntNudge > 5000)) {
+              // Nudge: move a few squares in a random direction.
+              const dx = (Math.random() > 0.5 ? 1 : -1) * (2 + Math.floor(Math.random() * 3));
+              const dy = (Math.random() > 0.5 ? 1 : -1) * (2 + Math.floor(Math.random() * 3));
+              const nc = Math.max(1, Math.min(20, me.col + dx));
+              const nr = Math.max(1, Math.min(15, me.row + dy));
+              act.walk?.(nc, nr) ?? client?.moveToSquare?.(nc, nr, 18);
+              session._lastHuntNudge = now;
+              onDecision?.({ ticks, goal: 'hunt', action: 'travel',
+                what: `patrolling hunt room (nudge to ${nc},${nr})`, sent: true });
+              return;
+            }
             onDecision?.({ ticks, goal: 'hunt', action: null,
               what: `in hunt room (${hunt.creature} lv${hunt.level}); waiting for a target`, sent: false });
             return;
