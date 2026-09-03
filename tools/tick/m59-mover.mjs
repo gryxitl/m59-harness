@@ -423,7 +423,7 @@ export class Mover {
       if (geo?.traceFineMoveClient) {
         const clientX = protocolToClient(myProtoX), clientY = protocolToClient(myProtoY);
         const aimClientX = protocolToClient(aimX), aimClientY = protocolToClient(aimY);
-        const trace = geo.traceFineMoveClient(clientX, clientY, aimClientX, aimClientY, { slide: false, playerRadius: 1 });
+        const trace = geo.traceFineMoveClient(clientX, clientY, aimClientX, aimClientY, { slide: false, playerRadius: 32 });
         if (trace.blocked && !trace.arrived) {
           // Direct path to the aim is blocked by a wall. Fire the fan
           // (slide) instead of the direct velocity.
