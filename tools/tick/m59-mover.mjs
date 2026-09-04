@@ -178,6 +178,13 @@ export class Mover {
     // room). Used to compute the edge direction for the walk-past-boundary
     // check. The direction from the stand_on square to the edgeTarget is the
     // edge direction (away from the room interior).
+    // Normalize the shape: the router passes the square as {col,row}, but the
+    // crossing math needs protocol-unit {x,y}. A {col,row} shape used to flow
+    // straight into pastX/pastY as undefined, sending NaN coordinates that
+    // count toward the throttle and move nowhere (frozen with zero errors).
+    if (edgeTarget && !Number.isFinite(edgeTarget.x) && Number.isFinite(edgeTarget.col)) {
+      edgeTarget = { x: edgeTarget.col * KOD_FINENESS + HALF, y: edgeTarget.row * KOD_FINENESS + HALF };
+    }
     this._edgeTarget = edgeTarget;
     // Centre of the destination square in protocol units.
     this.destProto = {
