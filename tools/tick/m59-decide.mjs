@@ -1372,6 +1372,9 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           session.lootFloor?.({ maxItems: 12 }).then(res => {
             const taken = res?.taken?.length ?? 0;
             if (taken) console.error(`[tick] ${agentName} looted ${taken} item(s) after kill`);
+            // Refusals are the diagnosable half (why drops stay on the floor).
+            const refused = res?.refused ?? [];
+            if (refused.length) console.error(`[tick] ${agentName} loot refused: ${refused.slice(0, 4).map(r => `${r.name ?? r.id} (${r.why ?? '?'})`).join('; ')}${refused.length > 4 ? ` +${refused.length - 4} more` : ''}`);
           }).catch(e => console.error(`[tick] ${agentName} loot err: ${e.message}`));
         }
       }
