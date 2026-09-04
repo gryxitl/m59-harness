@@ -252,16 +252,20 @@ console.log('\nno fine path: falls back to direct step');
   ok('a step was sent', s2.length === 1, JSON.stringify(s2));
 }
 
-console.log('\nPHASE 0a: the velocity-declaration hold (ownPhysics on)');
+console.log('\nPHASE 0a: NO hold gate (ownPhysics on)');
 {
+  // Server model (user.kod UserMove): the server ACCEPTS the declared
+  // position per packet and never interpolates — there is no carry, so
+  // holding after one step freezes. Every tick re-declares (live: gated
+  // to 1/s by the send law, cheat-clean).
   const { mover, sent, session } = rig({ geo: clearGeometry() });
   session.policy = { ownPhysics: true };
   mover.to(4, 2); // 2 squares away
   const r1 = mover.tick();
   ok('first tick: sends a move', r1.state === 'moving', r1.state);
   ok('exactly one move sent', sent.length === 1, JSON.stringify(sent));
-  // Advance the position ONE STEP toward the aim (the server carries the
-  // character at the declared speed, not a teleport to the aim).
+  // Advance the position ONE STEP toward the aim (the server records the
+  // declared position; it does not carry the character there).
   if (sent.length === 1) {
     const aimX = sent[0][0], aimY = sent[0][1];
     const meX = session.client.self.x, meY = session.client.self.y;
@@ -275,11 +279,11 @@ console.log('\nPHASE 0a: the velocity-declaration hold (ownPhysics on)');
   }
   sent.length = 0;
   const r2 = mover.tick();
-  ok('second tick: holds (no send)', r2.state === 'moving' && r2.hold === true, r2.state + ' hold=' + r2.hold);
-  ok('still exactly one move sent (held)', sent.length === 0, JSON.stringify(sent));
+  ok('second tick: re-sends (no hold — the server never carries)', r2.state === 'moving' && r2.hold !== true, r2.state + ' hold=' + r2.hold);
+  ok('a second move was sent', sent.length === 1, JSON.stringify(sent));
   // Advance one more step.
-  if (r2.hold) {
-    const aimX = 4 * 64 + 32, aimY = 2 * 64 + 32;
+  if (sent.length === 1) {
+    const aimX = sent[0][0], aimY = sent[0][1];
     const meX = session.client.self.x, meY = session.client.self.y;
     const dx = aimX - meX, dy = aimY - meY;
     const dist = Math.hypot(dx, dy) || 1;
@@ -289,9 +293,10 @@ console.log('\nPHASE 0a: the velocity-declaration hold (ownPhysics on)');
     session.client.self.col = Math.floor((session.client.self.x - 32) / 64);
     session.client.self.row = Math.floor((session.client.self.y - 32) / 64);
   }
+  sent.length = 0;
   const r3 = mover.tick();
-  ok('third tick: still holds', r3.state === 'moving' && r3.hold === true, r3.state + ' hold=' + r3.hold);
-  ok('still exactly one move sent (held)', sent.length === 0, JSON.stringify(sent));
+  ok('third tick: still sends (never holds)', r3.state === 'moving' && r3.hold !== true, r3.state + ' hold=' + r3.hold);
+  ok('a third move was sent', sent.length === 1, JSON.stringify(sent));
 }
 
 console.log('\nPHASE 0a: the hold gate is off by default (ownPhysics off)');

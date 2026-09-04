@@ -36,6 +36,17 @@ import '../m59-navgeom.mjs';   // installs the height model + lenient fine path 
 // 256 client units = 16 protocol units per 100ms tick (walking).
 // Running is 2 * MOVEUNITS = 32 protocol units.
 export const MOVEUNITS_PROTO = 16;
+// OFFICIAL PER-SECOND STRIDE (verified: clientd3d/move.c + user.kod UserMove).
+// The server ACCEPTS the declared position per packet (~1 pkt/s speedhack
+// law: counter +1/pkt, -1/sec, threshold 2) and never interpolates — speed
+// IS displacement per packet. Walk: 160 proto units (2.5 sq/s, speed byte
+// 18). Run: 320 (5 sq/s, byte 36, needs vigor — kod VIGOR_RUN_THRESHOLD is
+// 10; we require RUN_VIGOR_FLOOR so sustained travel doesn't arrive gassed
+// and immediately rest). Packets displaced ≥ ~14 squares trip teleport
+// detection (blink exempt), so aims are clamped to one stride.
+export const WALK_STRIDE_PROTO = 160;
+export const RUN_STRIDE_PROTO = 320;
+export const RUN_VIGOR_FLOOR = 80;
 export const RUNUNITS_PROTO = 32;
 
 // LAZY POSITION REPORTING — modeled directly on the real client (clientd3d/move.c).
@@ -104,21 +115,22 @@ export class Mover {
     this._fanFrom = null;
     this._blinkPending = false;
     this._blinkFrom = null;
+    this._blinkAt = null;
     this._lastWpKey = null;
-    // PHASE 0a: the velocity-declaration hold. The server moves the character
-    // toward the declared target at the declared speed. We issue moveTo once
-    // per target; the server carries the character. We re-issue only when the
-    // target changes or the character stalls (no progress since the last send).
+    // PHASE 0a: velocity bookkeeping. Each packet IS one accepted server
+    // position (user.kod UserMove); _lastSentKey/Pos record the last send
+    // for teleport-change detection. There is deliberately NO hold gate:
+    // the server never interpolates, so holding after one step freezes.
     // _lastSentKey: the target (x,y) we last sent. _lastSentPos: the character
-    // position at send time (to detect progress).
+    // position at send time.
     this._lastSentKey = null;
     this._lastSentPos = null;
   }
 
   /**
    * PHASE 0a: record that we sent a move toward (keyX, keyY) while the
-   * character was at (posX, posY). The hold gate uses this to decide
-   * whether to skip the next send (target unchanged + progress).
+   * character was at (posX, posY). Bookkeeping for teleport-change
+   * detection; sends are throttled by the 1/s gate, never held.
    */
   _recordSend(keyX, keyY, posX, posY) {
     this._lastSentKey = `${Math.round(keyX)},${Math.round(keyY)}`;
@@ -130,6 +142,13 @@ export class Mover {
    * (the same space as client.self.col/.row).
    */
   to(col, row, { standOn = false, edgeTarget = null } = {}) {
+    // Never poison the destination: a non-finite col/row makes destProto NaN,
+    // and every later send throws RangeError inside a swallowed catch —
+    // counted by the pacer, never on the wire, frozen with zero errors.
+    if (!Number.isFinite(col) || !Number.isFinite(row)) {
+      console.error(`[mover] to() refused non-finite dest col=${col} row=${row} (keeping ${this.dest ? this.dest.col + ',' + this.dest.row : 'none'})`);
+      return false;
+    }
     // A NEW destination (different from the current one) resets the lazy-report gate so the
     // first position packet goes out immediately. The router calls to() every tick with the
     // same aim while walking, so we must NOT reset on a no-op to() — that would defeat the
@@ -164,6 +183,7 @@ export class Mover {
       this._fanFrom = null;
       this._blinkPending = false;
       this._blinkFrom = null;
+      this._blinkAt = null;
       this._lastWpKey = null;
     }
     // A no-op to() (same destination, called every tick by the router) changes NOTHING.
@@ -187,6 +207,7 @@ export class Mover {
     this._fanFrom = null;
     this._blinkPending = false;
     this._blinkFrom = null;
+    this._blinkAt = null;
     this._lastWpKey = null;
   }
 
@@ -308,8 +329,18 @@ export class Mover {
           return { state: 'blinked', why: 'position changed after blink' };
         }
       }
-      // Blink is still in progress — hold the character still.
-      return { state: 'blinking', hold: true };
+      // Blink is still in progress — hold the character still, but only
+      // for the cast window. A failed cast (fizzle, refusal, interrupt)
+      // never moves the character, and without a timeout this holds
+      // forever on a dead cast (prod move 0 with a live path).
+      if (Date.now() - (this._blinkAt ?? 0) > 20000) {
+        this._blinkPending = false;
+        this._blinkFrom = null;
+        this.stuckTicks++;
+        // Fall through: movement resumes immediately below.
+      } else {
+        return { state: 'blinking', hold: true };
+      }
     }
 
     // Use the CURRENT position for waypoint distance and the lazy-report gate.
@@ -400,28 +431,27 @@ export class Mover {
     // waypoint (the A* path), not the target (beeline).
     const ownPhysics = this.session?.policy?.ownPhysics === true;
     const holdWp = this.path ? this.path[this.pathIdx] : null;
-    const aimX = holdWp ? holdWp.x : this.destProto.x;
-    const aimY = holdWp ? holdWp.y : this.destProto.y;
-    const targetKey = `${Math.round(aimX)},${Math.round(aimY)}`;
-    let holdSend = false;
-    if (ownPhysics && this._lastSentKey === targetKey && this._lastSentPos) {
-      const progress = Math.hypot(myProtoX - this._lastSentPos.x, myProtoY - this._lastSentPos.y);
-      if (progress > KOD_FINENESS * 8) {
-        // TELEPORT JUMP (blink, rescue, room change): the displacement since
-        // the last send is impossibly large for one send interval (walk 2.5
-        // sq/s, run 5 sq/s at 1 send/s). The old send is meaningless — reset
-        // instead of holding, or the gate deadlocks (holds forever while the
-        // character sits still, displaced from the stale send position).
-        this._lastSentKey = null;
-        this._lastSentPos = null;
-      } else if (progress > 4) { // moved > 4 protocol units since the last send
-        holdSend = true;
+    let aimX = holdWp ? holdWp.x : this.destProto.x;
+    let aimY = holdWp ? holdWp.y : this.destProto.y;
+    // OFFICIAL STRIDE, NO HOLD GATE. The server never carries (each packet IS
+    // one accepted position), so holding after one step freezes — the observed
+    // one-step-then-stop. Instead clamp the aim to one per-second stride:
+    // a distant waypoint can't trip teleport detection, and the per-second
+    // displacement IS the speed (walk 2.5 sq/s, run 5 sq/s).
+    const vigorNow = s.client?.vitals?.()?.vigor?.value ?? 0;
+    const runNow = vigorNow >= RUN_VIGOR_FLOOR;
+    const strideNow = runNow ? RUN_STRIDE_PROTO : WALK_STRIDE_PROTO;
+    {
+      const adx = aimX - myProtoX, ady = aimY - myProtoY;
+      const ad = Math.hypot(adx, ady);
+      if (ad > strideNow) {
+        aimX = myProtoX + (adx / ad) * strideNow;
+        aimY = myProtoY + (ady / ad) * strideNow;
       }
     }
 
     // PLAN: if no path yet, or we're stuck, plan a new one.
-    // ALWAYS RUN — the A* path gives the character the route. The hold gate
-    // only suppresses the SEND, not the PLAN.
+    // ALWAYS RUN — the A* path gives the character the route.
     const needPlan = this.path == null
       || this.pathIdx >= this.path.length
       || this.stuckTicks > 10;
@@ -444,12 +474,8 @@ export class Mover {
       this.stuckTicks = 0;
     }
 
-    // PHASE 0a: if we're holding the send (target unchanged + progress),
-    // skip the send logic entirely. The A* path was planned (above); the
-    // server is carrying the character. Return 'moving' with hold=true.
-    if (holdSend) {
-      return { state: 'moving', hold: true };
-    }
+    // (No hold gate: the server never carries, so holding freezes. The 1/s
+    // send gate below is the only throttle — the speedhack law.)
 
     // PHASE 0c: the slide-along-wall check. When ownPhysics is on and we're
     // about to send (not holding), check the direct path to the AIM (waypoint
@@ -479,8 +505,9 @@ export class Mover {
     }
 
     // If the fan is active (we were in raw-move fallback), fire the next heading.
-    // PHASE 0a: the fan uses a VELOCITY DECLARATION (not a step). The server
-    // carries the character at the declared speed. Walking = 18 units/tick.
+    // PHASE 0a: the fan probes with single-step declarations (1/s gated).
+    // Each packet is one accepted position; the progress check above commits
+    // only directions the SERVER actually moved us.
     if (this._fanTarget != null || (this._fanIndex != null && this._fanIndex < 9)) {
       const FAN = [0, -0.35, 0.35, -0.75, 0.75, -1.2, 1.2, -1.7, 1.7];
       const idx = this._fanIndex ?? 0;
@@ -492,21 +519,24 @@ export class Mover {
       const dist = Math.hypot(dx, dy);
       const baseAngle = Math.atan2(dy, dx);
       const finalAngle = baseAngle + angle;
-      // VELOCITY DECLARATION: send moveTo(fanX, fanY, speed) — the server
-
-      // carries the character at the declared speed. The fan heading is the
-      // direction; the target is ONE STEP ahead (16 units = MOVEUNITS), not
-      // 100 units (which would carry the character through a wall). The
-      // server carries the character at the declared speed toward the target;
-      // the hold gate re-sends when the character stalls.
+      // VELOCITY DECLARATION: send moveTo(fanX, fanY, speed) — one accepted
+      // position per packet. The fan heading is the direction; the target is
+      // ONE STEP ahead (16 units = MOVEUNITS), not 100 units (a far target
+      // could jump a wall the segment check can't see).
       const fanX = myProtoX + Math.cos(finalAngle) * MOVEUNITS_PROTO; // one step ahead
       const fanY = myProtoY + Math.sin(finalAngle) * MOVEUNITS_PROTO;
       const speed = 18; // walking speed
-      Promise.resolve(s.pacer.submit('move', () => c.moveTo(Math.round(fanX), Math.round(fanY), speed, c.room?.id ?? 0), 100)).catch(() => {});
-      this._recordSend(aimX, aimY, myProtoX, myProtoY);
-      this._fanTarget = { x: protocolToClient(fanX), y: protocolToClient(fanY) };
-      this._fanFrom = { x: myX, y: myY };
-      this._fanIndex = idx;
+      // Cheat-clean: gate fan probes to the 1/s send law like every move.
+      // Ungated this fires every tick (10/s) and trips speedhack detection.
+      const fServerPX = curCol * KOD_FINENESS + HALF, fServerPY = curRow * KOD_FINENESS + HALF;
+      if (this._movementGateOk(fanX, fanY, myProtoX, myProtoY, fServerPX, fServerPY)) {
+        Promise.resolve(s.pacer.submit('move', () => c.moveTo(Math.round(fanX), Math.round(fanY), speed, c.room?.id ?? 0), 100)).catch(() => {});
+        this._recordSend(aimX, aimY, myProtoX, myProtoY);
+        this._recordReport(fanX, fanY);
+        this._fanTarget = { x: protocolToClient(fanX), y: protocolToClient(fanY) };
+        this._fanFrom = { x: myX, y: myY };
+        this._fanIndex = idx;
+      }
       return { state: 'raw-move', fanIndex: idx, velocity: true };
     }
 
@@ -583,8 +613,14 @@ export class Mover {
         // past the wall does not trigger the transition.
         const pastX = this._edgeTarget ? this._edgeTarget.x : this.destProto.x + edgeDx * 32;
         const pastY = this._edgeTarget ? this._edgeTarget.y : this.destProto.y + edgeDy * 32;
-        Promise.resolve(s.pacer.submit('move', () => c.moveTo(Math.round(pastX), Math.round(pastY), 18, c.room?.id ?? 0), 100)).catch(() => {});
-        this._recordSend(pastX, pastY, myProtoX, myProtoY);
+        // Cheat-clean: gate to the 1/s send law (ungated this fires every
+        // tick at a boundary and trips speedhack detection).
+        const wServerPX = curCol * KOD_FINENESS + HALF, wServerPY = curRow * KOD_FINENESS + HALF;
+        if (this._movementGateOk(pastX, pastY, myProtoX, myProtoY, wServerPX, wServerPY)) {
+          Promise.resolve(s.pacer.submit('move', () => c.moveTo(Math.round(pastX), Math.round(pastY), 18, c.room?.id ?? 0), 100)).catch(() => {});
+          this._recordSend(pastX, pastY, myProtoX, myProtoY);
+          this._recordReport(pastX, pastY);
+        }
         return { state: 'crossing', walkPast: true };
       }
     }
@@ -625,18 +661,48 @@ export class Mover {
       }
     }
 
-    // PHASE 0a: VELOCITY DECLARATION. When ownPhysics is on and the slide/fan
-    // didn't fire, declare a velocity: send moveTo(aimX, aimY, speed) ONCE.
-    // The server carries the character at the declared speed. WALKING = 18
-    // units/tick (2.5 squares/s). RUNNING (36) is now safe — the raycast-ahead
-    // check validates the trajectory before the send.
+    // PHASE 0a: VELOCITY DECLARATION. Under ownPhysics, declare the (already
+    // stride-clamped) aim: one accepted position per second IS the speed
+    // (walk 160 = 2.5 sq/s, run 320 = 5 sq/s). The byte must match the
+    // stride: >18 with vigor < 10 gets rubber-banded as cheating (user.kod),
+    // and runNow already requires RUN_VIGOR_FLOOR.
     if (ownPhysics) {
-      const vigor = s.client?.vitals?.()?.vigor?.value ?? 0;
-      const VIGOR_RUN_THRESHOLD = 10;
-      const speed = vigor >= VIGOR_RUN_THRESHOLD ? 36 : 18;
-      Promise.resolve(s.pacer.submit('move', () => c.moveTo(Math.round(aimX), Math.round(aimY), speed, c.room?.id ?? 0), 100)).catch(() => {});
-      this._recordSend(aimX, aimY, myProtoX, myProtoY);
-      return { state: 'moving', velocity: true, speed };
+      // Advance past reached waypoints HERE: the shared advance block below
+      // is unreachable past this return. Without this, pathIdx freezes on a
+      // reached waypoint, aim == position, the send gate closes forever —
+      // the observed one-step-then-stop.
+      if (this.path && this.pathIdx < this.path.length) {
+        while (this.pathIdx < this.path.length) {
+          const w = this.path[this.pathIdx];
+          if (Math.hypot(w.x - myProtoX, w.y - myProtoY) < KOD_FINENESS) this.pathIdx++;
+          else break;
+        }
+      }
+      if (!this.path || this.pathIdx >= this.path.length) {
+        // Past all waypoints (or no path): fall through to the
+        // destination-direct logic below.
+      } else {
+        const w = this.path[this.pathIdx];
+        aimX = w.x; aimY = w.y;
+        // Re-clamp: the new aim may be farther than one stride.
+        const adx = aimX - myProtoX, ady = aimY - myProtoY;
+        const ad = Math.hypot(adx, ady);
+        if (ad > strideNow) {
+          aimX = myProtoX + (adx / ad) * strideNow;
+          aimY = myProtoY + (ady / ad) * strideNow;
+        }
+        const speed = runNow ? 36 : 18;
+      // Cheat-clean send: gated to 1/s. Ungated this fires every tick (10/s)
+      // and flags the account (speedhack counter threshold 2).
+      const vServerPX = curCol * KOD_FINENESS + HALF, vServerPY = curRow * KOD_FINENESS + HALF;
+      const gateOk = this._movementGateOk(aimX, aimY, myProtoX, myProtoY, vServerPX, vServerPY);
+      if (gateOk) {
+        Promise.resolve(s.pacer.submit('move', () => c.moveTo(Math.round(aimX), Math.round(aimY), speed, c.room?.id ?? 0), 100)).catch(() => {});
+        this._recordSend(aimX, aimY, myProtoX, myProtoY);
+        this._recordReport(aimX, aimY);
+      }
+        return { state: 'moving', velocity: true, speed };
+      }
     }
 
     // FOLLOW THE PATH: head toward the current waypoint.
@@ -1102,6 +1168,7 @@ export class Mover {
         const rec = this.session.pacer.submit('blink', () => c.cast(blink.id, []), 1500);
         Promise.resolve(rec).catch(() => {});
         this._blinkPending = true;
+        this._blinkAt = Date.now();
       }, 2000);
       return true;
     } catch { return false; }
