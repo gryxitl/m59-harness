@@ -363,6 +363,18 @@ export const INTENTS = {
       }
     }
     if (!portal) return { sent: false, why: 'no portal in room' };
+    // Report portal identity (name/flags/count) so a dead portal is visible:
+    // standing on the nearest name-match means nothing if it is unlit or the
+    // wrong portal. Decision lines dedup on change, so this logs once.
+    let portalCount = 0;
+    if (objects instanceof Map) {
+      for (const o of objects.values()) {
+        const name = c.rsc?.get?.(o.nameRsc) ?? o.name ?? '';
+        if (/portal/i.test(name)) portalCount++;
+      }
+    }
+    const portalName = c.rsc?.get?.(portal.nameRsc) ?? portal.name ?? '?';
+    const portalFlags = portal.flags ?? null;
     // Walk toward the portal (one step per SEND LAW via the actuator —
     // act.step defaults to 250ms gaps (4/s) which trips speedhack detection
     // (threshold ~2/s averaged); the escape runs every tick, so gate it to
@@ -376,7 +388,7 @@ export const INTENTS = {
       if (ctx.session) ctx.session._lastEscapeStep = now3;
       act.step(portal.col, portal.row, { minGapMs: 1000 });
     }
-    return { sent: true, what: `escape: walk to portal at (${portal.col},${portal.row})` };
+    return { sent: true, what: `escape: walk to portal at (${portal.col},${portal.row}) [${portalName} flags=${portalFlags} seen=${portalCount}]` };
   },
 };
 
