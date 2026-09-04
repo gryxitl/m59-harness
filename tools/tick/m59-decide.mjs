@@ -1534,10 +1534,16 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             }
             // Keep driving an active patrol nudge every tick (one mover.tick
             // per nudge is not enough — the mover needs all 10 ticks/s).
+            // Only when the mover's destination is ours (another driver such
+            // as combat may own it; driving the tick is still correct, but
+            // don't claim its destination in the log).
             if (mv?.active && me) {
               const mr = mv.tick(pos);
+              const ours = _patrolTarget && mv.dest?.col === _patrolTarget.col && mv.dest?.row === _patrolTarget.row;
               onDecision?.({ ticks, goal: 'hunt', action: 'travel',
-                what: `patrolling hunt room (mover ${mr.state} -> ${_patrolTarget?.col},${_patrolTarget?.row})`, sent: mr.state === 'moving' || mr.state === 'raw-move' || mr.state === 'crossing' });
+                what: ours ? `patrolling hunt room (mover ${mr.state} -> ${_patrolTarget?.col},${_patrolTarget?.row})`
+                            : `keeping mover ticking (dest ${mv.dest?.col},${mv.dest?.row} owned elsewhere)`,
+                sent: mr.state === 'moving' || mr.state === 'raw-move' || mr.state === 'crossing' });
               return;
             }
             if (me && (session._lastHuntNudge == null || now - session._lastHuntNudge > 5000)) {
