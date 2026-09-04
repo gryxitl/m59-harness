@@ -1208,7 +1208,21 @@ function saveFleetState() {
       }
       const kept = [];
       for (const [agent, entry] of Object.entries(now)) {
-        if (agent in next || forgotten.has(agent)) continue;
+        if (agent in next || forgotten.has(agent)) {
+          // PRESERVE FIELDS THAT ARE IN THE DISK ENTRY BUT NOT IN THE IN-MEMORY ONE.
+          // A restart loads only what it needs (autopilot) into the in-memory Map;
+          // credentials, host, port and other fields live on disk. Without this merge
+          // the first saveFleetState after a restart silently drops them (t2 lost its
+          // credentials on the 2026-09-02 restart cycle: the in-memory entry had only
+          // `autopilot`, and the write replaced the whole entry).
+          if (agent in next) {
+            const mem = next[agent];
+            for (const k of Object.keys(entry)) {
+              if (!(k in mem)) mem[k] = entry[k];
+            }
+          }
+          continue;
+        }
         next[agent] = entry;
         kept.push(agent);
       }
@@ -1242,8 +1256,15 @@ function rememberAutopilot(agent, config) {
   }
   // Preserve useGOAP — it's set in the fleet file but not in the in-memory policy.
   if (e.autopilot?.policy?.useGOAP && !config.policy?.useGOAP) config.policy.useGOAP = true;
-  e.autopilot = config;
-  saveFleetState();
+  
+  // ONLY SAVE IF THE POLICY ACTUALLY CHANGED. This prevents the log spam and the
+  // infinite loop that was preventing the keepers from starting.
+  const prevPolicy = e.autopilot?.policy ?? {};
+  const changed = JSON.stringify(prevPolicy) !== JSON.stringify(config.policy);
+  if (changed) {
+    e.autopilot = config;
+    saveFleetState();
+  }
 }
 // The ONE way an entry leaves the file. Recorded rather than inferred, because the save
 // now carries forward anything it did not expect to be missing — without this, `forget`
@@ -12303,7 +12324,11 @@ function serveDashboard(port) {
         // runtime room id does not match the world map's numbering), so look the room up
         // by name first and keep the match for the dimension lookup below.
         let rooFile = null;
-        const byName = roomName ? Object.values(worldMap?.rooms ?? {}).find(r => r.name === roomName) : null;
+        // When multiple rooms share the same name (e.g. two "Deep in the Forest
+        // of Farol"), disambiguate by room number: prefer the name-matched room
+        // whose num matches the caller's roomNum. Fall back to the first match.
+        const nameMatches = roomName ? Object.values(worldMap?.rooms ?? {}).filter(r => r.name === roomName) : [];
+        const byName = nameMatches.find(r => r.num === roomNum) ?? nameMatches[0] ?? null;
         if (roomName && roomRooLookup?.size) rooFile = roomRooLookup.get(roomName);
         if (!rooFile && byName?.roo?.file) rooFile = byName.roo.file;
         const roo = worldMap?.rooms?.[roomNum]?.roo;
