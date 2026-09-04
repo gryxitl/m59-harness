@@ -409,13 +409,17 @@ export class Mover {
     // FINITE-CHAINED (not ??): a NaN coordinate passes ?? through (it only skips
     // null/undefined) and then poisons every distance, trace and gate below into
     // silent NaN-false — the observed prod-0 freeze with a live path.
+    // Prefer the frame position (Sensor now resolves it live from room
+    // objects) over c.self, which freezes at room-entry/teleport coords.
     const selfPos = s.client?.self;
-    const curCol = (selfPos && Number.isFinite(selfPos.col)) ? selfPos.col
-      : (Number.isFinite(me.col) ? me.col : 0);
-    const curRow = (selfPos && Number.isFinite(selfPos.row)) ? selfPos.row
-      : (Number.isFinite(me.row) ? me.row : 0);
-    const myProtoX0 = (selfPos && Number.isFinite(selfPos.x)) ? selfPos.x : (curCol * KOD_FINENESS + HALF);
-    const myProtoY0 = (selfPos && Number.isFinite(selfPos.y)) ? selfPos.y : (curRow * KOD_FINENESS + HALF);
+    const curCol = (me && Number.isFinite(me.col)) ? me.col
+      : ((selfPos && Number.isFinite(selfPos.col)) ? selfPos.col : 0);
+    const curRow = (me && Number.isFinite(me.row)) ? me.row
+      : ((selfPos && Number.isFinite(selfPos.row)) ? selfPos.row : 0);
+    const myProtoX0 = (me && Number.isFinite(me.x)) ? me.x
+      : ((selfPos && Number.isFinite(selfPos.x)) ? selfPos.x : (curCol * KOD_FINENESS + HALF));
+    const myProtoY0 = (me && Number.isFinite(me.y)) ? me.y
+      : ((selfPos && Number.isFinite(selfPos.y)) ? selfPos.y : (curRow * KOD_FINENESS + HALF));
     // LOCAL SIMULATION: trust our own feet while fresh (see _recordReport).
     // Server echoes (~1/s) correct us when stale — including rubber-bands.
     const simFresh = this._simX != null && this._simY != null && (Date.now() - (this._simAt ?? 0)) < 2000;
