@@ -40,7 +40,7 @@ function engageSquare(me, target) {
 const PULL_RANGE = 12;
 // How close (in squares) for "in reach" — melee is a disc of
 // radius 2-3 on square coordinates.
-const MELEE_REACH = 3;
+const MELEE_REACH = 2;
 // CAST_REACH: how close a caster needs to be to cast a bolt at a mob.
 // Bolt spells (zap, fire bolt) travel several squares, so casters can
 // engage from farther out than melee.
@@ -335,7 +335,16 @@ export class CombatController {
             { maxNodes: 4000 }
           );
           if (p.found) {
-            this._cachedPathDist = p.waypoints.length;
+            // PATH DISTANCE IN SQUARES, not nodes: a direct 3-square path has
+            // 2 endpoint waypoints, and comparing node count to MELEE_REACH
+            // reads it as "in reach" — swinging at air forever 3 squares out
+            // (watched live). Sum segment lengths from our square instead.
+            const pts = [{ x: me.col * F + H, y: me.row * F + H }, ...(p.waypoints ?? [])];
+            let squares = 0;
+            for (let i = 1; i < pts.length; i++) {
+              squares += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y) / F;
+            }
+            this._cachedPathDist = squares;
           } else {
             this._cachedPathDist = 999; // no path: separate island or walled off
             if (this.session && this.targetId != null) {

@@ -195,6 +195,38 @@ console.log('\nraw-step fallback is production-gated to the 1/s send law');
   ok('three rapid fallback walks produce one step (no queue flood)', steps.length === 1, JSON.stringify(sent));
 }
 
+console.log('\npath distance counts squares, not nodes');
+{
+  // A direct 3-square path has 2 endpoint waypoints: must read as 3 (walk),
+  // not 2 (fight). Watched live: swung at air 3 squares out indefinitely.
+  const sent = [];
+  const geo = {
+    fineWalkable: () => true, standable: () => true,
+    finePathProtocol: (fx, fy, tx, ty) => ({ found: true, waypoints: [{ x: tx, y: ty }], expanded: 1 }),
+  };
+  const objects = new Map();
+  objects.set(100, { id: 100, col: 8, row: 5, name: 'centipede', flags: 0 });
+  const session = {
+    name: 'test', live: true,
+    client: {
+      state: 'game',
+      self: { col: 5, row: 5, x: 5 * 64 + 32, y: 5 * 64 + 32 },
+      room: { objects },
+      rsc: { get: () => 'centipede' },
+      moveTo: (x, y) => sent.push({ x, y }),
+      moveSpeed: () => 1,
+      vitals: () => ({ health: { value: 100, max: 100, pct: 100 } }),
+    },
+    pacer: { depth: 0, submit: (k, fn) => { fn(); return Promise.resolve(); } },
+    world: { geometry: geo },
+  };
+  const act = { step: (c, r) => sent.push({ step: [c, r] }), swing: (id) => sent.push({ swing: id }), face: () => {} };
+  const frame = () => ({ position: { col: 5, row: 5 }, objects, vitals: { health: { value: 100, max: 100, pct: 100 } }, geometry: geo });
+  const controller = new CombatController(session);
+  const r = controller.tick(frame(), act);
+  ok('3 squares out walks instead of swinging at air', r.kind === 'walk', r.kind + ' ' + (r.what ?? ''));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
 
