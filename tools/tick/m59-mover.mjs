@@ -1039,6 +1039,41 @@ export class Mover {
       const destCol = Math.floor(this.destProto.x / KOD_FINENESS);
       const destRow = Math.floor(this.destProto.y / KOD_FINENESS);
       const geo = this.session?.world?.geometry;
+      // STRIDED DIRECT DECLARATION: the planner failed, but a beeline that
+      // validates clean is as safe as any fan stride (same trace + ground
+      // checks). Without this, no-path travel is capped at 1 square per send
+      // even across open ground — the observed 0.15 sq/s regime. Falls through
+      // to single-square stepping when the segment is blocked or floorless.
+      {
+        const ndx = this.destProto.x - myProtoX, ndy = this.destProto.y - myProtoY;
+        const nd = Math.hypot(ndx, ndy);
+        if (nd > KOD_FINENESS) {
+          const slen = Math.min(nd, strideNow);
+          const sx = Math.round(myProtoX + (ndx / nd) * slen);
+          const sy = Math.round(myProtoY + (ndy / nd) * slen);
+          const sqC = Math.floor(sx / KOD_FINENESS), sqR = Math.floor(sy / KOD_FINENESS);
+          const sqIsExit = this._destIsStandOn === true && sqC === destCol && sqR === destRow;
+          const sqGroundOk = sqIsExit || isGrounded(geo, sqR, sqC) !== false;
+          let segOk = false;
+          if (sqGroundOk && geo?.traceFineMoveClient) {
+            try {
+              const tr = geo.traceFineMoveClient(
+                protocolToClient(myProtoX), protocolToClient(myProtoY),
+                protocolToClient(sx), protocolToClient(sy),
+                { slide: false, playerRadius: 32 });
+              segOk = !!(tr && tr.blocked !== true);
+            } catch { segOk = false; }
+          }
+          const srvPX = srvCol * KOD_FINENESS + HALF, srvPY = srvRow * KOD_FINENESS + HALF;
+          if (segOk && this._movementGateOk(sx, sy, myProtoX, myProtoY, srvPX, srvPY)) {
+            const npSpeed = runNow ? 36 : 18;
+            Promise.resolve(s.pacer.submit('move', () => c.moveTo(sx, sy, npSpeed, c.room?.id ?? 0), 100)).catch(() => {});
+            this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
+            this._recordReport(sx, sy);
+            return { state: 'moving', to: { col: destCol, row: destRow }, stride: true };
+          }
+        }
+      }
       // Candidate squares ordered toward the destination.
       const sdx = Math.sign(destCol - myCol);
       const sdy = Math.sign(destRow - myRow);

@@ -541,5 +541,40 @@ console.log('\nCORNER FLOW (trace-gated lookahead)');
   ok('wp1 consumed, corner kept for arrival', mover.pathIdx === 1, `idx=${mover.pathIdx}`);
 }
 
+console.log('\nSTRIDED NO-PATH DECLARATION');
+{
+  // Planner failed but the beeline validates clean: declare a full stride,
+  // not a single square.
+  const openGeo = {
+    collisionReady: true,
+    standable() { return true; },
+    traceFineMoveClient(x0, y0, x1, y1) { return { blocked: false, moved: true, arrived: true, x: x1, y: y1 }; },
+    finePathProtocol() { return { found: false, reason: 'maze', waypoints: [] }; },
+  };
+  const { mover, sent } = rig({ col: 2, row: 2, geo: openGeo });
+  mover.session.policy = {}; // walk stride (160)
+  mover.to(8, 2);
+  const r = mover.tick();
+  ok('open beeline declares a full walk stride', r.state === 'moving' && r.stride === true, `${r.state}`);
+  ok('the send covers 160 proto units, not 64', sent.length === 1 && sent[0][0] === 320 && sent[0][1] === 160, JSON.stringify(sent));
+}
+{
+  // Blocked beeline falls back to single-square stepping (no behavior change).
+  const wallGeo2 = {
+    collisionReady: true,
+    standable() { return true; },
+    traceFineMoveClient() { return { blocked: true, moved: false, arrived: false }; },
+    fineWalkable() { return true; },
+    walkable() { return true; },
+    finePathProtocol() { return { found: false, reason: 'maze', waypoints: [] }; },
+  };
+  const { mover, sent } = rig({ col: 2, row: 2, geo: wallGeo2 });
+  mover.session.policy = {};
+  mover.to(8, 2);
+  const r = mover.tick();
+  ok('blocked beeline falls back to stepping', r.state === 'moving' && r.stride !== true, `${r.state}`);
+  ok('the fallback step is adjacent', sent.length === 1 && Math.abs(sent[0][0] - 160) + Math.abs(sent[0][1] - 160) === 64, JSON.stringify(sent));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
