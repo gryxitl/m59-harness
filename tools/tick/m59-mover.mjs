@@ -443,6 +443,9 @@ export class Mover {
     const vigorNow = s.client?.vitals?.()?.vigor?.value ?? 0;
     const runNow = vigorNow >= RUN_VIGOR_FLOOR;
     const strideNow = runNow ? RUN_STRIDE_PROTO : WALK_STRIDE_PROTO;
+    // Boundary checks (0c slide, raycast-ahead) skip only on the FINAL
+    // APPROACH to an exit square. En route, a blocked direct path means a
+    // real wall even when the destination is a stand_on.
     {
       const adx = aimX - myProtoX, ady = aimY - myProtoY;
       const ad = Math.hypot(adx, ady);
@@ -451,6 +454,13 @@ export class Mover {
         aimY = myProtoY + (ady / ad) * strideNow;
       }
     }
+
+    // Final-approach flag for the boundary checks below (0c slide,
+    // raycast-ahead): they skip only within 4 squares of an exit square,
+    // where the crossing logic takes over. En route they must run — a
+    // blocked direct path means a real wall even when headed to a door.
+    const standOnNear = !!this._destIsStandOn && this.destProto != null &&
+      Math.hypot(this.destProto.x - myProtoX, this.destProto.y - myProtoY) < KOD_FINENESS * 4;
 
     // PLAN: if no path yet, or we're stuck, plan a new one.
     // ALWAYS RUN — the A* path gives the character the route.
@@ -462,6 +472,7 @@ export class Mover {
       if (result.found) {
         this.path = result.waypoints;
         this.pathIdx = 0;
+        this.stuckTicks = 0;
       } else {
         // No fine path, or search exhausted. The server is
         // CLIENT-AUTHORITATIVE: it does not check geometry, it
@@ -488,7 +499,8 @@ export class Mover {
     // FIX: check the path to the AIM (not the target) — the velocity
     // declaration sends the character toward the aim (waypoint), not the
     // target (beeline).
-    if (ownPhysics && !this._destIsStandOn) {
+    // En route: run the slide check whenever the direct path is blocked.
+    if (ownPhysics && !standOnNear) {
       const geo = this.session?.world?.geometry;
       if (geo?.traceFineMoveClient) {
         const clientX = protocolToClient(myProtoX), clientY = protocolToClient(myProtoY);
@@ -641,7 +653,7 @@ export class Mover {
     // current room). The boundary-crossing check (below) fires the go()
     // command. The raycast-ahead check should not block the velocity
     // declaration when the character is at a boundary.
-    if (ownPhysics && !this._destIsStandOn) {
+    if (ownPhysics && !standOnNear) {
       const geo = this.session?.world?.geometry;
       // Compute the next position: one step ahead in the aim direction.
       const dx = aimX - myProtoX, dy = aimY - myProtoY;
@@ -1062,7 +1074,10 @@ export class Mover {
     const dx = refX == null ? Infinity : (protoX - refX);
     const dy = refY == null ? Infinity : (protoY - refY);
     const moved2 = refX == null ? Infinity : (dx * dx + dy * dy);
-    const movedEnough = moved2 > MOVE_THRESHOLD_PROTO2;
+    // >= (not >): single-step probes sit at exactly 16 units (256 = the
+    // threshold squared). Strict > deadlocks the escape fan: it would spin
+    // forever, gated closed, sending nothing.
+    const movedEnough = moved2 >= MOVE_THRESHOLD_PROTO2;
     const intervalOk = (now - this._lastReportAt) >= (this.reportIntervalMs ?? MOVE_INTERVAL_MS);
     return movedEnough && intervalOk;
   }
