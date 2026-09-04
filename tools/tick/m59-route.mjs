@@ -36,6 +36,8 @@
 import { loadMap, findPath } from '../m59-map.mjs';
 import { objIdToNum } from '../m59-hunt-room.mjs';
 import { Mover } from './m59-mover.mjs';
+import { tickEdgeExits } from './m59-exits.mjs';
+import { recordCrossing } from '../m59-crossings.mjs';
 import { KOD_FINENESS } from '../m59-roo.mjs';
 
 // WHICH MAP ROOM ARE WE ACTUALLY IN.
@@ -183,6 +185,23 @@ export class Router {
     const next = hops.length ? (hops[0].to ?? hops[0]) : this.dest;
     let exits = [];
     try { exits = world.exits() ?? []; } catch (e) { return { why: `exits failed: ${e.message}` }; }
+    // TICK EDGES (gap-fill, not replacement): the shared exit computation can
+    // drop a working edge entirely (watched live: 382's north door to 557 —
+    // baked approaches exist, coarse flood connects, but no exit object came
+    // back and travel reported "no usable exit" next to a working door).
+    // The tick provider answers from map topology + baked approaches +
+    // witnessed crossings, verified live against BSP floor. Merged by
+    // (to, stand_on) so the shared list keeps precedence elsewhere.
+    try {
+      const extra = tickEdgeExits({ map: this.map, roomNum: here, geo: this._geo() });
+      if (extra.length) {
+        const seen = new Set(exits.map(e => `${e.to}:${e.stand_on?.col},${e.stand_on?.row}`));
+        for (const x of extra) {
+          const k = `${x.to}:${x.stand_on?.col},${x.stand_on?.row}`;
+          if (!seen.has(k)) { seen.add(k); exits.push(x); }
+        }
+      }
+    } catch {}
     // PREFER EXITS WHOSE STAND_ON IS REACHABLE. A go/edge exit whose stand_on square
     // is walled off (a fence, a ledge) makes the leg target an unreachable square and
     // the character oscillates against the wall forever. `reachable` is computed by
@@ -577,6 +596,17 @@ export class Router {
     // A ROOM CHANGE INVALIDATES THE LEG, always. Where you arrive is not where the
     // return edge is, so nothing about the old leg survives the crossing.
     if (!this.leg || Number(this.leg.fromRoom) !== Number(here)) {
+      // LEARNED CROSSINGS: if we held a leg into this room change, its exit
+      // square is where we crossed from. Record it (debounced, never throws)
+      // so future legs prefer proven squares. Walk-past/go transitions never
+      // go through leaveVia, so without this the book never learns from the
+      // characters that cross the most.
+      try {
+        const old = this.leg;
+        if (old && Number(old.fromRoom) !== Number(here) && old.standOn?.col != null) {
+          recordCrossing(Number(old.fromRoom), Number(here), { row: old.standOn.row, col: old.standOn.col });
+        }
+      } catch {}
       const r = this._planLeg(here);
       if (!r.leg) return this._say('no-route', { why: r.why });
       this.leg = r.leg;
