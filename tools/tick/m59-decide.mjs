@@ -362,8 +362,11 @@ export const INTENTS = {
       }
     }
     if (!portal) return { sent: false, why: 'no portal in room' };
-    // Walk toward the portal (one step per tick via the actuator).
-    act.step(portal.col, portal.row);
+    // Walk toward the portal (one step per SEND LAW via the actuator —
+    // act.step defaults to 250ms gaps (4/s) which trips speedhack detection
+    // (threshold ~2/s averaged); the escape runs every tick, so gate it to
+    // the 1/s law explicitly.
+    act.step(portal.col, portal.row, { minGapMs: 1000 });
     return { sent: true, what: `escape: walk to portal at (${portal.col},${portal.row})` };
   },
 };
