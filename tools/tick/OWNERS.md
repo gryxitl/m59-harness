@@ -17,6 +17,7 @@ The tick driver's decision loop and movement. Only the tick driver imports these
 | `m59-combat.mjs` | the `CombatController` (facing, zapping, weapon choice) |
 | `m59-pose.mjs` | the `Pose` — the single position truth (sim + server echo, reconciled) |
 | `m59-ground.mjs` | `isGrounded` / `nearestGrounded` — the BSP-floor predicate (void detection) |
+| `m59-exits.mjs` | tick-owned edge exits (map topology + baked approaches + witnessed crossings, live-verified) |
 
 ## Shared (in `tools/`, read by the tick driver, **do not modify for tick work**)
 
