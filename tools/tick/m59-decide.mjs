@@ -205,12 +205,32 @@ export const INTENTS = {
     const merchants = list.filter(o => affordances(o.flags ?? 0).includes('buy'));
     if (!merchants.length) {
       // No merchant in this room. Route to the main town (the Raza, room 1012) where
-      // the smith sells weapons.
+      // the smith sells weapons. Set _buyingRoute so hunt yields for the whole
+      // journey (it only runs when the router is idle, i.e. exactly when it
+      // would otherwise steal the destination back).
       if (s?._router) {
         const dest = 1013;  // Raza Blacksmith — where the smith sells weapons
+        // Cooldown after an abandoned trip: without it, set/abandon alternates
+        // every tick and `armed` still starves hunt. Hunt unarmed meanwhile;
+        // a later room may have a route.
+        if (s?._smithUnreachableUntil && Date.now() < s._smithUnreachableUntil) {
+          return { sent: false, why: 'smith unreachable recently; hunting unarmed' };
+        }
+        if (s) s._buyingRoute = dest;
         if (s._router.dest !== dest) {
           s._router.to(dest);
           return { sent: true, what: `travel to the smith (room ${dest})` };
+        }
+        // Already bound for the smith: abandon the trip if the router cannot
+        // plan it (e.g. deep wilderness with no graph path to town) instead
+        // of stalling on sent:false forever — fall back to hunting unarmed.
+        // status() is cached fields, no replan.
+        const st = s._router.status?.();
+        if (st && st.state === 'no-route') {
+          s._buyingRoute = null;
+          s._router.clear();
+          s._smithUnreachableUntil = Date.now() + 300000;
+          return { sent: false, why: 'no route to the smith; hunting unarmed' };
         }
         const r = routeIntent(s._router)(frame, act);
         return { sent: r.sent, what: r.what ?? `traveling to the smith (room ${dest})` };
@@ -1282,11 +1302,13 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
         // No active route: pick a hunt room. BUT if the character is actively routing
         // to a shop to buy a weapon (the `armed` goal set _buyingRoute), don't grab the
         // router — that's how hunt would override the smith-bound route and JayB would
-        // bounce between 1012 (smith) and 1016 (Mausoleum) without buying. The hunt
-        // goal resumes once the buy succeeds (armed=true clears _buyingRoute) or the
-        // route is abandoned.
-        if (session._buyingRoute != null && session._buyingRoute === router.dest) {
-          // Let the armed goal keep driving the route.
+        // bounce between 1012 (smith) and 1016 (Mausoleum) without buying. Resume the
+        // smith route instead (the destination was cleared by arrival/oscillation
+        // handling, not by choice). Cleared on success: armed=true clears
+        // _buyingRoute. NOTE the old check compared the flag to router.dest,
+        // which is always null inside this guard — dead code that never held.
+        if (session._buyingRoute != null) {
+          router.to(session._buyingRoute);
           const r = routeIntent(router)(frame, act);
           onDecision?.({ ticks, goal: 'hunt', action: 'travel',
             what: r.what ?? `holding route to shop (room ${session._buyingRoute})`, sent: r.sent });
@@ -1482,15 +1504,18 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // and the broken-weapon state is tracked outside the world-state symbols. We check
     // it here, at the moment of acting, and swap the action.
     let actionName = first;
-    // BROKEN-WEAPON FALLTHROUGH. If the plan is `equip` but the only weapon in the
-    // pack is broken (pickWeapon finds one, but pickWieldableWeapon — which excludes
-    // the broken set — returns null), `equip` would send `use` on the broken weapon
-    // and the server would refuse it every tick (the shattered-mace loop). Swap to
-    // `buy`: the character needs a replacement. This only fires when there IS a weapon
-    // in the pack and it's broken — with an empty pack, `equip`'s "no weapon" refusal
-    // stands (there's nothing to buy the character into; the refusal is the truth).
+    // BROKEN/EMPTY-PACK FALLTHROUGH. If the plan is `equip` but there is
+    // nothing wieldable — the only weapon is broken (pickWeapon finds one,
+    // but pickWieldableWeapon, which excludes the broken set, returns null)
+    // or the pack holds no weapon at all — `equip` would refuse every tick
+    // (the shattered-mace loop) and `armed` would preempt travel forever.
+    // Swap to `buy`: the buy intent routes to the smith from anywhere and
+    // purchases there. Gated on buyWeapons so a character that must never
+    // shop keeps the refusal. (Casters never reach here: the `armed` goal
+    // doesn't fire for them.) Policy lives on session.policy (see hunt).
     if (active.goal === 'armed' && first === 'equip'
-        && pickWeapon(client) != null && !pickWieldableWeapon(client, session)) {
+        && !pickWieldableWeapon(client, session)
+        && (session?.policy ?? policy)?.buyWeapons !== false) {
       actionName = 'buy';
     }
     const r = intend(actionName, frame, act, { client, session, ws });

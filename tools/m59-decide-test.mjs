@@ -97,7 +97,9 @@ console.log('\nan action that could not be bound reports a refusal, not a succes
   decide({ in_game: true, objects: session.client.room.objects }, new Actuator(session), null);
   ok('nothing was sent', sent.length === 0);
   const d = seen[seen.length - 1];
-  ok('and it said why', d && d.sent === false && /no weapon/.test(d.why ?? ''),
+  ok('empty pack escalates to buy, not a doomed equip', d && d.action === 'buy',
+     'retrying equip with nothing wieldable is the shattered-mace loop');
+  ok('and a refusal is still a refusal', d && d.sent === false && /no merchant|no weapon/.test(d.why ?? ''),
      'no error has never meant success here');
 }
 

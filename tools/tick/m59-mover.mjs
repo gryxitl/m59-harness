@@ -175,6 +175,7 @@ export class Mover {
       this._lastReportAt = 0;
       this._lastReportX = null;
       this._lastReportY = null;
+      this._recentSteps = null;  // loop-avoidance memory is per-destination
       this.path = null;      // re-plan on a new destination
       this.pathIdx = 0;
       this.stuckTicks = 0;
@@ -195,6 +196,7 @@ export class Mover {
   clear() {
     this.dest = null;
     this.destProto = null;
+    this._recentSteps = null;
     this.path = null;
     this.pathIdx = 0;
     this.sitting = false;
@@ -803,7 +805,14 @@ export class Mover {
         }
       }
       let stepCol = null, stepRow = null;
-      for (const [nc, nr] of candidates) {
+      // Loop avoidance: try unvisited squares first (recently-sent last).
+      // Never exclude (dead ends must backtrack).
+      const taboo0 = this._recentSteps ?? [];
+      const ordered0 = taboo0.length
+        ? [...candidates.filter(([cc, rr]) => !taboo0.includes(cc + ',' + rr)),
+           ...candidates.filter(([cc, rr]) => taboo0.includes(cc + ',' + rr))]
+        : candidates;
+      for (const [nc, nr] of ordered0) {
         const f = geo?.fineWalkable ? geo.fineWalkable(nr, nc) : undefined;
         const c = geo?.walkable ? geo.walkable(nr, nc) : undefined;
         if (f === false) continue;
@@ -897,9 +906,15 @@ export class Mover {
         candidates.push([nc, nr]);
       }
     }
-    // Find the first candidate that is valid.
+    // Find the first candidate that is valid. Unvisited squares first
+    // (loop avoidance — see above); never exclude, dead ends backtrack.
     let stepCol = null, stepRow = null;
-    for (const [nc, nr] of candidates) {
+    const taboo1 = this._recentSteps ?? [];
+    const ordered1 = taboo1.length
+      ? [...candidates.filter(([cc, rr]) => !taboo1.includes(cc + ',' + rr)),
+         ...candidates.filter(([cc, rr]) => taboo1.includes(cc + ',' + rr))]
+      : candidates;
+    for (const [nc, nr] of ordered1) {
       // The FINE grid is the authoritative collision model. When the two
       // grids disagree (fine says walkable, coarse says not), trust the
       // FINE grid — the coarse grid is a 1-byte-per-square projection of
@@ -1055,6 +1070,16 @@ export class Mover {
     this._lastReportAt = Date.now();
     this._lastReportX = protoX;
     this._lastReportY = protoY;
+    // LOOP AVOIDANCE: remember recently-sent squares so the candidate
+    // search can deprioritize them. The greedy stepper otherwise dithers
+    // between two squares forever (east, back west, east…) in front of a
+    // wall, which also trips the router's oscillation breaker. Cap 8.
+    const key = Math.floor(protoX / KOD_FINENESS) + ',' + Math.floor(protoY / KOD_FINENESS);
+    const seen = this._recentSteps ?? (this._recentSteps = []);
+    const at = seen.indexOf(key);
+    if (at !== -1) seen.splice(at, 1);
+    seen.unshift(key);
+    if (seen.length > 8) seen.length = 8;
   }
 
   // Returns true if a position packet was actually sent this tick.
