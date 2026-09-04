@@ -438,5 +438,69 @@ console.log('\nTHE 5s ANTI-DEADLOCK FLOOR (the gate/fan stall fix)');
   ok('stand_on exit square does not start an escape fan', r.why !== 'no-floor start: escape fan', `${r.state} ${r.why ?? ''}`);
 }
 
+console.log('\nNEVER ENTER A VOID (step model)');
+{
+  // Start grounded, destination far: the no-path stepper must skip the
+  // floorless neighbor toward the dest and take a grounded one instead.
+  const voidGeo = {
+    collisionReady: true,
+    fineWalkable() { return true; },
+    walkable() { return true; },
+    standable(r, c) { return !(r === 2 && c === 3); }, // (3,2) is void
+    finePathProtocol() { return { found: false, reason: 'void-test', waypoints: [] }; },
+  };
+  const { mover, sent } = rig({ col: 2, row: 2, destCol: 8, destRow: 2, geo: voidGeo });
+  mover.session.policy = {}; // step model (ownPhysics off)
+  mover.to(8, 2);
+  mover.tick();
+  ok('floorless neighbor toward dest is skipped', sent.length === 1 && !(sent[0][0] === 224 && sent[0][1] === 160), JSON.stringify(sent));
+  ok('a grounded neighbor is stepped to instead', sent.length === 1 && sent[0][0] === 96 && sent[0][1] === 160, JSON.stringify(sent));
+}
+{
+  // Waypoint branch (step model): same rule when following a path.
+  const voidGeo = {
+    collisionReady: true,
+    fineWalkable() { return true; },
+    standable(r, c) { return !(r === 2 && c === 3); }, // (3,2) is void
+  };
+  const { mover, sent } = rig({ col: 2, row: 2, geo: voidGeo });
+  mover.session.policy = {}; // step model
+  mover.to(8, 2);
+  mover.path = [{ x: 8 * 64 + 32, y: 2 * 64 + 32 }];
+  mover.pathIdx = 0;
+  mover.tick();
+  ok('waypoint stepper skips the floorless neighbor', sent.length === 1 && !(sent[0][0] === 224 && sent[0][1] === 160), JSON.stringify(sent));
+}
+{
+  // Velocity branch: a floorless stride-clamped aim is refused, not declared.
+  const voidGeo = {
+    collisionReady: true,
+    standable(r, c) { return !(r === 2 && c === 5); }, // clamped aim (5,2) is void
+  };
+  const { mover, sent } = rig({ col: 2, row: 2, geo: voidGeo });
+  mover.session.policy = { ownPhysics: true };
+  mover.to(6, 2);
+  mover.path = [{ x: 6 * 64 + 32, y: 2 * 64 + 32 }];
+  mover.pathIdx = 0;
+  const r = mover.tick();
+  ok('floorless velocity aim is refused', r.state === 'stuck' && r.why === 'aim has no floor', `${r.state} ${r.why ?? ''}`);
+  ok('nothing is sent into the void', sent.length === 0, JSON.stringify(sent));
+}
+{
+  // Raw-door-push: a floorless non-exit destination is a bad target, not a door.
+  const voidGeo = {
+    collisionReady: true,
+    fineWalkable() { return true; },
+    walkable() { return true; },
+    standable(r, c) { return !((r === 2 && c === 4) || (r === 2 && c === 3)); }, // dest (4,2) and (3,2) void
+    finePathProtocol() { return { found: false, reason: 'void-test', waypoints: [] }; },
+  };
+  const { mover, sent } = rig({ col: 2, row: 2, geo: voidGeo });
+  mover.session.policy = {}; // step model
+  mover.to(4, 2); // near (<256), floorless, NOT a stand_on
+  mover.tick();
+  ok('raw push does not fire into a floorless non-exit', sent.length === 1 && !(sent[0][0] === 224 && sent[0][1] === 160), JSON.stringify(sent));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

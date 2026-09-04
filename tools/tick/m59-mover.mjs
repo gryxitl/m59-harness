@@ -31,6 +31,7 @@
 // the fine model says "wall" but the server says "floor".
 
 import { protocolToClient, clientToProtocol, KOD_FINENESS, PLAYER_RADIUS } from '../m59-roo.mjs';
+import { isGrounded } from './m59-ground.mjs';
 import '../m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
 
 // 256 client units = 16 protocol units per 100ms tick (walking).
@@ -468,6 +469,10 @@ export class Mover {
       this.stuckTicks = 3; // bypass the 3-tick wait
       return { state: 'raw-move', fanIndex: 0, why: 'no-floor start: escape fan' };
     }
+    // Whether the start square itself is floorless (and not a deliberate exit).
+    // When true, the character is already in a void: traversal is allowed so the
+    // escape fan can walk out. When false, no step may ENTER a floorless square.
+    const startIsVoid = startHasNoFloor && !atStandOnExit;
 
     // (Blink progress check moved to the top of tick() — see the BLINK
     // PROGRESS + HOLD block above.)
@@ -867,6 +872,20 @@ export class Mover {
           aimY = myProtoY + (ady / ad) * strideNow;
         }
         const speed = runNow ? 36 : 18;
+      // NEVER ENTER A VOID: from a grounded start, refuse to declare an aim
+      // square with no BSP floor (the deliberate stand_on exit itself is
+      // exempt — boundary handling owns that). A dumb server would accept the
+      // packet and strand the character outside the environment.
+      {
+        const aimSqC = Math.floor(aimX / KOD_FINENESS), aimSqR = Math.floor(aimY / KOD_FINENESS);
+        const destSqC = this.destProto ? Math.floor(this.destProto.x / KOD_FINENESS) : null;
+        const destSqR = this.destProto ? Math.floor(this.destProto.y / KOD_FINENESS) : null;
+        const aimIsExit = this._destIsStandOn === true && aimSqC === destSqC && aimSqR === destSqR;
+        if (!startIsVoid && !aimIsExit && isGrounded(this.session?.world?.geometry, aimSqR, aimSqC) === false) {
+          this.stuckTicks++;
+          return { state: 'stuck', why: 'aim has no floor' };
+        }
+      }
       // Cheat-clean send: gated to 1/s. Ungated this fires every tick (10/s)
       // and flags the account (speedhack counter threshold 2).
       const vServerPX = curCol * KOD_FINENESS + HALF, vServerPY = curRow * KOD_FINENESS + HALF;
@@ -914,7 +933,11 @@ export class Mover {
       // meant to stand on this square to trigger a transition. Fire the raw push
       // whenever we are near it, regardless of the fine model's answer.
       const standOnNear = this._destIsStandOn && distToDest0 < KOD_FINENESS * 4;
-      if (distToDest0 < KOD_FINENESS * 4 && (destFineOk === false || noPathToNearDest || standOnNear)) {
+      // NEVER PUSH INTO A VOID: a floorless non-exit destination is a bad
+      // target, not a door alcove. Stand_on exits are exempt by design.
+      const destGround = isGrounded(geoRef, destRow, destCol);
+      const destGroundOk = this._destIsStandOn === true || destGround !== false;
+      if (distToDest0 < KOD_FINENESS * 4 && (destFineOk === false || noPathToNearDest || standOnNear) && destGroundOk) {
         const rx = this.destProto.x - myProtoX, ry = this.destProto.y - myProtoY;
         const rd = Math.hypot(rx, ry) || 1;
         const stepProto = Math.min(rd, KOD_FINENESS);
@@ -992,6 +1015,13 @@ export class Mover {
         const c = geo?.walkable ? geo.walkable(nr, nc) : undefined;
         if (f === false) continue;
         if (f === undefined && c === false) continue;
+        // NEVER ENTER A VOID (same rule as the waypoint branch above).
+        if (!startIsVoid) {
+          const destSqC1 = this.destProto ? Math.floor(this.destProto.x / KOD_FINENESS) : null;
+          const destSqR1 = this.destProto ? Math.floor(this.destProto.y / KOD_FINENESS) : null;
+          const isExitDest1 = this._destIsStandOn === true && nc === destSqC1 && nr === destSqR1;
+          if (!isExitDest1 && isGrounded(geo, nr, nc) === false) continue;
+        }
         stepCol = nc; stepRow = nr;
         break;
       }
@@ -1124,6 +1154,15 @@ export class Mover {
         const tryT = (ox,oy) => geo.traceFineMoveClient(a.x+ox,a.y+oy,b.x+ox,b.y+oy,{slide:false,playerRadius:1}).arrived===true;
         if (!tryT(0,0) && !tryT(px*128,py*128) && !tryT(-px*128,-py*128)
             && !tryT(px*256,py*256) && !tryT(-px*256,-py*256)) continue;
+      }
+      // NEVER ENTER A VOID: from a grounded start, reject neighbors with no
+      // BSP floor (the deliberate stand_on exit square itself is exempt). A
+      // dumb server accepts any declared position, so the check must live here.
+      if (!startIsVoid) {
+        const destSqC0 = this.destProto ? Math.floor(this.destProto.x / KOD_FINENESS) : null;
+        const destSqR0 = this.destProto ? Math.floor(this.destProto.y / KOD_FINENESS) : null;
+        const isExitDest0 = this._destIsStandOn === true && nc === destSqC0 && nr === destSqR0;
+        if (!isExitDest0 && isGrounded(geo, nr, nc) === false) continue;
       }
       if (f === true) { stepCol = nc; stepRow = nr; break; }  // fine says ok
       if (f === undefined && s === false) continue;   // no fine data, coarse blocked

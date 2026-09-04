@@ -133,6 +133,7 @@ const SPAWNS_FILE = join(__dirname, '..', 'compendium', 'data', 'spawns.json');
 import { loadMap, findPath } from '../m59-map.mjs';
 import { loadoutFor } from '../m59-loadout.mjs';
 import { resolveRoomNum, routeIntent } from './m59-route.mjs';
+import { isGrounded, nearestGrounded } from './m59-ground.mjs';
 import { CombatController } from './m59-combat.mjs';
 
 // ---------------------------------------------------------------------------
@@ -430,6 +431,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
   let lastDamagedAt = 0;         // wall-clock ms when we last dropped HP
   let _currentTargetId = null;   // the decider's current target (for 3D debug)
   let _patrolTarget = null;     // the patrol nudge target (for 3D debug)
+  let _recoveryTarget = null;   // sticky void-recovery target (cleared when grounded)
   const STUCK_MS = 30000;        // 30s of no movement = stuck (was 10s, too
                                   // short: with 1.3s ticks + 2s position
                                   // confirms a slow walk moves ~1 square per
@@ -550,8 +552,9 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
                 const nc = me.col + dc, nr = me.row + dr;
                 const f = geo.fineWalkable ? geo.fineWalkable(nr, nc) : undefined;
                 const s = geo.standable ? geo.standable(nr, nc) : undefined;
-                // Valid if either says true, or no data.
-                if (f === true || s === true || (f === undefined && s === undefined)) {
+                // Valid if either says true, or no data — but never a square the
+                // BSP says has no floor (a dumb server would accept the walk).
+                if ((f === true || s === true || (f === undefined && s === undefined)) && isGrounded(geo, nr, nc) !== false) {
                   escape = { col: nc, row: nr };
                   break;
                 }
@@ -1429,6 +1432,37 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             // inside them). The router is idle in-room, so the mover is ours.
             const mv = session?._mover;
             const pos = me ? { col: me.col, row: me.row, x: me.x, y: me.y } : undefined;
+            const geoAll = session?.world?.geometry;
+            // VOID RECOVERY (sticky): the server accepts any declared position,
+            // so the character can end up on a square with no BSP floor. Random
+            // patrol nudges would re-target every 5s and reset the mover's
+            // escape each time. Instead, commit to ONE grounded target until the
+            // server position is grounded again. Uses server truth (not the sim).
+            const srv = session?._pose?.server ?? me;
+            const meVoid = !!(srv && srv.col != null && isGrounded(geoAll, srv.row, srv.col) === false);
+            if (meVoid) {
+              const recOk = _recoveryTarget && isGrounded(geoAll, _recoveryTarget.row, _recoveryTarget.col) === true;
+              if (!recOk) {
+                _recoveryTarget = nearestGrounded(geoAll, srv.col, srv.row, { maxRadius: 40 });
+                if (_recoveryTarget) _patrolTarget = { ..._recoveryTarget };
+              }
+              if (_recoveryTarget && mv) {
+                if (!mv.active || mv.dest?.col !== _recoveryTarget.col || mv.dest?.row !== _recoveryTarget.row) {
+                  mv.to(_recoveryTarget.col, _recoveryTarget.row);
+                }
+                const mr = mv.tick(pos);
+                onDecision?.({ ticks, goal: 'hunt', action: 'travel',
+                  what: `void recovery (mover ${mr.state} to ${_recoveryTarget.col},${_recoveryTarget.row})`,
+                  sent: mr.state === 'moving' || mr.state === 'raw-move' || mr.state === 'crossing' });
+                return;
+              }
+              // No grounded square in radius: hold still rather than wander
+              // deeper into the void; the mover's fan/blink owns the escape.
+              onDecision?.({ ticks, goal: 'hunt', action: null,
+                what: 'in void with no grounded target in radius; holding', sent: false });
+              return;
+            }
+            _recoveryTarget = null; // grounded again: resume normal patrol
             if (me && mv && (session._lastHuntNudge == null || now - session._lastHuntNudge > 5000)) {
               // Nudge: a few squares in a random direction, retried until
               // the TARGET square is fine-walkable (the mover validates
@@ -1441,7 +1475,9 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
                 const tc = Math.max(1, Math.min(20, me.col + dx));
                 const tr = Math.max(1, Math.min(15, me.row + dy));
                 const f = geo?.fineWalkable ? geo.fineWalkable(tr, tc) : undefined;
-                if (f !== false) { nc = tc; nr = tr; break; }
+                // Never patrol into a void: require BSP ground when the geometry
+                // can answer (a dumb server accepts any declared position).
+                if (f !== false && isGrounded(geo, tr, tc) !== false) { nc = tc; nr = tr; break; }
               }
               if (nc != null) {
                 _patrolTarget = { col: nc, row: nr };
@@ -1463,11 +1499,18 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
               return;
             }
             if (me && (session._lastHuntNudge == null || now - session._lastHuntNudge > 5000)) {
-              // No tick mover (shouldn't happen): legacy fallback.
+              // No tick mover (shouldn't happen): legacy fallback. Still never
+              // nudge into a void the geometry can see.
               const dx = (Math.random() > 0.5 ? 1 : -1) * (2 + Math.floor(Math.random() * 3));
               const dy = (Math.random() > 0.5 ? 1 : -1) * (2 + Math.floor(Math.random() * 3));
               const nc = Math.max(1, Math.min(20, me.col + dx));
               const nr = Math.max(1, Math.min(15, me.row + dy));
+              const geoFb = session?.world?.geometry;
+              if (isGrounded(geoFb, nr, nc) === false) {
+                onDecision?.({ ticks, goal: 'hunt', action: null,
+                  what: `patrol nudge (${nc},${nr}) has no floor; waiting`, sent: false });
+                return;
+              }
               _patrolTarget = { col: nc, row: nr };
               act.walk?.(nc, nr) ?? client?.moveToSquare?.(nc, nr, 18);
               session._lastHuntNudge = now;
