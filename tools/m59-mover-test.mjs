@@ -346,5 +346,64 @@ console.log('\nPHASE 0c: the slide check is off by default (ownPhysics off)');
   ok('first tick: does NOT fire the 0c slide (step model)', r1.state !== 'raw-move' || r1.why !== '0c: direct path blocked, sliding along wall', r1.state + ' ' + (r1.why ?? ''));
 }
 
+console.log('\nTHE 5s ANTI-DEADLOCK FLOOR (the gate/fan stall fix)');
+{
+  // The exact stall: a step that is CLOSE to the server (movedEnough=false)
+  // must still open the gate once 5s have passed since the last report.
+  const { mover } = rig({ geo: clearGeometry() });
+  const serverX = 2 * 64 + 32, serverY = 2 * 64 + 32;
+  // Step is 8 proto units from the server (64 < 256 threshold => movedEnough false).
+  const stepX = serverX + 8, stepY = serverY;
+  // Fresh last report: floor closed, movedEnough false => gate closed.
+  mover._lastReportAt = Date.now();
+  ok('fresh report + close step => gate CLOSED', mover._movementGateOk(stepX, stepY, serverX, serverY, serverX, serverY) === false);
+  // 6s since last report: floor open => gate open even though movedEnough is false.
+  mover._lastReportAt = Date.now() - 6000;
+  ok('6s since report + close step => gate OPEN (floor fires)', mover._movementGateOk(stepX, stepY, serverX, serverY, serverX, serverY) === true);
+}
+{
+  // Full-tick: a pocketed character (fresh mover, no prior report) must send
+  // within a bounded number of ticks. The floor (lastReportAt=0) opens the gate
+  // on the first fan-branch tick, so the character cannot sit at sends=0.
+  const wallGeo = {
+    collisionReady: true,
+    traceFineMoveClient() { return { blocked: true, moved: false, arrived: false }; },
+    finePathProtocol() { return { found: false, reason: 'pocket', waypoints: [] }; },
+    fineWalkable() { return false; },  // the start square is not walkable => escape fan
+  };
+  const { mover, sent } = rig({ geo: wallGeo });
+  mover.session.policy = { ownPhysics: true };
+  mover.to(4, 2);
+  let sendsOut = 0;
+  for (let i = 0; i < 12; i++) {
+    mover.tick();
+    sendsOut = sent.length;
+    if (sendsOut > 0) break;
+  }
+  ok('pocketed fresh mover sends within 12 ticks (floor breaks the stall)', sendsOut > 0, `sends after 12 ticks: ${sendsOut}`);
+}
+{
+  // Bounded escape: when every fan heading is refused (the server never moves
+  // the character), the fan must exhaust all 9 headings and reach the blink
+  // path within a bounded number of ticks. Bypass the 1.5s echo-wait by
+  // backdating _fanSentAt each tick (the test runs in microseconds).
+  const wallGeo = {
+    collisionReady: true,
+    traceFineMoveClient() { return { blocked: true, moved: false, arrived: false }; },
+    finePathProtocol() { return { found: false, reason: 'pocket', waypoints: [] }; },
+    fineWalkable() { return false; },
+  };
+  const { mover } = rig({ geo: wallGeo });
+  mover.session.policy = { ownPhysics: true };
+  mover.to(4, 2);
+  let reachedBlink = false;
+  for (let i = 0; i < 40; i++) {
+    mover._fanSentAt = Date.now() - 2000; // bypass the 1.5s echo-wait
+    const r = mover.tick();
+    if (r.state === 'blink' || r.state === 'stuck') { reachedBlink = true; break; }
+  }
+  ok('fan exhausts all headings and reaches the blink path (bounded escape)', reachedBlink);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -469,8 +469,16 @@ export class Mover {
       return { state: 'raw-move', fanIndex: this._fanIndex ?? 0, waiting: true };
     }
     if (this._fanTarget != null) {
-      const curX = protocolToClient(me.x ?? (me.col * KOD_FINENESS + HALF));
-      const curY = protocolToClient(me.y ?? (me.row * KOD_FINENESS + HALF));
+      // SERVER TRUTH: the sim drifts during a fan (each speculative probe
+      // advances it), so `me` (the sim) would report >8 units of movement
+      // even when the server refused every probe (a walled-in pocket). Use
+      // the raw SERVER echo (the last BP_MOVE, not the dead-reckoned sim) —
+      // the only thing that proves the character actually moved. _fanFrom is
+      // the position at init, in the same unit system.
+      const srvX = this.session?._pose?.server?.x ?? this.session?.client?.self?.x;
+      const srvY = this.session?._pose?.server?.y ?? this.session?.client?.self?.y;
+      const curX = protocolToClient(srvX ?? (me.col * KOD_FINENESS + HALF));
+      const curY = protocolToClient(srvY ?? (me.row * KOD_FINENESS + HALF));
       if (Math.hypot(curX - this._fanFrom?.x ?? curX, curY - this._fanFrom?.y ?? curY) > 8) {
         // Raw move worked! PERSISTENT SLIDE: keep the successful heading
         // instead of clearing the fan. Clearing re-inits at heading 0 every
@@ -506,7 +514,17 @@ export class Mover {
     // SKIP for stand_on destinations: the character needs to walk PAST the
     // stand_on (into the wall) to trigger the transition. The boundary-
     // crossing check (below) handles that.
-    const destDist = Math.hypot(this.destProto.x - myProtoX, this.destProto.y - myProtoY);
+    // FAN GUARD: while sliding (the fan is active), the sim drifts — each
+    // speculative probe advances it, and the server may refuse every one
+    // (a walled-in pocket). The sim can land near the destination while the
+    // SERVER never moved the character, firing a false 'arrived' that clears
+    // the fan and strands the character. Use the SERVER position (the truth)
+    // for the arrival check while sliding; the sim is only authoritative for
+    // committed movement.
+    const inFan = this._fanTarget != null || this._fanIndex != null;
+    const arrX = inFan ? (curCol * KOD_FINENESS + HALF) : myProtoX;
+    const arrY = inFan ? (curRow * KOD_FINENESS + HALF) : myProtoY;
+    const destDist = Math.hypot(this.destProto.x - arrX, this.destProto.y - arrY);
     if (destDist < KOD_FINENESS * 0.5 && !this._destIsStandOn) { // within ~0.5 protocol units
       this.clear();
       return { state: 'arrived', position: { col: effMe.col, row: effMe.row } };
@@ -668,10 +686,13 @@ export class Mover {
         this._recordReport(fanX, fanY);
         this._fanTarget = { x: protocolToClient(fanX), y: protocolToClient(fanY) };
         this._fanSentAt = Date.now();
-        // NOTE: myX/myY live in _sendWaypoint's scope, not here — use the
-        // same client-unit conversion as the fan init above (a bare myX
-        // reference throws ReferenceError and kills the tick).
-        this._fanFrom = { x: protocolToClient(myProtoX), y: protocolToClient(myProtoY) };
+        // _fanFrom is the SERVER reference point for the progress check (which
+        // uses the raw server echo). Resetting it to the drifted sim would make
+        // the progress check compare server-vs-sim (>8), firing the 'success'
+        // branch on a walled-in pocket. Use the raw server echo.
+        const _fsrvX = this.session?._pose?.server?.x ?? this.session?.client?.self?.x;
+        const _fsrvY = this.session?._pose?.server?.y ?? this.session?.client?.self?.y;
+        this._fanFrom = { x: protocolToClient(_fsrvX ?? (curCol * KOD_FINENESS + HALF)), y: protocolToClient(_fsrvY ?? (curRow * KOD_FINENESS + HALF)) };
         this._fanIndex = idx;
       }
       return { state: 'raw-move', fanIndex: idx, velocity: true };
