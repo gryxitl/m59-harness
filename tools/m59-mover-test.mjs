@@ -404,6 +404,39 @@ console.log('\nTHE 5s ANTI-DEADLOCK FLOOR (the gate/fan stall fix)');
   }
   ok('fan exhausts all headings and reaches the blink path (bounded escape)', reachedBlink);
 }
+{
+  // OPEN VOID: fineWalkable can be true outside the BSP when no wall segment
+  // is near the cell centre. standable must still detect the missing floor and
+  // fire the same immediate escape fan.
+  const voidGeo = {
+    collisionReady: true,
+    traceFineMoveClient() { return { blocked: true, moved: false, arrived: false }; },
+    finePathProtocol() { return { found: false, reason: 'void', waypoints: [] }; },
+    fineWalkable() { return true; },
+    standable() { return false; },
+  };
+  const { mover } = rig({ geo: voidGeo });
+  mover.session.policy = { ownPhysics: true };
+  mover.to(4, 2);
+  const r = mover.tick();
+  ok('open void (fine true, standable false) fires the no-floor escape fan', r.state === 'raw-move' && r.fanIndex === 0 && r.why === 'no-floor start: escape fan', `${r.state} ${r.why ?? ''}`);
+}
+{
+  // Do not steal a deliberate exit: if the current no-floor square is itself
+  // the stand_on destination, the boundary-crossing logic owns the tick.
+  const exitGeo = {
+    collisionReady: true,
+    traceFineMoveClient() { return { blocked: true, moved: false, arrived: false }; },
+    finePathProtocol() { return { found: false, reason: 'exit', waypoints: [] }; },
+    fineWalkable() { return true; },
+    standable() { return false; },
+  };
+  const { mover } = rig({ col: 2, row: 2, geo: exitGeo });
+  mover.session.policy = { ownPhysics: true };
+  mover.to(2, 2, { standOn: true });
+  const r = mover.tick();
+  ok('stand_on exit square does not start an escape fan', r.why !== 'no-floor start: escape fan', `${r.state} ${r.why ?? ''}`);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

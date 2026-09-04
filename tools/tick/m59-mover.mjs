@@ -444,12 +444,25 @@ export class Mover {
     // reached by teleport or fine movement along a ledge), the path planner
     // can't find a path. Fire the escape fan immediately (not after 3 ticks)
     // to walk to a nearby walkable square. Placed AFTER the position block:
-    // it needs myProtoX/myProtoY, and client col/row are 1-indexed while
-    // fineWalkable takes 0-indexed squares.
+    // it needs myProtoX/myProtoY. Uses the same protocol-square convention
+    // as _plan(); do not reindex here.
     const startGeo = this.session?.world?.geometry;
     const startCol = Math.floor(myProtoX / KOD_FINENESS);
     const startRow = Math.floor(myProtoY / KOD_FINENESS);
-    if (startGeo?.fineWalkable?.(startRow, startCol) === false && this._fanIndex == null && this._fanTarget == null) {
+    const startFine = startGeo?.fineWalkable?.(startRow, startCol);
+    // A dumb server can accept a declared position outside the BSP, so a void
+    // must be detected locally. fineWalkable only tests the cell centre against
+    // wall segments and can be true in open void; standable tests the BSP for
+    // occupiable floor anywhere in the square.
+    const startVoidByFloor = startGeo?.collisionReady === true
+      && startGeo?.standable?.(startRow, startCol) === false;
+    const startHasNoFloor = startFine === false || startVoidByFloor;
+    // Don't steal a deliberate exit square: if this no-floor square is the
+    // stand_on destination itself, let the boundary-crossing logic below
+    // handle the transition instead of starting an escape fan.
+    const atStandOnExit = this._destIsStandOn === true && this.dest != null
+      && this.dest.col === startCol && this.dest.row === startRow;
+    if (startHasNoFloor && !atStandOnExit && this._fanIndex == null && this._fanTarget == null) {
       this._fanIndex = 0;
       this._fanFrom = { x: protocolToClient(myProtoX), y: protocolToClient(myProtoY) };
       this.stuckTicks = 3; // bypass the 3-tick wait
