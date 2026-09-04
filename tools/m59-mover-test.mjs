@@ -295,8 +295,11 @@ console.log('\nPHASE 0a: NO hold gate (ownPhysics on)');
   }
   sent.length = 0;
   const r3 = mover.tick();
-  ok('third tick: still sends (never holds)', r3.state === 'moving' && r3.hold !== true, r3.state + ' hold=' + r3.hold);
-  ok('a third move was sent', sent.length === 1, JSON.stringify(sent));
+  // With local simulation the two sends already covered the 2-square trip:
+  // sim position == destination, so the third tick reports arrival instead
+  // of re-sending forever. Faster AND terminating.
+  ok('third tick: arrived (sim covered it)', r3.state === 'arrived', r3.state + ' hold=' + r3.hold);
+  ok('no third move needed', sent.length === 0, JSON.stringify(sent));
 }
 
 console.log('\nPHASE 0a: the hold gate is off by default (ownPhysics off)');

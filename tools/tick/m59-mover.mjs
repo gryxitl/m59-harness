@@ -120,6 +120,9 @@ export class Mover {
     this._blinkPending = false;
     this._blinkFrom = null;
     this._blinkAt = null;
+    this._simX = null;
+    this._simY = null;
+    this._simAt = 0;
     this._lastWpKey = null;
     // PHASE 0a: velocity bookkeeping. Each packet IS one accepted server
     // position (user.kod UserMove); _lastSentKey/Pos record the last send
@@ -154,16 +157,10 @@ export class Mover {
       console.error(`[mover] to() refused non-finite dest col=${col} row=${row} (keeping ${this.dest ? this.dest.col + ',' + this.dest.row : 'none'})`);
       return false;
     }
-    const _isNew = !this.dest || this.dest.col !== col || this.dest.row !== row;
-    // TEMP DEBUG (t4 churn): log every re-route (throttled).
-    if (_isNew && Date.now() - (this._toDbgAt ?? 0) > 5000) {
-      this._toDbgAt = Date.now();
-      try { console.error(`[movedbg] t4 to() -> ${col},${row} (was ${this.dest ? this.dest.col + ',' + this.dest.row : 'none'}) standOn=${standOn}`); } catch {}
-    }
-    // A NEW destination (different from the current one) resets the lazy-report gate so the
-    // first position packet goes out immediately. The router calls to() every tick with the
-    // same aim while walking, so we must NOT reset on a no-op to() — that would defeat the
-    // gate and send a packet every tick again. Only a genuine re-route resets it.
+    // A NEW destination (different from the current one) resets path/fan state.
+    // The router calls to() every tick with the same aim while walking, so we
+    // must NOT reset on a no-op to() — that would defeat planning and send a
+    // packet every tick again. Only a genuine re-route resets it.
     const isNewDest = !this.dest || this.dest.col !== col || this.dest.row !== row;
     this.dest = { col, row };
     // PHASE 2: the stand_on flag. When true, the destination is an exit square
@@ -200,6 +197,9 @@ export class Mover {
       this._blinkPending = false;
       this._blinkFrom = null;
       this._blinkAt = null;
+      this._simX = null;
+      this._simY = null;
+      this._simAt = 0;
       this._lastWpKey = null;
     }
     // A no-op to() (same destination, called every tick by the router) changes NOTHING.
@@ -225,6 +225,9 @@ export class Mover {
     this._blinkPending = false;
     this._blinkFrom = null;
     this._blinkAt = null;
+    this._simX = null;
+    this._simY = null;
+    this._simAt = 0;
     this._lastWpKey = null;
   }
 
@@ -375,6 +378,9 @@ export class Mover {
           this._blinkPending = false;
           this._blinkFrom = null;
           this._lastWpKey = null;
+          this._simX = null;
+          this._simY = null;
+          this._simAt = 0;
           this.stuckTicks = 0;
           this.path = null; // replan from new position
           return { state: 'blinked', why: 'position changed after blink' };
@@ -408,13 +414,20 @@ export class Mover {
       : (Number.isFinite(me.col) ? me.col : 0);
     const curRow = (selfPos && Number.isFinite(selfPos.row)) ? selfPos.row
       : (Number.isFinite(me.row) ? me.row : 0);
-    const myProtoX = (selfPos && Number.isFinite(selfPos.x)) ? selfPos.x : (curCol * KOD_FINENESS + HALF);
-    const myProtoY = (selfPos && Number.isFinite(selfPos.y)) ? selfPos.y : (curRow * KOD_FINENESS + HALF);
+    const myProtoX0 = (selfPos && Number.isFinite(selfPos.x)) ? selfPos.x : (curCol * KOD_FINENESS + HALF);
+    const myProtoY0 = (selfPos && Number.isFinite(selfPos.y)) ? selfPos.y : (curRow * KOD_FINENESS + HALF);
+    // LOCAL SIMULATION: trust our own feet while fresh (see _recordReport).
+    // Server echoes (~1/s) correct us when stale — including rubber-bands.
+    const simFresh = this._simX != null && this._simY != null && (Date.now() - (this._simAt ?? 0)) < 2000;
+    let myProtoX = simFresh ? this._simX : myProtoX0;
+    let myProtoY = simFresh ? this._simY : myProtoY0;
     // Keep DR in sync with current position for the fine model's collision checks.
     this.drX = protocolToClient(myProtoX);
     this.drY = protocolToClient(myProtoY);
-    // The 'arrived' and gate checks below use curCol/curRow (the current position).
-    const effMe = { col: curCol, row: curRow, x: myProtoX, y: myProtoY };
+    // The 'arrived' and gate checks below use curCol/curRow (the SERVER position).
+    // effMe follows our feet (sim-aware) so arrival and reporting track what
+    // we did, while crossing/validation stays on server truth.
+    const effMe = { col: Math.floor(myProtoX / KOD_FINENESS), row: Math.floor(myProtoY / KOD_FINENESS), x: myProtoX, y: myProtoY };
 
     // NO-FLOOR START: if the character's square has no floor (a wall square,
     // reached by teleport or fine movement along a ledge), the path planner
@@ -785,9 +798,13 @@ export class Mover {
       // reached waypoint, aim == position, the send gate closes forever —
       // the observed one-step-then-stop.
       if (this.path && this.pathIdx < this.path.length) {
+        // Stride lookahead: consume every waypoint within one stride so each
+        // send covers the full official distance. Corner-cutting is safe:
+        // the 0c trace below validates the resulting aim segment, and the
+        // fan takes over wherever it is blocked.
         while (this.pathIdx < this.path.length) {
           const w = this.path[this.pathIdx];
-          if (Math.hypot(w.x - myProtoX, w.y - myProtoY) < KOD_FINENESS) this.pathIdx++;
+          if (Math.hypot(w.x - myProtoX, w.y - myProtoY) < strideNow) this.pathIdx++;
           else break;
         }
       }
@@ -1193,6 +1210,15 @@ export class Mover {
     this._lastReportAt = Date.now();
     this._lastReportX = protoX;
     this._lastReportY = protoY;
+    this._simX = protoX;
+    this._simY = protoY;
+    this._simAt = Date.now();
+    // LOCAL SIMULATION (official client model, move.c): our own feet are
+    // authoritative between server echoes. Every send advances the sim to
+    // the declared point; planning reads it while fresh (<2s) so waypoints
+    // advance and fans progress without waiting ~1.2s per echo. After 2s
+    // the sim expires and server truth resumes — refused sends (walls,
+    // sitting) self-correct instead of drifting.
     // LOOP AVOIDANCE: remember recently-sent squares so the candidate
     // search can deprioritize them. The greedy stepper otherwise dithers
     // between two squares forever (east, back west, east…) in front of a
