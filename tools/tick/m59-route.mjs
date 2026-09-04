@@ -565,6 +565,12 @@ export class Router {
     const here = resolveRoomNum(frame?.room ?? {}, this.map);
     const me = frame?.position;
     if (here == null || !me) return this._say('blind', { why: 'no room or position yet' });
+    // SERVER TRUTH for commitment (see Mover.tick): frame.position may be
+    // sim-led via the Pose; stuck/at/chain-advance decisions must use the raw
+    // server echo, or chains advance on sends the server never confirmed.
+    const srvR = this.session?.client?.self ?? this.session?._pose?.server;
+    const srvCol = (srvR && Number.isFinite(srvR.col)) ? srvR.col : me.col;
+    const srvRow = (srvR && Number.isFinite(srvR.row)) ? srvR.row : me.row;
 
     if (Number(here) === Number(this.dest)) { this.clear(); return this._say('arrived'); }
 
@@ -574,7 +580,7 @@ export class Router {
       const r = this._planLeg(here);
       if (!r.leg) return this._say('no-route', { why: r.why });
       this.leg = r.leg;
-      this.mark = { col: me.col, row: me.row, at: t };
+      this.mark = { col: srvCol, row: srvRow, at: t };
       // MULTI-LEG: if the standOn is not directly fine-reachable from where we are,
       // decompose the approach into a chain of sub-waypoints (around a fence, up a
       // ledge, etc.). If it IS reachable, subWp is empty and the leg is a plain walk.
@@ -636,16 +642,18 @@ export class Router {
       return this._say('replan', { why: 'leg took too long' });
     }
 
-    // STUCK IS MEASURED ON THE CHARACTER, NOT ON US. Every other stall number in this
-    // repository measures the driver -- which is busy and healthy while a character
-    // stands in a wall. This compares the SERVER'S position to the last one it gave us.
-    if (this.mark && (me.col !== this.mark.col || me.row !== this.mark.row)) {
-      this.mark = { col: me.col, row: me.row, at: t };
+    // STUCK IS MEASURED ON THE CHARACTER'S SERVER POSITION, NOT OUR MODEL OF
+    // IT. Every other stall number in this repository measures the driver --
+    // which is busy and healthy while a character stands in a wall. This
+    // compares the SERVER'S position (echo) to the last one it gave us; the
+    // sim advances on every send and would mask a real stall.
+    if (this.mark && (srvCol !== this.mark.col || srvRow !== this.mark.row)) {
+      this.mark = { col: srvCol, row: srvRow, at: t };
     } else if (this.mark && t - this.mark.at > this.stuckMs) {
       // Measure BEFORE clearing. Reading this.mark after nulling it printed "NaNs",
       // which is a diagnostic that tells you nothing at the exact moment you need one.
       const held = Math.round((t - this.mark.at) / 1000);
-      const where = { col: me.col, row: me.row };
+      const where = { col: srvCol, row: srvRow };
       const aim = this.leg?.standOn ?? null;
       // A DOOR. If the standOn we're stuck approaching is FINE-BLOCKED, it is a door in a
       // walled gap (the Raza Blacksmith exit, the Raza fence alcoves) and the mover's
@@ -662,7 +670,7 @@ export class Router {
       if (standOnFineBlocked) {
         // Reset the stuck timer so we keep pressing (via the raw-door-push) instead of
         // re-planning the same leg. The mover reports when the push finally lands.
-        this.mark = { col: me.col, row: me.row, at: t };
+        this.mark = { col: srvCol, row: srvRow, at: t };
         if (process.env.M59_ROUTE_DEBUG === '1')
           console.error(`[routedbg] t3 stuck AT DOOR (${aim.col},${aim.row}) for ${held}s — keeping leg, letting raw-door-push engage`);
         // Fall through to the mover below (do NOT return) so it runs the raw-door-push.
@@ -683,9 +691,12 @@ export class Router {
     // not be detected as `at`, and the crossing (or the walk-past-boundary) would never
     // trigger. client.self is updated by every position packet and is the source the
     // probe/room-view use.
-    const selfPosAt = this.session?._pose?.current?.() ?? this.session?.client?.self;
-    const at = (me.col === this.leg.standOn.col && me.row === this.leg.standOn.row)
-      || (selfPosAt && selfPosAt.col === this.leg.standOn.col && selfPosAt.row === this.leg.standOn.row);
+    // Use the SERVER position for the `at` check (see the tick-top note):
+    // frame/pose may be sim-led; client.self is the echo. The frame stays as
+    // a fallback so a slow echo never blocks a crossing the server took.
+    const selfPosAt = this.session?.client?.self ?? this.session?._pose?.server;
+    const at = (selfPosAt && selfPosAt.col === this.leg.standOn.col && selfPosAt.row === this.leg.standOn.row)
+      || (me.col === this.leg.standOn.col && me.row === this.leg.standOn.row);
 
     if (at && this.leg.kind === 'go') {
       // Fire the go command to transition rooms.
@@ -709,7 +720,9 @@ export class Router {
     }
     const sub = this.subWp && this.subWp.length ? this.subWp[0] : null;
     if (sub) {
-      const selfPos = this.session?._pose?.current?.() ?? this.session?.client?.self;
+      // Server-first (see the tick-top note): advance the chain only on
+      // squares the server confirmed, never on sim-led positions.
+      const selfPos = this.session?.client?.self ?? this.session?._pose?.server;
       const onSub = (selfPos && selfPos.col === sub.col && selfPos.row === sub.row)
         || (me.col === sub.col && me.row === sub.row);
       if (onSub) this._advanceSubLeg({ col: sub.col, row: sub.row });

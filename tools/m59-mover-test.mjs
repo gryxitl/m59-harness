@@ -281,25 +281,37 @@ console.log('\nPHASE 0a: NO hold gate (ownPhysics on)');
   const r2 = mover.tick();
   ok('second tick: re-sends (no hold — the server never carries)', r2.state === 'moving' && r2.hold !== true, r2.state + ' hold=' + r2.hold);
   ok('a second move was sent', sent.length === 1, JSON.stringify(sent));
-  // Advance one more step.
-  if (sent.length === 1) {
-    const aimX = sent[0][0], aimY = sent[0][1];
-    const meX = session.client.self.x, meY = session.client.self.y;
-    const dx = aimX - meX, dy = aimY - meY;
-    const dist = Math.hypot(dx, dy) || 1;
-    const step = Math.min(dist, 16);
-    session.client.self.x = meX + (dx / dist) * step;
-    session.client.self.y = meY + (dy / dist) * step;
-    session.client.self.col = Math.floor((session.client.self.x - 32) / 64);
-    session.client.self.row = Math.floor((session.client.self.y - 32) / 64);
-  }
+  // The server accepts the trip: advance the fake server position onto the
+  // destination square (echoes confirm what our sends declared).
+  session.client.self.x = 4 * 64 + 32;
+  session.client.self.y = 2 * 64 + 32;
+  session.client.self.col = 4;
+  session.client.self.row = 2;
   sent.length = 0;
   const r3 = mover.tick();
-  // With local simulation the two sends already covered the 2-square trip:
-  // sim position == destination, so the third tick reports arrival instead
-  // of re-sending forever. Faster AND terminating.
-  ok('third tick: arrived (sim covered it)', r3.state === 'arrived', r3.state + ' hold=' + r3.hold);
+  // Arrival requires SERVER confirmation, never the sim alone: the sim covers
+  // the trip after 1-2 sends, but only the server's echo commits it. Judging
+  // arrival on the sim fires while refused sends pile up, and the clear()
+  // wipes fan/path/stuck into a perpetual pseudo-progress loop.
+  ok('third tick: arrived (server confirmed it)', r3.state === 'arrived', r3.state + ' hold=' + r3.hold);
   ok('no third move needed', sent.length === 0, JSON.stringify(sent));
+}
+{
+  // REGRESSION (the pseudo-progress loop): the sim covers the destination
+  // after sends go out, but the SERVER never moves (every send refused).
+  // Arrival must NOT fire — firing clear()s fan/path/stuck and the driver
+  // re-aims forever with a static position. Instead the mover keeps sending
+  // (so stuckTicks can accumulate and the fan/blink escalate).
+  const { mover, sent, session } = rig({ geo: clearGeometry() });
+  mover.session.policy = { ownPhysics: true };
+  mover.to(4, 2); // 2 squares away
+  mover.tick(); // send 1 (server refuses: self never advances)
+  sent.length = 0;
+  mover.tick(); // send 2 (sim now covers the trip; server still behind)
+  sent.length = 0;
+  const r3 = mover.tick();
+  ok('no false arrival while the server never moved', r3.state !== 'arrived', r3.state);
+  ok('mover state survives (no clear)', mover.dest != null && mover.dest.col === 4, JSON.stringify(mover.dest));
 }
 
 console.log('\nPHASE 0a: the hold gate is off by default (ownPhysics off)');

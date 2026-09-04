@@ -359,6 +359,19 @@ export class Mover {
     const _pose = s?._pose?.current?.();
     const me = posOverride ?? (_pose && !_pose.stale ? _pose : c.self);
     if (!me || !Number.isFinite(me.col) || !Number.isFinite(me.row)) return { state: 'no-position' };
+    // COMMITMENT TRUTH: arrival/at/clear and the send gate must use the raw
+    // server echo — never the sim. Pose.current() is sim-while-fresh, and the
+    // sim advances on every SEND: judging arrival on it fires after 1-2 sends
+    // even when the server refused them all, and clear() then wipes
+    // fan/path/stuck (snapping the sim back to the stale square) — a
+    // perpetual pseudo-progress loop with zero server movement. Server echoes
+    // lag ~1s; arrival waits for proof. Planning may stay optimistic; only
+    // commitment (arrival, gate reference, candidate origin) uses the echo.
+    const srvPos = (s?._pose?.server) ?? c.self;
+    const srvCol = (srvPos && Number.isFinite(srvPos.col)) ? srvPos.col : me.col;
+    const srvRow = (srvPos && Number.isFinite(srvPos.row)) ? srvPos.row : me.row;
+    const srvX = (srvPos && Number.isFinite(srvPos.x)) ? srvPos.x : (srvCol * KOD_FINENESS + HALF);
+    const srvY = (srvPos && Number.isFinite(srvPos.y)) ? srvPos.y : (srvRow * KOD_FINENESS + HALF);
 
     // THE SITTING TRAP: PFLAG_NO_MOVE refuses every move silently.
     // Stand first.
@@ -431,10 +444,10 @@ export class Mover {
     // entry). curCol/curRow are the SERVER square (for the 'arrived' and gate
     // checks); myProtoX0/Y0 are the server point. The sim (below) supersedes
     // them while fresh.
-    const curCol = me.col;
-    const curRow = me.row;
-    const myProtoX0 = Number.isFinite(me.x) ? me.x : (curCol * KOD_FINENESS + HALF);
-    const myProtoY0 = Number.isFinite(me.y) ? me.y : (curRow * KOD_FINENESS + HALF);
+    const curCol = srvCol;
+    const curRow = srvRow;
+    const myProtoX0 = srvX;
+    const myProtoY0 = srvY;
     // LOCAL SIMULATION: trust our own feet while fresh (see _recordReport).
     // Server echoes (~1/s) correct us when stale — including rubber-bands.
     const simFresh = this._simX != null && this._simY != null && (Date.now() - (this._simAt ?? 0)) < 2000;
@@ -455,8 +468,10 @@ export class Mover {
     // it needs myProtoX/myProtoY. Uses the same protocol-square convention
     // as _plan(); do not reindex here.
     const startGeo = this.session?.world?.geometry;
-    const startCol = Math.floor(myProtoX / KOD_FINENESS);
-    const startRow = Math.floor(myProtoY / KOD_FINENESS);
+    // Start square on SERVER truth (not the sim): a drifted sim inside a wall
+    // would fire a false escape while the character stands on real ground.
+    const startCol = srvCol;
+    const startRow = srvRow;
     const startFine = startGeo?.fineWalkable?.(startRow, startCol);
     // A dumb server can accept a declared position outside the BSP, so a void
     // must be detected locally. fineWalkable only tests the cell centre against
@@ -543,12 +558,12 @@ export class Mover {
     // speculative probe advances it, and the server may refuse every one
     // (a walled-in pocket). The sim can land near the destination while the
     // SERVER never moved the character, firing a false 'arrived' that clears
-    // the fan and strands the character. Use the SERVER position (the truth)
-    // for the arrival check while sliding; the sim is only authoritative for
-    // committed movement.
-    const inFan = this._fanTarget != null || this._fanIndex != null;
-    const arrX = inFan ? (curCol * KOD_FINENESS + HALF) : myProtoX;
-    const arrY = inFan ? (curRow * KOD_FINENESS + HALF) : myProtoY;
+    // the fan and strands the character. Arrival is therefore ALWAYS judged on
+    // the server echo (srvCol/srvRow above), sim or fan or not: the sim
+    // advances on every send, so sim-judged arrival fires after 1-2 sends even
+    // when every one was refused, and the clear() below wipes fan/path/stuck.
+    const arrX = srvCol * KOD_FINENESS + HALF;
+    const arrY = srvRow * KOD_FINENESS + HALF;
     const destDist = Math.hypot(this.destProto.x - arrX, this.destProto.y - arrY);
     if (destDist < KOD_FINENESS * 0.5 && !this._destIsStandOn) { // within ~0.5 protocol units
       this.clear();
@@ -1007,15 +1022,17 @@ export class Mover {
       // candidate search as the waypoint branch (validate each
       // candidate against the fine grid, try alternatives).
       if (this.path) this.pathIdx = this.path.length;
-      const dx = this.destProto.x - myProtoX;
-      const dy = this.destProto.y - myProtoY;
+      // Arrival and candidate origin on SERVER truth (see the tick-top note:
+      // sim-judged arrival is the false-progress loop).
+      const dx = this.destProto.x - srvX;
+      const dy = this.destProto.y - srvY;
       const dist = Math.hypot(dx, dy);
       if (dist < KOD_FINENESS * 0.5) {
         this.clear();
         return { state: 'arrived', position: { col: effMe.col, row: effMe.row } };
       }
-      const myCol = Math.floor(myProtoX / KOD_FINENESS);
-      const myRow = Math.floor(myProtoY / KOD_FINENESS);
+      const myCol = srvCol;
+      const myRow = srvRow;
       const destCol = Math.floor(this.destProto.x / KOD_FINENESS);
       const destRow = Math.floor(this.destProto.y / KOD_FINENESS);
       const geo = this.session?.world?.geometry;
@@ -1093,8 +1110,10 @@ export class Mover {
     if (dist < KOD_FINENESS) {
       this.pathIdx++;
       if (this.pathIdx >= this.path.length) {
-        // Past all waypoints: go to destination directly.
-        const dd = Math.hypot(this.destProto.x - myProtoX, this.destProto.y - myProtoY);
+        // Past all waypoints: go to destination directly. Final arrival on
+        // SERVER truth (see the tick-top note); the outer waypoint advance
+        // above stays sim-optimistic for flow (it commits nothing).
+        const dd = Math.hypot(this.destProto.x - srvX, this.destProto.y - srvY);
         if (dd < KOD_FINENESS * 0.5) {
           this.clear();
           return { state: 'arrived', position: { col: effMe.col, row: effMe.row } };
@@ -1116,9 +1135,10 @@ export class Mover {
     // sending moveToSquare, CHECK the target square is
     // valid (standable on the coarse grid). If not, try
     // the next adjacent square. This prevents the
-    // pacing-back-and-forth between valid and invalid.
-    const myCol = Math.floor(myProtoX / KOD_FINENESS);
-    const myRow = Math.floor(myProtoY / KOD_FINENESS);
+    // pacing-back-and-forth between valid and invalid. Candidate origin on
+    // SERVER truth (see the tick-top note).
+    const myCol = srvCol;
+    const myRow = srvRow;
     const geo = this.session?.world?.geometry;
     // Candidate squares: the 8 neighbors, ordered by
     // preference (WAYPOINT direction first, then cardinal,

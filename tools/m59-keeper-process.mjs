@@ -1228,7 +1228,11 @@ const server = createServer(async (req, res) => {
               lastRepAge: mv ? Date.now() - (mv._lastReportAt ?? 0) : null,
               reportIntervalMs: mv?.reportIntervalMs ?? null,
               gateProbe, me: me ? { col: me.col, row: me.row, x: me.x, y: me.y } : null,
+              poseSrc: session?._pose?.current?.()?.source ?? null,
+              poseSrv: (() => { try { const s = session?._pose?.server; return s ? { col: s.col, row: s.row } : null; } catch { return null; } })(),
               routerDest: session?._router?.dest ?? null,
+              routerLeg: session?._router?.leg ? { to: session._router.leg.next, standOn: session._router.leg.standOn, kind: session._router.leg.kind } : null,
+              routerSub: session?._router?.subWp ?? null,
               ownPhysics: session?.policy?.ownPhysics ?? null,
             };
             break;
