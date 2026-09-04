@@ -154,7 +154,7 @@ console.log('\ncast intent fires by spell name (the conjure path)');
 
 console.log('\nmob names normalize across game and compendium');
 {
-  const { normMobName } = await import('./tick/m59-decide.mjs');
+  const { normMobName, mobNameKey } = await import('./tick/m59-decide.mjs');
   ok("'giant rat' == 'GiantRat'", normMobName('giant rat') === normMobName('GiantRat'));
   ok("'black mummy' == 'BlackMummy'", normMobName('black mummy') === normMobName('BlackMummy'));
   ok("'mummy' unchanged", normMobName('mummy') === 'mummy');
