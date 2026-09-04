@@ -140,7 +140,8 @@ console.log('\nend to end: a real TickLoop driving a real decider');
   ok('it ticked repeatedly', loop.stats.ticks > 3, `${loop.stats.ticks}`);
   ok('never awaited a decide', loop.stats.awaited === 0);
   ok('never errored', loop.stats.errors === 0, loop.stats.lastError ?? '');
-  ok('and kept sending while commands were in flight', sent.length >= loop.stats.ticks - 1);
+  ok('the equip went out', sent.length >= 1, `${sent.length}`);
+  ok('but equips are gated to 1/s, not re-fired every tick', sent.length <= 2, `${sent.length}`);
 }
 
 console.log('\ncast intent fires by spell name (the conjure path)');
@@ -187,6 +188,31 @@ console.log('\nattacker-switch: hold unless traveling, healthy, and the attacker
   r = findAttackerSwitch({ ...base, targetDist2: 100, hpPct: 80,
     objects: mkObjs([{ id: 1, col: 20, row: 20, name: 'giant rat', max_health: 30 }, rat(2, 15, 15)]) });
   ok('holds with no mob in melee', r === null, JSON.stringify(r?.id));
+}
+
+console.log('\nequip condemns silent-broken weapons after 3 gated attempts');
+{
+  const used = [];
+  const client = {
+    inventory: [{ id: 9, name: 'mace' }],
+    equipment: () => ({ known: true, equipped: [] }), // never equips: silent refusal
+    rsc: { get: () => null },
+  };
+  const session = { name: 't' };
+  const act = { use: (id) => used.push(id) };
+  const ctx = { client, session };
+  const fire = () => intend('equip', {}, act, ctx);
+  const backdate = () => { const r = session._equipAttempts?.[9]; if (r) r.at = Date.now() - 2000; };
+  const r1 = fire();
+  ok('first attempt sends use', r1.sent === true && used.length === 1, JSON.stringify(r1));
+  backdate(); fire();
+  backdate(); fire();
+  ok('three attempts submitted', used.length === 3, `${used.length}`);
+  backdate();
+  const r4 = fire();
+  ok('fourth attempt condemns instead of retrying', r4.sent === false && /condemned/.test(r4.why ?? ''), JSON.stringify(r4));
+  const r5 = fire();
+  ok('condemned id routes to no-weapon refusal (conjure/buy next)', r5.sent === false && /no weapon/.test(r5.why ?? ''), JSON.stringify(r5));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

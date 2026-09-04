@@ -207,6 +207,14 @@ export const INTENTS = {
     // Scan the event ring for a recent "it's broken" refusal so a shattered weapon
     // gets condemned BEFORE we retry it (prevents the use-flood on a broken mace).
     scanBrokenFromEvents(ctx.client, ctx.session);
+    // Success clears attempts: anything currently equipped worked, so a later
+    // re-equip of the same id starts fresh instead of inheriting stale counts.
+    try {
+      const eq = ctx.client?.equipment?.();
+      const held = new Set((eq && eq.known !== false ? eq.equipped || [] : []).map(o => o.id));
+      const atts0 = ctx.session?._equipAttempts;
+      if (atts0) for (const id of Object.keys(atts0)) if (held.has(Number(id))) delete atts0[id];
+    } catch {}
     const item = pickWieldableWeapon(ctx.client, ctx.session);
     if (!item) {
       // No wieldable weapon in the pack (the only one is broken, or there is none).
@@ -215,6 +223,30 @@ export const INTENTS = {
       // matches /no weapon/) — a refusal, not a success.
       return { sent: false, why: 'no weapon to equip (broken or absent)' };
     }
+    // SILENT-REFUSAL CONDEMN: the server sometimes refuses `use` with no prose
+    // (watched live: equip 13752 retried indefinitely, never equipped, never
+    // condemned). If this id was already tried 3+ times without ending up
+    // equipped, condemn it — the fallthrough routes to conjure/buy next pass.
+    // Gated to 1/s: three attempts span ~3s, long enough for a slow server to
+    // process a legitimate equip, and it caps the use-packet rate as a bonus.
+    const s = ctx.session;
+    const atts = (s ? (s._equipAttempts ??= {}) : {});
+    const rec = atts[item.id] ?? { n: 0 };
+    if (rec.n >= 3) {
+      delete atts[item.id];
+      const set = brokenSetFor(s, ctx.client);
+      if (!set.has(item.id)) {
+        set.add(item.id);
+        console.error(`[broken] ${s?.name ?? 'keeper'}: equip ${item.id} failed 3x with no equip; condemned as silent-broken`);
+      }
+      return { sent: false, why: `equip ${item.id} failed repeatedly; condemned` };
+    }
+    const now8 = Date.now();
+    if (now8 - (rec.at ?? 0) < 1000) {
+      return { sent: false, why: 'equip coalesced (1/s)' };
+    }
+    rec.n++; rec.at = now8;
+    atts[item.id] = rec;
     act.use(item.id);
     ctx.session._lastEquipId = item.id;  // condemned on the next broken refusal (see scanBrokenFromEvents)
     return { sent: true, what: `equip ${item.name ?? item.id}` };
