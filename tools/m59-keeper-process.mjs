@@ -124,6 +124,9 @@ async function join() {
       const router = new Router({ session });
       session._mover = router.mover;
       session._router = router;
+      // PHASE 0: expose the policy on the session so the Mover can read
+      // policy.ownPhysics (the continuous-motion opt-in flag).
+      session.policy = policy;
       INTENTS.travel = routeIntent(router);
 
       const plannerDecide = makeDecider({ session, goals: DEFAULT_GOALS,
@@ -617,7 +620,14 @@ const server = createServer(async (req, res) => {
       let t = tid != null ? c?.room?.objects?.get?.(tid) : null;
       let isTravel = false;
       if (!t || t.col == null) {
-        // No combat target — check the router's current leg for a travel destination.
+        // No combat target — check the decider's patrol target (nudge).
+        const pt = session._tickDecide?.state?.()?.patrolTarget;
+        if (pt && pt.col != null && pt.row != null) {
+          t = { col: pt.col, row: pt.row, name: 'patrol nudge' };
+        }
+      }
+      if (!t || t.col == null) {
+        // No combat or patrol target — check the router's current leg for a travel destination.
         const router = session._router;
         if (router?.status?.()) {
           const st = router.status();

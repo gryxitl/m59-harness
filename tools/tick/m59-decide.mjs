@@ -392,6 +392,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
   let lastSeenHp = null;         // last HP value (to detect "we just took damage")
   let lastDamagedAt = 0;         // wall-clock ms when we last dropped HP
   let _currentTargetId = null;   // the decider's current target (for 3D debug)
+  let _patrolTarget = null;     // the patrol nudge target (for 3D debug)
   const STUCK_MS = 30000;        // 30s of no movement = stuck (was 10s, too
                                   // short: with 1.3s ticks + 2s position
                                   // confirms a slow walk moves ~1 square per
@@ -1341,6 +1342,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
               const dy = (Math.random() > 0.5 ? 1 : -1) * (2 + Math.floor(Math.random() * 3));
               const nc = Math.max(1, Math.min(20, me.col + dx));
               const nr = Math.max(1, Math.min(15, me.row + dy));
+              _patrolTarget = { col: nc, row: nr };
               act.walk?.(nc, nr) ?? client?.moveToSquare?.(nc, nr, 18);
               session._lastHuntNudge = now;
               onDecision?.({ ticks, goal: 'hunt', action: 'travel',
@@ -1419,7 +1421,8 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
 
   decide.state = () => ({ ticks, fails: Object.fromEntries(fails),
                           skipped: Object.fromEntries(skipped),
-                          targetId: _currentTargetId });
+                          targetId: _currentTargetId,
+                          patrolTarget: _patrolTarget });
   return decide;
 }
 
