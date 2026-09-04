@@ -396,7 +396,9 @@ export const INTENTS = {
     // newest target supersedes, so dropped calls lose nothing.
     if (now3 - (ctx.session?._lastEscapeStep ?? 0) >= 1000) {
       if (ctx.session) ctx.session._lastEscapeStep = now3;
-      act.step(portal.col, portal.row, { minGapMs: 1000 });
+      // allowVoid: stepping onto a portal square is deliberate (the server
+      // transitions on entry); portals may read floorless by design.
+      act.step(portal.col, portal.row, { minGapMs: 1000, allowVoid: true });
     }
     const portalName = c.rsc?.get?.(portal.nameRsc) ?? portal.name ?? '?';
     const portalIdx = matches.indexOf(portal) + 1;

@@ -619,5 +619,43 @@ console.log('\nSTRIDED NO-PATH DECLARATION');
   ok('the fallback step is adjacent', sent.length === 1 && Math.abs(sent[0][0] - 160) + Math.abs(sent[0][1] - 160) === 64, JSON.stringify(sent));
 }
 
+console.log('\nFAN NEVER STEPS INTO A VOID');
+{
+  // From a grounded start, a fan heading whose (stride-extended) probe lands
+  // on floorless ground is skipped without sending — like a refused heading.
+  const voidSlideGeo = {
+    collisionReady: true,
+    standable(r, c) { return !(r === 2 && c === 5); }, // stride endpoint (5,2) is void
+    traceFineMoveClient(x0, y0, x1, y1) { return { blocked: false, moved: true, arrived: true, x: x1, y: y1 }; },
+    finePathProtocol() { return { found: false, reason: 'maze', waypoints: [] }; },
+  };
+  const { mover, sent } = rig({ col: 2, row: 2, geo: voidSlideGeo });
+  mover.session.policy = {};
+  mover.to(8, 2);
+  mover._fanIndex = 0;
+  mover._fanFrom = { x: 0, y: 0 };
+  const r = mover.tick();
+  ok('floorless fan heading is skipped, not sent', r.state === 'raw-move' && sent.length === 0, `${r.state} ${r.why ?? ''} sent=${JSON.stringify(sent)}`);
+  ok('the fan advances past the skipped heading', mover._fanIndex === 1, `idx=${mover._fanIndex}`);
+}
+{
+  // Skipping every heading exhausts the fan to stuck (no blink spell here).
+  // Heading 8 (1.7 rad off due east) stride-extends to square (2,4): void.
+  const voidSlideGeo = {
+    collisionReady: true,
+    standable(r, c) { return !(r === 4 && c === 2); },
+    traceFineMoveClient(x0, y0, x1, y1) { return { blocked: false, moved: true, arrived: true, x: x1, y: y1 }; },
+    finePathProtocol() { return { found: false, reason: 'maze', waypoints: [] }; },
+  };
+  const { mover, sent } = rig({ col: 2, row: 2, geo: voidSlideGeo });
+  mover.session.policy = {};
+  mover.to(8, 2);
+  mover._fanIndex = 8;
+  mover._fanFrom = { x: 0, y: 0 };
+  const r = mover.tick();
+  ok('skipping the last heading exhausts to stuck', r.state === 'stuck', `${r.state} ${r.why ?? ''}`);
+  ok('nothing sent into the void', sent.length === 0, JSON.stringify(sent));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

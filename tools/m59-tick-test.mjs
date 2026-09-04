@@ -245,5 +245,18 @@ console.log('\nposition recovery fires even when the self id is lost');
   loop.stop();
 }
 
+console.log('\nstep() never steps into a void (unless allowVoid)');
+{
+  const s = fakeSession();
+  s.world = { geometry: { collisionReady: true, standable: () => false } };
+  const a = new Actuator(s);
+  const rec = a.step(6, 5);
+  ok('floorless target is refused', rec.ok === false, JSON.stringify(rec.why ?? rec));
+  ok('nothing submitted', s.submitted.length === 0, `${s.submitted.length}`);
+  const rec2 = a.step(6, 5, { allowVoid: true });
+  ok('allowVoid opts out (deliberate exits)', rec2.ok === null, JSON.stringify(rec2.why ?? rec2));
+  ok('the deliberate step submits', s.submitted.length === 1, `${s.submitted.length}`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

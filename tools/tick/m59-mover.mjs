@@ -586,16 +586,7 @@ export class Mover {
       } else {
         this._fanIndex = (this._fanIndex ?? 0) + 1;
         if (this._fanIndex >= 9) {
-          this._fanTarget = null;
-          this._fanFrom = null;
-          this._fanIndex = null;
-          this.stuckTicks++;
-          const blinked = this._tryBlink();
-          if (blinked) {
-            this._blinkFrom = { x: curX, y: curY };
-            return { state: 'blink', why: 'all 8 raw moves refused, casting blink' };
-          }
-          return { state: 'stuck', why: 'server refused all 8 raw move directions' };
+          return this._fanExhausted(curX, curY);
         }
         // Fall through: fire next fan heading below.
       }
@@ -764,6 +755,23 @@ export class Mover {
         } catch {}
       }
       const speed = 18; // walking speed
+      // NEVER STEP INTO A VOID: from a grounded start, skip headings whose
+      // probe lands on floorless ground (the deliberate stand_on exit itself
+      // is exempt). Treated exactly like a refused heading: advance, and
+      // exhaust to blink/stuck when no heading has ground.
+      {
+        const sqC = Math.floor(fanX / KOD_FINENESS), sqR = Math.floor(fanY / KOD_FINENESS);
+        const destSqC = this.destProto ? Math.floor(this.destProto.x / KOD_FINENESS) : null;
+        const destSqR = this.destProto ? Math.floor(this.destProto.y / KOD_FINENESS) : null;
+        const sqIsExit = this._destIsStandOn === true && sqC === destSqC && sqR === destSqR;
+        if (!startIsVoid && !sqIsExit && isGrounded(_fgeo, sqR, sqC) === false) {
+          this._fanIndex = idx + 1;
+          if (this._fanIndex >= 9) {
+            return this._fanExhausted(protocolToClient(myProtoX), protocolToClient(myProtoY));
+          }
+          return { state: 'raw-move', fanIndex: this._fanIndex, why: 'fan heading has no floor, skipping' };
+        }
+      }
       // Cheat-clean: gate fan probes to the 1/s send law like every move.
       // Ungated this fires every tick (10/s) and trips speedhack detection.
       const fServerPX = curCol * KOD_FINENESS + HALF, fServerPY = curRow * KOD_FINENESS + HALF;
@@ -1539,6 +1547,20 @@ export class Mover {
   /**
    * Try to cast blink to escape a geometry pocket.
    */
+  // Shared fan-exhaustion path: every heading refused (or skipped as
+  // floorless). Clears the fan, counts the stall, blinks when possible.
+  _fanExhausted(curX, curY) {
+    this._fanTarget = null;
+    this._fanFrom = null;
+    this._fanIndex = null;
+    this.stuckTicks++;
+    const blinked = this._tryBlink();
+    if (blinked) {
+      this._blinkFrom = { x: curX, y: curY };
+      return { state: 'blink', why: 'all 8 raw moves refused, casting blink' };
+    }
+    return { state: 'stuck', why: 'server refused all 8 raw move directions' };
+  }
   _tryBlink() {
     // PHASE 0c fix: don't cast blink while moving. Movement breaks
     // concentration and the cast fails. Only blink when the character is

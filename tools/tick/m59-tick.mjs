@@ -91,6 +91,8 @@ const LIVENESS_STALE_MS = 45_000;
 // re-issue that pushed us over the server's 5-packet/s throttle. See docs/packet-throttle.md.
 const FACE_EPS = 5;
 
+import { isGrounded } from './m59-ground.mjs';
+
 // ---------------------------------------------------------------------------
 // SENSOR -- free, synchronous, sends nothing
 // ---------------------------------------------------------------------------
@@ -191,8 +193,20 @@ export class Actuator {
   // `step` is a RAW square request: it goes to the wire as-is, and the server
   // accepts the declared position (server_validate=false for user moves).
   // Right for a short hop you have already reasoned about.
-  step(col, row, { minGapMs = 250 } = {}) {
+  step(col, row, { minGapMs = 250, allowVoid = false } = {}) {
     const c = this.session.client;
+    // NEVER STEP INTO A VOID (default): the server accepts any declared
+    // position, so the check must happen here, at the last step before the
+    // wire. Deliberate exits (Underworld portals) opt out with allowVoid.
+    // Unknown geometry allows (old behavior).
+    if (!allowVoid) {
+      try {
+        const geo = this.session?.world?.geometry;
+        if (isGrounded(geo, row, col) === false) {
+          return { kind: 'move', at: Date.now(), ok: false, why: 'target has no floor' };
+        }
+      } catch {}
+    }
     return this._send('move', () => c.moveToSquare(col, row), minGapMs);
   }
 
