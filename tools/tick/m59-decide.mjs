@@ -367,7 +367,15 @@ export const INTENTS = {
     // act.step defaults to 250ms gaps (4/s) which trips speedhack detection
     // (threshold ~2/s averaged); the escape runs every tick, so gate it to
     // the 1/s law explicitly.
-    act.step(portal.col, portal.row, { minGapMs: 1000 });
+    // PRODUCTION GATE (not just send spacing): the Pacer spaces sends but
+    // never drops, so submitting every tick (10Hz) builds an unbounded queue
+    // of stale positions (watched live: 1491 deep). Submit at most 1/s; the
+    // newest target supersedes, so dropped calls lose nothing.
+    const now3 = Date.now();
+    if (now3 - (ctx.session?._lastEscapeStep ?? 0) >= 1000) {
+      if (ctx.session) ctx.session._lastEscapeStep = now3;
+      act.step(portal.col, portal.row, { minGapMs: 1000 });
+    }
     return { sent: true, what: `escape: walk to portal at (${portal.col},${portal.row})` };
   },
 };
@@ -1104,6 +1112,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             const w = geo?.walkable ? geo.walkable(r, c) : undefined;
             if (f === false) return false;
             if (f === undefined && w === false) return false;
+            if (isGrounded(geo, r, c) === false) return false; // never poke into a void
             return true;
           };
           let poked = false;

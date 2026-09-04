@@ -647,14 +647,20 @@ export class CombatController {
       }
       return { kind: 'walk', what };
     }
-    // Fallback: raw one-square step.
+    // Fallback: raw one-square step, production-gated to the 1/s send law
+    // (the Pacer spaces sends but never drops, so ungated per-tick submits
+    // back up the queue with stale positions).
     if (!me) me = this.session?._pose?.current?.() ?? this.session?.client?.self;
     if (!me) return { kind: 'idle', why: 'no position' };
     const dc = Math.sign(dest.col - me.col);
     const dr = Math.sign(dest.row - me.row);
     const nextCol = me.col + dc;
     const nextRow = me.row + dr;
-    act.step(nextCol, nextRow);
+    const now4 = Date.now();
+    if (now4 - (this._lastStepAt ?? 0) >= 1000) {
+      this._lastStepAt = now4;
+      act.step(nextCol, nextRow, { minGapMs: 1000 });
+    }
     return { kind: 'walk', what };
   }
 

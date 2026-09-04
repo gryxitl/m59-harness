@@ -184,6 +184,17 @@ console.log('\ndoes not cast zap when the enchantment is already active');
   ok('swings instead (zap-touched)', r.kind === 'swing', r.kind + ' ' + (r.what ?? ''));
 }
 
+console.log('\nraw-step fallback is production-gated to the 1/s send law');
+{
+  const { controller, act, sent } = rig({ meCol: 5, meRow: 5, targetCol: 12, targetRow: 5 });
+  const me = { col: 5, row: 5, x: 352, y: 352 };
+  controller._walkTo(act, { col: 8, row: 5 }, 'test walk', me);
+  controller._walkTo(act, { col: 8, row: 5 }, 'test walk', me);
+  controller._walkTo(act, { col: 8, row: 5 }, 'test walk', me);
+  const steps = sent.filter(s => s.step);
+  ok('three rapid fallback walks produce one step (no queue flood)', steps.length === 1, JSON.stringify(sent));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
 
