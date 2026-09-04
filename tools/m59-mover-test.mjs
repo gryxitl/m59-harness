@@ -450,7 +450,7 @@ console.log('\nTHE 5s ANTI-DEADLOCK FLOOR (the gate/fan stall fix)');
   mover.session.policy = { ownPhysics: true };
   mover.to(4, 2);
   const r = mover.tick();
-  ok('open void (fine true, standable false) fires the no-floor escape fan', r.state === 'raw-move' && r.fanIndex === 0 && r.why === 'no-floor start: escape fan', `${r.state} ${r.why ?? ''}`);
+  ok('open void (fine true, standable false) engages the escape fan', r.state === 'raw-move' && mover._fanIndex === 0, `${r.state} ${r.why ?? ''} idx=${mover._fanIndex}`);
 }
 {
   // Do not steal a deliberate exit: if the current no-floor square is itself
@@ -674,6 +674,24 @@ console.log('\nFAN NEVER STEPS INTO A VOID');
   const r = mover.tick();
   ok('skipping the last heading exhausts to stuck', r.state === 'stuck', `${r.state} ${r.why ?? ''}`);
   ok('nothing sent into the void', sent.length === 0, JSON.stringify(sent));
+}
+
+console.log('\nFAN INIT FALLS THROUGH TO SEND (no silent wedge)');
+{
+  // 0c-blocked + open gate: the init must fall through to the fan branch and
+  // send on the SAME tick. The old early-return sent nothing (verified live:
+  // 40 ticks of silent inits, 1 send via the 5s floor).
+  const wallGeo = {
+    collisionReady: true,
+    traceFineMoveClient() { return { blocked: true, moved: false, arrived: false }; },
+    finePathProtocol() { return { found: false, reason: 'wall', waypoints: [] }; },
+  };
+  const { mover, sent } = rig({ geo: wallGeo });
+  mover.session.policy = { ownPhysics: true };
+  mover.to(4, 2);
+  const r1 = mover.tick();
+  ok('first tick sends through the fresh fan (no silent init)', sent.length === 1, `sent=${JSON.stringify(sent)} state=${r1.state}`);
+  ok('fan engaged', mover._fanIndex === 0, `idx=${mover._fanIndex}`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

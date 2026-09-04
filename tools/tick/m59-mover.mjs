@@ -566,7 +566,8 @@ export class Mover {
       }
       this._fanIndex = 0;
       this._fanFrom = { x: protocolToClient(myProtoX), y: protocolToClient(myProtoY) };
-      return { state: 'raw-move', fanIndex: 0, why: 'no-floor start: escape fan' };
+      // NO EARLY RETURN (see the 0c note below): fall through to the fan
+      // branch so the gate can send this same tick.
     }
     // Whether the start square itself is floorless (and not a deliberate exit).
     // When true, the character is already in a void: traversal is allowed so the
@@ -725,11 +726,13 @@ export class Mover {
         const trace = geo.traceFineMoveClient(clientX, clientY, aimClientX, aimClientY, { slide: false, playerRadius: 32 });
         if (trace.blocked && !trace.arrived) {
           // Direct path to the aim is blocked by a wall. Fire the fan
-          // (slide) instead of the direct velocity.
+          // (slide) instead of the direct velocity. NO EARLY RETURN: the fan
+          // branch below gates and sends; returning here starves it (and
+          // everything below) whenever this check re-fires, which is the
+          // observed wedge of silence with a live path and an open gate.
           if (this._fanIndex == null && this._fanTarget == null) {
             this._fanIndex = 0;
             this._fanFrom = { x: clientX, y: clientY };
-            return { state: 'raw-move', fanIndex: 0, why: '0c: path to aim blocked, sliding along wall' };
           }
         } else if (this._fanIndex != null) {
           // Direct path is CLEAR and we were sliding: corner rounded.
@@ -934,16 +937,19 @@ export class Mover {
       const nextX = srvX + (dx / dist) * MOVEUNITS_PROTO;
       const nextY = srvY + (dy / dist) * MOVEUNITS_PROTO;
       // Check if the next position is valid (not a wall, not out of bounds).
+      // inBounds is 1-indexed (like the aimOOB check above): the floor() square
+      // needs +1, or edge squares read out-of-bounds and the fan engages forever.
       const nextValid = geo?.fineWalkable?.(Math.floor(nextY / KOD_FINENESS), Math.floor(nextX / KOD_FINENESS)) !== false
-        && geo?.inBounds?.(Math.floor(nextY / KOD_FINENESS), Math.floor(nextX / KOD_FINENESS)) !== false;
+        && geo?.inBounds?.(Math.floor(nextY / KOD_FINENESS) + 1, Math.floor(nextX / KOD_FINENESS) + 1) !== false;
       if (!nextValid) {
         // Next position is invalid (wall or out of bounds). Fire the fan
-        // (slide) instead of the velocity declaration.
+        // (slide) instead of the velocity declaration. NO EARLY RETURN (see
+        // the 0c note above): fall through to the fan branch so the gate can
+        // send this same tick.
         if (this._fanIndex == null && this._fanTarget == null) {
           const clientX = protocolToClient(srvX), clientY = protocolToClient(srvY);
           this._fanIndex = 0;
           this._fanFrom = { x: clientX, y: clientY };
-          return { state: 'raw-move', fanIndex: 0, why: '0a: raycast-ahead blocked, sliding' };
         }
       }
     }
