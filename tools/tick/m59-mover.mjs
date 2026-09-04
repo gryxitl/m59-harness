@@ -135,6 +135,7 @@ export class Mover {
   _recordSend(keyX, keyY, posX, posY) {
     this._lastSentKey = `${Math.round(keyX)},${Math.round(keyY)}`;
     this._lastSentPos = { x: posX, y: posY };
+    this._sendCount = (this._sendCount ?? 0) + 1;
   }
 
   /**
@@ -148,6 +149,12 @@ export class Mover {
     if (!Number.isFinite(col) || !Number.isFinite(row)) {
       console.error(`[mover] to() refused non-finite dest col=${col} row=${row} (keeping ${this.dest ? this.dest.col + ',' + this.dest.row : 'none'})`);
       return false;
+    }
+    const _isNew = !this.dest || this.dest.col !== col || this.dest.row !== row;
+    // TEMP DEBUG (t4 churn): log every re-route (throttled).
+    if (_isNew && Date.now() - (this._toDbgAt ?? 0) > 5000) {
+      this._toDbgAt = Date.now();
+      try { console.error(`[movedbg] t4 to() -> ${col},${row} (was ${this.dest ? this.dest.col + ',' + this.dest.row : 'none'}) standOn=${standOn}`); } catch {}
     }
     // A NEW destination (different from the current one) resets the lazy-report gate so the
     // first position packet goes out immediately. The router calls to() every tick with the
@@ -172,7 +179,11 @@ export class Mover {
       y: row * KOD_FINENESS + HALF,
     };
     if (isNewDest) {
-      this._lastReportAt = 0;
+      // NOTE: _lastReportAt is deliberately NOT reset here. Resetting it on
+      // every re-route defeats the 1/s send law (speedhack detection counts
+      // packets/sec averaged over time): a churning destination would send
+      // every tick. A fresh route's first send waits at most 1s. Path, fan
+      // and stuck state still reset below.
       this._lastReportX = null;
       this._lastReportY = null;
       this._recentSteps = null;  // loop-avoidance memory is per-destination
@@ -284,12 +295,18 @@ export class Mover {
    */
   tick(posOverride) {
     if (!this.active) return { state: 'idle' };
+    // HEARTBEAT (permanent, 60s): the mover is otherwise silent when gated
+    // or holding, which made multi-minute stalls undiagnosable. One line.
+    if (Date.now() - (this._hbAt ?? 0) > 60000) {
+      this._hbAt = Date.now();
+      try { console.error(`[mover-hb] dest=${this.dest ? this.dest.col + ',' + this.dest.row : 'null'} path=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} fan=${this._fanIndex} stuck=${this.stuckTicks} sends=${this._sendCount ?? 0} ownPhys=${this.session?.policy?.ownPhysics === true}`); } catch {}
+    }
     const s = this.session;
     const c = s?.client;
     if (!c || c.state !== 'game') return { state: 'not-in-game' };
 
     const me = posOverride ?? c.self;
-    if (!me || me.col == null) return { state: 'no-position' };
+    if (!me || !Number.isFinite(me.col) || !Number.isFinite(me.row)) return { state: 'no-position' };
 
     // THE SITTING TRAP: PFLAG_NO_MOVE refuses every move silently.
     // Stand first.
@@ -351,11 +368,16 @@ export class Mover {
     // cadence). Using the stale world.position makes the Mover path from an old position
     // and never report 'arrived' at a sub-waypoint it has physically reached. Fall back
     // to the frame's me when client.self is unavailable.
+    // FINITE-CHAINED (not ??): a NaN coordinate passes ?? through (it only skips
+    // null/undefined) and then poisons every distance, trace and gate below into
+    // silent NaN-false — the observed prod-0 freeze with a live path.
     const selfPos = s.client?.self;
-    const curCol = (selfPos && selfPos.col != null) ? selfPos.col : me.col;
-    const curRow = (selfPos && selfPos.row != null) ? selfPos.row : me.row;
-    const myProtoX = (selfPos && selfPos.x != null) ? selfPos.x : (curCol * KOD_FINENESS + HALF);
-    const myProtoY = (selfPos && selfPos.y != null) ? selfPos.y : (curRow * KOD_FINENESS + HALF);
+    const curCol = (selfPos && Number.isFinite(selfPos.col)) ? selfPos.col
+      : (Number.isFinite(me.col) ? me.col : 0);
+    const curRow = (selfPos && Number.isFinite(selfPos.row)) ? selfPos.row
+      : (Number.isFinite(me.row) ? me.row : 0);
+    const myProtoX = (selfPos && Number.isFinite(selfPos.x)) ? selfPos.x : (curCol * KOD_FINENESS + HALF);
+    const myProtoY = (selfPos && Number.isFinite(selfPos.y)) ? selfPos.y : (curRow * KOD_FINENESS + HALF);
     // Keep DR in sync with current position for the fine model's collision checks.
     this.drX = protocolToClient(myProtoX);
     this.drY = protocolToClient(myProtoY);
@@ -394,14 +416,18 @@ export class Mover {
       const curX = protocolToClient(me.x ?? (me.col * KOD_FINENESS + HALF));
       const curY = protocolToClient(me.y ?? (me.row * KOD_FINENESS + HALF));
       if (Math.hypot(curX - this._fanFrom?.x ?? curX, curY - this._fanFrom?.y ?? curY) > 8) {
-        // Raw move worked!
+        // Raw move worked! PERSISTENT SLIDE: keep the successful heading
+        // instead of clearing the fan. Clearing re-inits at heading 0 every
+        // step, so the fan rotates through headings that cancel out (net
+        // ~zero squares per window) and the router's oscillation breaker
+        // kills the route. The heading that moved once moves again — that
+        // is wall contour-following. Only a stalled heading advances.
         this.drX = curX;
         this.drY = curY;
         this._fanTarget = null;
         this._fanFrom = null;
-        this._fanIndex = null;
         this.stuckTicks = 0;
-        this.path = null; // replan
+        // NOTE: no path replan here (waypoints are absolute; still valid).
       } else {
         this._fanIndex = (this._fanIndex ?? 0) + 1;
         if (this._fanIndex >= 9) {
@@ -522,6 +548,14 @@ export class Mover {
             this._fanFrom = { x: clientX, y: clientY };
             return { state: 'raw-move', fanIndex: 0, why: '0c: path to aim blocked, sliding along wall' };
           }
+        } else if (this._fanIndex != null) {
+          // Direct path is CLEAR and we were sliding: corner rounded.
+          // Release the fan so velocity resumes (persistent slide would
+          // otherwise keep sidestepping past the opening).
+          this._fanIndex = null;
+          this._fanTarget = null;
+          this._fanFrom = null;
+          this._fanSentAt = null;
         }
       }
     }
@@ -551,6 +585,10 @@ export class Mover {
       // Cheat-clean: gate fan probes to the 1/s send law like every move.
       // Ungated this fires every tick (10/s) and trips speedhack detection.
       const fServerPX = curCol * KOD_FINENESS + HALF, fServerPY = curRow * KOD_FINENESS + HALF;
+      if (Date.now() - (this._fanDbgAt ?? 0) > 15000) {
+        this._fanDbgAt = Date.now();
+        try { console.error(`[movedbg] t4 fan gate=${this._movementGateOk(fanX, fanY, myProtoX, myProtoY, fServerPX, fServerPY)} fan=(${Math.round(fanX)},${Math.round(fanY)}) me=(${Math.round(myProtoX)},${Math.round(myProtoY)}) srv=(${fServerPX},${fServerPY}) aim=(${Math.round(aimX)},${Math.round(aimY)}) dest=${this.destProto ? Math.round(this.destProto.x) + ',' + Math.round(this.destProto.y) : 'null'}`); } catch {}
+      }
       if (this._movementGateOk(fanX, fanY, myProtoX, myProtoY, fServerPX, fServerPY)) {
         Promise.resolve(s.pacer.submit('move', () => c.moveTo(Math.round(fanX), Math.round(fanY), speed, c.room?.id ?? 0), 100)).catch(() => {});
         this._recordSend(aimX, aimY, myProtoX, myProtoY);
@@ -1093,7 +1131,14 @@ export class Mover {
     // forever, gated closed, sending nothing.
     const movedEnough = moved2 >= MOVE_THRESHOLD_PROTO2;
     const intervalOk = (now - this._lastReportAt) >= (this.reportIntervalMs ?? MOVE_INTERVAL_MS);
-    return movedEnough && intervalOk;
+    // FLOOR (anti-deadlock): never go longer than 5s without a send. When the
+    // character sits <1 proto unit off square-center on the aim side, every
+    // 16-unit probe lands within 16 of center and movedEnough stays false
+    // forever — a stable fixed point (prod 0 with a live path). The floor
+    // bounds any gating pathology to 0.2/s; the 1/s law still governs healthy
+    // movement, so this cannot trip speedhack detection.
+    const floorOk = (now - this._lastReportAt) > 5000;
+    return (movedEnough && intervalOk) || floorOk;
   }
   _recordReport(protoX, protoY) {
     this._lastReportAt = Date.now();
