@@ -1369,6 +1369,11 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
         const agentName = session.name;
         if (!session._lastLootAt || now - session._lastLootAt > 5000) {
           session._lastLootAt = now;
+          // RE-LOOT LATER: corpse drops often appear AFTER lootFloor's
+          // room-contents snapshot, so one pass misses them. Schedule a
+          // second pass; same-room gated below.
+          session._relootAt = now + 8000;
+          session._relootRoom = frame?.room?.num ?? frame?.room?.id ?? null;
           session.lootFloor?.({ maxItems: 12 }).then(res => {
             const taken = res?.taken?.length ?? 0;
             if (taken) console.error(`[tick] ${agentName} looted ${taken} item(s) after kill`);
@@ -1376,6 +1381,20 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             const refused = res?.refused ?? [];
             if (refused.length) console.error(`[tick] ${agentName} loot refused: ${refused.slice(0, 4).map(r => `${r.name ?? r.id} (${r.why ?? '?'})`).join('; ')}${refused.length > 4 ? ` +${refused.length - 4} more` : ''}`);
           }).catch(e => console.error(`[tick] ${agentName} loot err: ${e.message}`));
+        }
+      }
+      // RE-LOOT DUE: second pass for late-appearing drops. Staying put (no
+      // legacy-walk hijack of the tick mover) and same-room only.
+      if (session._relootAt && now() >= session._relootAt) {
+        const roomNow = frame?.room?.num ?? frame?.room?.id ?? null;
+        session._relootAt = 0;
+        if (roomNow != null && roomNow === session._relootRoom) {
+          session._lastLootAt = Date.now();
+          const agentName = session.name;
+          session.lootFloor?.({ maxItems: 12, stayPut: true }).then(res => {
+            const taken = res?.taken?.length ?? 0;
+            if (taken) console.error(`[tick] ${agentName} re-looted ${taken} item(s) (late drops)`);
+          }).catch(() => {});
         }
       }
       return;
