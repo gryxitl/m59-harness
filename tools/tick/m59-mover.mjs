@@ -955,7 +955,7 @@ export class Mover {
         // this step against the fine model (the gate check above). Sending the
         // raw moveTo directly means the shared geometry's floor check
         // ("goal square has no floor") no longer gates our movement. The server
-        // is the collision authority; it records what we say.
+        // accepts the declared position (server_validate=false for user moves).
         Promise.resolve(s.client.moveTo(stepProtoX, stepProtoY, 18, s.client.room?.id ?? 0)).catch(() => {});
         this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
         this._recordReport(stepProtoX, stepProtoY);

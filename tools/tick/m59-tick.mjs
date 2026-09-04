@@ -71,9 +71,9 @@
 //
 // ONE TICK OF STALENESS. The old model blocked to confirm a position before validating
 // the next step against local collision geometry. Here the validator reads the latest
-// PUSHED position, which may be one tick old. That is a deliberate trade and the server
-// is the reason it is safe: it is the collision authority, it silently refuses an
-// illegal move, and a refusal costs a tick rather than a character.
+// PUSHED position, which may be one tick old. The official client does not wait either:
+// it simulates locally and reports at 1/s (clientd3d/move.c), and the server accepts
+// the declared position (server_validate=false for user moves, room.kod).
 
 const DEFAULT_HZ = 10;
 // LIVENESS: the keepalive sends an inventory request every 20s and the server
@@ -106,9 +106,10 @@ export class Sensor {
   read() {
     const s = this.session, c = s?.client;
     const at = Date.now();
-    // HOW LONG SINCE WE LAST LOOKED, in wall clock. NOT for integrating anything -- the
-    // server owns position and pushes it, and keeping our own dead-reckoned copy would
-    // be a second, wrong world. It is here so a decider can tell a healthy cadence from
+    // HOW LONG SINCE WE LAST LOOKED, in wall clock. NOT for integrating anything --
+    // local simulation (our own feet) is authoritative the way the official client
+    // does it; server echoes arrive ~1/s and correct us when they disagree.
+    // It is here so a decider can tell a healthy cadence from
     // a degraded one: a frame that arrives 2s after the last means we were blind for 2s,
     // and some decisions (engaging, committing to a walk) deserve to know that.
     const dt = this.lastAt ? at - this.lastAt : null;
@@ -178,8 +179,9 @@ export class Actuator {
 
   // -- movement.
   //
-  // `step` is a RAW square request: it goes to the wire as-is, and the server is the
-  // collision authority. Right for a short hop you have already reasoned about.
+  // `step` is a RAW square request: it goes to the wire as-is, and the server
+  // accepts the declared position (server_validate=false for user moves).
+  // Right for a short hop you have already reasoned about.
   step(col, row, { minGapMs = 250 } = {}) {
     const c = this.session.client;
     return this._send('move', () => c.moveToSquare(col, row), minGapMs);
