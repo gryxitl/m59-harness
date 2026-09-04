@@ -268,6 +268,18 @@ export class Mover {
     const me = posOverride ?? c.self;
     if (!me || me.col == null) return { state: 'no-position' };
 
+    // NO-FLOOR START: if the character's square has no floor (a wall square,
+    // reached by teleport or fine movement along a ledge), the path planner
+    // can't find a path. Fire the escape fan immediately (not after 3 ticks)
+    // to walk to a nearby walkable square.
+    const startGeo = this.session?.world?.geometry;
+    if (startGeo?.fineWalkable?.(me.row, me.col) === false && this._fanIndex == null && this._fanTarget == null) {
+      this._fanIndex = 0;
+      this._fanFrom = { x: me.col * KOD_FINENESS + HALF, y: me.row * KOD_FINENESS + HALF };
+      this.stuckTicks = 3; // bypass the 3-tick wait
+      return { state: 'raw-move', fanIndex: 0, why: 'no-floor start: escape fan' };
+    }
+
     // THE SITTING TRAP: PFLAG_NO_MOVE refuses every move silently.
     // Stand first.
     if (this.sitting) {
