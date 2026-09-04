@@ -694,5 +694,87 @@ console.log('\nFAN INIT FALLS THROUGH TO SEND (no silent wedge)');
   ok('fan engaged', mover._fanIndex === 0, `idx=${mover._fanIndex}`);
 }
 
+console.log('\nHEIGHT DISCIPLINE (move.c step limit)');
+{
+  // Raw-door-push into a cliff face is skipped (falls through to the stepper).
+  const cliffGeo = {
+    collisionReady: true,
+    fineWalkable: (r, c) => !((r === 2 && c === 4) || (r === 2 && c === 3)),
+    walkable: () => true,
+    standable: () => true,
+    traceFineMoveClient: () => ({ blocked: true, reason: 'step_too_high' }),
+    finePathProtocol: () => ({ found: false, reason: 'maze', waypoints: [] }),
+  };
+  const { mover, sent } = rig({ col: 2, row: 2, geo: cliffGeo });
+  mover.session.policy = {};
+  mover.to(4, 2); // near (<256), fine-blocked dest, NOT stand_on
+  mover.tick();
+  ok('raw push into a cliff is skipped', sent.length === 1 && !(sent[0][0] === 224 && sent[0][1] === 160), JSON.stringify(sent));
+}
+{
+  // Same setup, clear trace: the push fires (old path preserved).
+  const doorGeo = {
+    collisionReady: true,
+    fineWalkable: (r, c) => !(r === 2 && c === 4),
+    walkable: () => true,
+    standable: () => true,
+    traceFineMoveClient: (x0, y0, x1, y1) => ({ blocked: false, arrived: true, x: x1, y: y1 }),
+    finePathProtocol: () => ({ found: false, reason: 'maze', waypoints: [] }),
+  };
+  const { mover, sent } = rig({ col: 2, row: 2, geo: doorGeo });
+  mover.session.policy = {};
+  mover.to(4, 2);
+  mover.tick();
+  ok('raw push into a door gap still fires', sent.length === 1 && sent[0][0] === 224 && sent[0][1] === 160, JSON.stringify(sent));
+}
+{
+  // Boundary walk-past into a cliff is refused (stuck escalates to fan/blink).
+  const cliffGeo = {
+    collisionReady: true,
+    fineWalkable: () => true,
+    standable: () => true,
+    traceFineMoveClient: () => ({ blocked: true, reason: 'step_too_high' }),
+    finePathProtocol: () => ({ found: false, reason: 'maze', waypoints: [] }),
+  };
+  const { mover, sent } = rig({ col: 3, row: 2, geo: cliffGeo });
+  mover.session.policy = {};
+  mover.to(4, 2, { standOn: true, edgeTarget: { x: 5 * 64 + 32, y: 2 * 64 + 32 } });
+  const r = mover.tick();
+  ok('walk-past into a cliff is refused', r.state === 'stuck', `${r.state} ${r.why ?? ''}`);
+  ok('nothing sent past the cliff', sent.length === 0, JSON.stringify(sent));
+}
+{
+  // Control: clear trace crosses.
+  const doorGeo = {
+    collisionReady: true,
+    fineWalkable: () => true,
+    standable: () => true,
+    traceFineMoveClient: (x0, y0, x1, y1) => ({ blocked: false, arrived: true, x: x1, y: y1 }),
+    finePathProtocol: () => ({ found: false, reason: 'maze', waypoints: [] }),
+  };
+  const { mover, sent } = rig({ col: 3, row: 2, geo: doorGeo });
+  mover.session.policy = {};
+  mover.to(4, 2, { standOn: true, edgeTarget: { x: 5 * 64 + 32, y: 2 * 64 + 32 } });
+  const r = mover.tick();
+  ok('walk-past through a door gap crosses', r.state === 'crossing', `${r.state} ${r.why ?? ''}`);
+  ok('the crossing send goes past the boundary', sent.length === 1 && sent[0][0] === 352 && sent[0][1] === 160, JSON.stringify(sent));
+}
+{
+  // Fan probe up a cliff is skipped like a refused heading.
+  const cliffGeo = {
+    collisionReady: true,
+    standable: () => true,
+    traceFineMoveClient: () => ({ blocked: true, reason: 'step_too_high' }),
+    finePathProtocol: () => ({ found: false, reason: 'maze', waypoints: [] }),
+  };
+  const { mover, sent } = rig({ col: 2, row: 2, geo: cliffGeo });
+  mover.session.policy = {};
+  mover.to(8, 2);
+  mover._fanIndex = 0;
+  mover._fanFrom = { x: 0, y: 0 };
+  mover.tick();
+  ok('fan probe up a cliff is skipped, not sent', sent.length === 0 && mover._fanIndex === 1, `sent=${JSON.stringify(sent)} idx=${mover._fanIndex}`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

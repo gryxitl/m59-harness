@@ -2,7 +2,7 @@
 // m59-ground-test.mjs -- unit tests for the grounded-square predicate.
 // Offline, no network. Run: node tools/m59-ground-test.mjs
 
-import { isGrounded, nearestGrounded } from './tick/m59-ground.mjs';
+import { isGrounded, nearestGrounded, segHeightOk } from './tick/m59-ground.mjs';
 
 let pass = 0, fail = 0;
 function ok(cond, msg) {
@@ -50,6 +50,18 @@ function fakeGeo() {
   const n = nearestGrounded(g, 10, 9, { maxRadius: 3 });
   ok(n && !(n.col === 10 && n.row === 10), 'walled grounded cell is skipped', JSON.stringify(n));
   ok(n && isGrounded(g, n.row, n.col) === true, 'returned cell is grounded');
+}
+
+console.log('\nsegHeightOk honors only the climb refusal');
+{
+  const steep = { traceFineMoveClient: () => ({ blocked: true, reason: 'step_too_high' }) };
+  const wall = { traceFineMoveClient: () => ({ blocked: true, reason: 'geometry_blocked' }) };
+  const clear = { traceFineMoveClient: () => ({ blocked: false, arrived: true }) };
+  ok('cliff refused', segHeightOk(steep, 160, 160, 320, 160) === false);
+  ok('wall passes (doors must)', segHeightOk(wall, 160, 160, 320, 160) === true);
+  ok('clear passes', segHeightOk(clear, 160, 160, 320, 160) === true);
+  ok('no trace passes (old behavior)', segHeightOk({}, 160, 160, 320, 160) === undefined);
+  ok('no geometry passes', segHeightOk(null, 160, 160, 320, 160) === undefined);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

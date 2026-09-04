@@ -91,7 +91,8 @@ const LIVENESS_STALE_MS = 45_000;
 // re-issue that pushed us over the server's 5-packet/s throttle. See docs/packet-throttle.md.
 const FACE_EPS = 5;
 
-import { isGrounded } from './m59-ground.mjs';
+import { isGrounded, segHeightOk } from './m59-ground.mjs';
+import { KOD_FINENESS } from '../m59-roo.mjs';
 
 // ---------------------------------------------------------------------------
 // SENSOR -- free, synchronous, sends nothing
@@ -198,12 +199,21 @@ export class Actuator {
     // NEVER STEP INTO A VOID (default): the server accepts any declared
     // position, so the check must happen here, at the last step before the
     // wire. Deliberate exits (Underworld portals) opt out with allowVoid.
-    // Unknown geometry allows (old behavior).
+    // Unknown geometry allows (old behavior). Height uses the same rule:
+    // climbs steeper than the client's limit are refused, walls still pass.
     if (!allowVoid) {
       try {
         const geo = this.session?.world?.geometry;
         if (isGrounded(geo, row, col) === false) {
           return { kind: 'move', at: Date.now(), ok: false, why: 'target has no floor' };
+        }
+        const me = c.self;
+        if (me && Number.isFinite(me.x) && Number.isFinite(me.y)) {
+          const tx = col * KOD_FINENESS + KOD_FINENESS / 2;
+          const ty = row * KOD_FINENESS + KOD_FINENESS / 2;
+          if (segHeightOk(geo, me.x, me.y, tx, ty) === false) {
+            return { kind: 'move', at: Date.now(), ok: false, why: 'target climbs too steeply' };
+          }
         }
       } catch {}
     }

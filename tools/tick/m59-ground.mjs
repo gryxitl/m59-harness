@@ -64,4 +64,28 @@ export function nearestGrounded(geo, col, row, { maxRadius = 40 } = {}) {
   return null;
 }
 
-export default { isGrounded, nearestGrounded };
+import { protocolToClient } from '../m59-roo.mjs';
+
+/**
+ * HEIGHT DISCIPLINE (clientd3d/move.c IntersectNode): the stock client refuses
+ * climbs steeper than MAX_STEP_HEIGHT (24 kod units) at wall crossings, while
+ * sliding along walls and pushing into door gaps stays legal. A full trace
+ * conflates the two, so this runs the segment trace and honors ONLY the
+ * height refusal — walls (doors, fences) still pass, cliffs don't. Descends
+ * always pass (the client falls freely). Unknown geometry passes.
+ * Returns true (ok), false (too steep), undefined (no data).
+ */
+export function segHeightOk(geo, fromProtoX, fromProtoY, toProtoX, toProtoY) {
+  if (!geo?.traceFineMoveClient) return undefined;
+  try {
+    const tr = geo.traceFineMoveClient(
+      protocolToClient(fromProtoX), protocolToClient(fromProtoY),
+      protocolToClient(toProtoX), protocolToClient(toProtoY),
+      { slide: false, playerRadius: 32 });
+    if (!tr) return undefined;
+    if (tr.blocked === true && tr.reason === 'step_too_high') return false;
+    return true;
+  } catch { return undefined; }
+}
+
+export default { isGrounded, nearestGrounded, segHeightOk };

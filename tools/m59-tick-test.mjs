@@ -258,5 +258,19 @@ console.log('\nstep() never steps into a void (unless allowVoid)');
   ok('the deliberate step submits', s.submitted.length === 1, `${s.submitted.length}`);
 }
 
+console.log('\nstep() never climbs steeply (unless allowVoid)');
+{
+  const s = fakeSession();
+  s.world = { geometry: {
+    collisionReady: true,
+    standable: () => true,
+    traceFineMoveClient: () => ({ blocked: true, reason: 'step_too_high' }),
+  } };
+  const a = new Actuator(s);
+  const rec = a.step(6, 5);
+  ok('cliff step is refused', rec.ok === false, JSON.stringify(rec.why ?? rec));
+  ok('nothing submitted', s.submitted.length === 0, `${s.submitted.length}`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

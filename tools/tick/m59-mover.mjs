@@ -31,7 +31,7 @@
 // the fine model says "wall" but the server says "floor".
 
 import { protocolToClient, clientToProtocol, KOD_FINENESS, PLAYER_RADIUS } from '../m59-roo.mjs';
-import { isGrounded } from './m59-ground.mjs';
+import { isGrounded, segHeightOk } from './m59-ground.mjs';
 import '../m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
 
 // 256 client units = 16 protocol units per 100ms tick (walking).
@@ -796,12 +796,16 @@ export class Mover {
         const destSqC = this.destProto ? Math.floor(this.destProto.x / KOD_FINENESS) : null;
         const destSqR = this.destProto ? Math.floor(this.destProto.y / KOD_FINENESS) : null;
         const sqIsExit = this._destIsStandOn === true && sqC === destSqC && sqR === destSqR;
-        if (!startIsVoid && !sqIsExit && isGrounded(_fgeo, sqR, sqC) === false) {
+        // Skip headings into floorless ground OR up unclimbable faces. The
+        // stride extension above already refused wall/height-blocked segments;
+        // this covers the 16-unit base probe the extension falls back to.
+        if (!startIsVoid && !sqIsExit && (isGrounded(_fgeo, sqR, sqC) === false
+            || segHeightOk(_fgeo, myProtoX, myProtoY, fanX, fanY) === false)) {
           this._fanIndex = idx + 1;
           if (this._fanIndex >= 9) {
             return this._fanExhausted(protocolToClient(myProtoX), protocolToClient(myProtoY));
           }
-          return { state: 'raw-move', fanIndex: this._fanIndex, why: 'fan heading has no floor, skipping' };
+          return { state: 'raw-move', fanIndex: this._fanIndex, why: 'fan heading refused (no floor or too steep), skipping' };
         }
       }
       // Cheat-clean: gate fan probes to the 1/s send law like every move.
@@ -904,7 +908,15 @@ export class Mover {
         const pastY = this._edgeTarget ? this._edgeTarget.y : this.destProto.y + edgeDy * 32;
         // Cheat-clean: gate to the 1/s send law (ungated this fires every
         // tick at a boundary and trips speedhack detection).
+        // HEIGHT DISCIPLINE (move.c): walking past into an unclimbable face
+        // is not a crossing — refuse and escalate (stuck -> fan -> blink)
+        // instead of declaring a position the client could never stand on.
+        // Walls still pass (the door itself).
         const wServerPX = curCol * KOD_FINENESS + HALF, wServerPY = curRow * KOD_FINENESS + HALF;
+        if (segHeightOk(geo, myProtoX, myProtoY, pastX, pastY) === false) {
+          this.stuckTicks++;
+          return { state: 'stuck', why: 'exit climb refused' };
+        }
         if (this._movementGateOk(pastX, pastY, myProtoX, myProtoY, wServerPX, wServerPY)) {
           Promise.resolve(s.pacer.submit('move', () => c.moveTo(Math.round(pastX), Math.round(pastY), 18, c.room?.id ?? 0), 100)).catch(() => {});
           this._recordSend(pastX, pastY, myProtoX, myProtoY);
@@ -1100,17 +1112,22 @@ export class Mover {
         // server is client-authoritative here — a position packet into the
         // alcove is accepted — so send it directly. A short cooldown prevents
         // a flood while the character is mid-gap.
-        if (Date.now() - (this._lastRawPushAt ?? 0) >= 500) {
-          this._lastRawPushAt = Date.now();
-          Promise.resolve(s.pacer.submit('move', () => s.client.moveTo(rawX, rawY, 18, s.client.room?.id ?? 0), 100)).catch(() => {});
-          this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
+        // HEIGHT DISCIPLINE (move.c): a push into an unclimbable face is not a
+        // door — skip the whole push (path included) and let the stepper/fan
+        // below escalate to blink. Walls still pass (deliberate).
+        if (segHeightOk(geoRef, myProtoX, myProtoY, rawX, rawY) !== false) {
+          if (Date.now() - (this._lastRawPushAt ?? 0) >= 500) {
+            this._lastRawPushAt = Date.now();
+            Promise.resolve(s.pacer.submit('move', () => s.client.moveTo(rawX, rawY, 18, s.client.room?.id ?? 0), 100)).catch(() => {});
+            this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
+          }
+          if (Date.now() - (this._lastRawLogAt ?? 0) > 5000) {
+            this._lastRawLogAt = Date.now();
+            console.error(`[raw-door-push] my=(${Math.round(myProtoX)},${Math.round(myProtoY)}) dest=(${destCol},${destRow}) dist=${distToDest0.toFixed(0)} wp=${wp?'yes':'no'}`);
+          }
+          this.path = null;  // drop any stale path; we're pushing through the gap
+          return { state: 'moving', to: { col: destCol, row: destRow }, raw: true };
         }
-        if (Date.now() - (this._lastRawLogAt ?? 0) > 5000) {
-          this._lastRawLogAt = Date.now();
-          console.error(`[raw-door-push] my=(${Math.round(myProtoX)},${Math.round(myProtoY)}) dest=(${destCol},${destRow}) dist=${distToDest0.toFixed(0)} wp=${wp?'yes':'no'}`);
-        }
-        this.path = null;  // drop any stale path; we're pushing through the gap
-        return { state: 'moving', to: { col: destCol, row: destRow }, raw: true };
       }
     }
     if (!wp) {
@@ -1590,8 +1607,7 @@ export class Mover {
    */
   // Shared fan-exhaustion path: every heading refused (or skipped as
   // floorless). Clears the fan, counts the stall, blinks when possible.
-  _fanExhausted(curX, curY) {
-    this._fanTarget = null;
+  _fanExhausted(curX, curY) {    this._fanTarget = null;
     this._fanFrom = null;
     this._fanIndex = null;
     this.stuckTicks++;
