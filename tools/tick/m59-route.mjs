@@ -150,7 +150,7 @@ export class Router {
     const n = Number(roomNum);
     if (!Number.isFinite(n)) return false;
     if (this.dest !== n) {
-      this.dest = n; this.leg = null; this.mark = null; this.subWp = null; this._subWpReplans = 0;
+      this.dest = n; this._destAt = Date.now(); this.leg = null; this.mark = null; this.subWp = null; this._subWpReplans = 0;
       this._progress = []; this._oscillations = 0; this._badStandOn.clear();
     }
     return true;

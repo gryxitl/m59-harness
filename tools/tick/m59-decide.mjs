@@ -1317,6 +1317,15 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             return;
           }
           if (hunt && hunt.room !== resolved) {
+            // YIELD when the router's destination is set and it's not the
+            // hunt room. The hunt goal only sets the dest to the hunt room,
+            // so if the dest is different, it was set by the travel command.
+            const router = session?._router;
+            if (router?.dest != null && router.dest !== hunt.room) {
+              onDecision?.({ ticks, goal: 'hunt', action: null,
+                what: `yielding to travel (dest=${router.dest}, not routing to hunt room ${hunt.room})`, sent: false });
+              return;
+            }
             router.to(hunt.room);
             onDecision?.({ ticks, goal: 'hunt', action: 'travel',
               what: `hunt ${hunt.creature} lv${hunt.level} in room ${hunt.room} (hops=${hunt.hops})`,
@@ -1332,6 +1341,16 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           // in a random direction to break the stuck state and increase the
           // chance of a target spawning.
           if (hunt && hunt.room === resolved) {
+            // YIELD when the router's destination is set and it's not the
+            // current room. The hunt goal only sets the dest to the hunt
+            // room (which is the current room), so if the dest is different,
+            // it was set by the travel command.
+            const router = session?._router;
+            if (router?.dest != null && router.dest !== resolved) {
+              onDecision?.({ ticks, goal: 'hunt', action: null,
+                what: `in hunt room, yielding to travel (dest=${router.dest})`, sent: false });
+              return;
+            }
             const me = client?.self;
             const now = Date.now();
             // PATROL: nudge every 5 seconds (or on the first tick if
