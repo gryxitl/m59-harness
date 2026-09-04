@@ -217,9 +217,16 @@ export const INTENTS = {
           return { sent: false, why: 'smith unreachable recently; hunting unarmed' };
         }
         if (s) s._buyingRoute = dest;
-        if (s._router.dest !== dest) {
+        const curDest = s._router.dest;
+        if (curDest == null) {
+          // Claim an idle router for the smith trip.
           s._router.to(dest);
           return { sent: true, what: `travel to the smith (room ${dest})` };
+        }
+        if (curDest !== dest) {
+          // Owned by someone else (hunt/explicit travel): yield, do not
+          // steal. Stealing forces a full replan every flap.
+          return { sent: false, why: `router busy (dest=${curDest}); buy yields` };
         }
         // Already bound for the smith: abandon the trip if the router cannot
         // plan it (e.g. deep wilderness with no graph path to town) instead
@@ -251,7 +258,9 @@ export const INTENTS = {
       if (s?._router) {
         const dest = 1013;  // Raza Blacksmith
         if (s) s._buyingRoute = dest;
-        if (s._router.dest !== dest) {
+        const curDest = s._router.dest;
+        if (curDest == null) {
+          // Claim an idle router for the smith trip.
           s._router.to(dest);
           // Drive the router on the same tick so the character starts moving
           // immediately, rather than waiting for the next tick's "already routing"
@@ -259,6 +268,11 @@ export const INTENTS = {
           // character, and it sits in the inn.
           const r = routeIntent(s._router)(frame, act);
           return { sent: r.sent, what: `travel to the smith (room ${dest}) — no weapon here` };
+        }
+        if (curDest !== dest) {
+          // Owned by someone else (hunt/explicit travel): yield, do not
+          // steal. Stealing forces a full replan every flap.
+          return { sent: false, why: `router busy (dest=${curDest}); buy yields` };
         }
         const r = routeIntent(s._router)(frame, act);
         return { sent: r.sent, what: r.what ?? `traveling to the smith (room ${dest})` };

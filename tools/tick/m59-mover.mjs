@@ -268,9 +268,37 @@ export class Mover {
         }
       }
     }
+    // TARGET ADJUST (stand_on doors): A* will not terminate ON a no-floor
+    // square, but exit squares have no floor by design — while the router's
+    // reachability BFS says the door is reachable and skips sub-legs. That
+    // predicate mismatch strands the character (planner fails, stepper
+    // dithers). Plan to the nearest walkable neighbor instead; the
+    // boundary-crossing logic covers the final gap. [0,0] first so normal
+    // destinations are untouched.
+    let tx = this.destProto.x, ty = this.destProto.y;
+    {
+      const dc = Math.floor(tx / KOD_FINENESS), dr = Math.floor(ty / KOD_FINENESS);
+      const df = geo?.fineWalkable ? geo.fineWalkable(dr, dc) : undefined;
+      const ds = geo?.standable ? geo.standable(dr, dc) : undefined;
+      if (df !== true && ds !== true) {
+        const rings = [[0,0],[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1],
+                       [2,0],[-2,0],[0,2],[0,-2],[2,2],[2,-2],[-2,2],[-2,-2],
+                       [3,0],[-3,0],[0,3],[0,-3]];
+        for (const [ox, oy] of rings) {
+          const nr2 = dr + oy, nc2 = dc + ox;
+          const f2 = geo?.fineWalkable ? geo.fineWalkable(nr2, nc2) : undefined;
+          const s2 = geo?.standable ? geo.standable(nr2, nc2) : undefined;
+          if (f2 === true || s2 === true) {
+            tx = nc2 * KOD_FINENESS + HALF;
+            ty = nr2 * KOD_FINENESS + HALF;
+            break;
+          }
+        }
+      }
+    }
     const result = geo.finePathProtocol(
       fromProtoX, fromProtoY,
-      this.destProto.x, this.destProto.y,
+      tx, ty,
       { step: 8, margin: 12 * KOD_FINENESS, maxNodes: 20000 },
     );
     return result;
@@ -303,7 +331,7 @@ export class Mover {
     // or holding, which made multi-minute stalls undiagnosable. One line.
     if (Date.now() - (this._hbAt ?? 0) > 60000) {
       this._hbAt = Date.now();
-      try { console.error(`[mover-hb] dest=${this.dest ? this.dest.col + ',' + this.dest.row : 'null'} path=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} fan=${this._fanIndex} stuck=${this.stuckTicks} sends=${this._sendCount ?? 0} ownPhys=${this.session?.policy?.ownPhysics === true}`); } catch {}
+      try { console.error(`[mover-hb] dest=${this.dest ? this.dest.col + ',' + this.dest.row : 'null'} path=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} fan=${this._fanIndex} stuck=${this.stuckTicks} sends=${this._sendCount ?? 0} ownPhys=${this.session?.policy?.ownPhysics === true} gateAge=${Date.now() - (this._lastReportAt ?? 0)}`); } catch {}
     }
     const s = this.session;
     const c = s?.client;

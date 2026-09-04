@@ -508,9 +508,19 @@ export class Router {
     const geo = this._geo();
     const standOn = this.leg?.standOn;
     if (!geo || !standOn) return;
-    // Fast path: is the standOn directly fine-reachable? (One bounded BFS.)
-    const reach = this._fineReachableSet(geo, me.col, me.row);
-    if (reach.has(`${standOn.col},${standOn.row}`)) return;  // plain walk
+    // Fast path MUST use the mover's own planner (finePathProtocol), not the
+    // lenient BFS: _fineReachableSet's origin-trap leniency over-claims
+    // reachability (a wall pocket reads reachable), skipping decomposition —
+    // then the mover's strict A* fails and the character dithers at the
+    // standOn directly. Same function, same verdict, guaranteed.
+    try {
+      const F = KOD_FINENESS, H = F >> 1;
+      const direct = geo.finePathProtocol?.(
+        me.col * F + H, me.row * F + H,
+        standOn.col * F + H, standOn.row * F + H,
+        { step: 8, margin: 12 * F, maxNodes: 4000 });
+      if (direct?.found) return; // plain walk
+    } catch { /* fall through to decomposition */ }
     // The standOn is fine-unreachable: plan a bounded chain toward it. The chain ends at
     // the approach point (closest fine-reachable square); the Mover pushes the last gap.
     const { chain } = this._planSubLegs(me, standOn);
@@ -523,6 +533,11 @@ export class Router {
   _advanceSubLeg(me) {
     if (!this.subWp || !this.subWp.length) return;
     this.subWp.shift();
+    // FORWARD PROGRESS resets the replan budget: the cap counts CONSECUTIVE
+    // failures, not lifetime ones. Otherwise a stall era (before the mover
+    // could move at all) permanently exhausts the budget and the chain is
+    // dropped exactly when movement starts working again.
+    this._subWpReplans = 0;
     if (!this.subWp.length) return;  // chain exhausted: the Mover now pushes the door
     // Re-plan the remainder from where we actually are, in case the original chain is
     // stale. Bounded: if we've re-planned too many times, drop the sub-legs and let the
@@ -684,6 +699,14 @@ export class Router {
     // than world.position, which can lag) is on the sub-waypoint. The frame's position
     // (world.position) can lag behind, which otherwise stalls the advancement and makes
     // the character oscillate at the approach point.
+    // RECOVER DROPPED CHAINS: if the leg has no sub-waypoints but the standOn
+    // is unreachable, the decomposition gave up during a stall era (replan
+    // budget exhausted before movement worked). Retry periodically — bounded
+    // (30s) so a truly impossible leg just re-checks cheaply.
+    if ((!this.subWp || !this.subWp.length) && t - (this._subWpRecoverAt ?? 0) > 30000) {
+      this._subWpRecoverAt = t;
+      this._initSubLegs(me);
+    }
     const sub = this.subWp && this.subWp.length ? this.subWp[0] : null;
     if (sub) {
       const selfPos = this.session?.client?.self;
