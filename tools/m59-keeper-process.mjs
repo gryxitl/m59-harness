@@ -931,7 +931,6 @@ const server = createServer(async (req, res) => {
             // the tick loop's travel/hunt goal drives the hops one per tick.
             const router = session._router;
             if (router) {
-              session._explicitTravelAt = Date.now();  // mark as explicit (not hunt routing)
               router.to(Number(dest));
               result = { sent: true, what: `travel to room ${dest} (router set, tick-driven)` };
             } else {

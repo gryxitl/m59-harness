@@ -122,7 +122,7 @@ function pickWieldableWeapon(client, session = null) {
       && WEAPON.test(String(client.rsc?.get?.(o.nameRsc) ?? o.name ?? '')));
   return candidates.sort((a, b) => String(client.rsc?.get?.(b.nameRsc) ?? b.name ?? '').localeCompare(String(client.rsc?.get?.(a.nameRsc) ?? a.name ?? '')))[0] ?? null;
 }
-import { nearestHuntRoom } from '../m59-hunt-room.mjs';
+import { nearestHuntRoom, huntRoomsAtOrBelow } from '../m59-hunt-room.mjs';
 import { loadSpawns } from '../m59-spawns.mjs';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
@@ -130,7 +130,7 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SPAWNS_FILE = join(__dirname, '..', 'compendium', 'data', 'spawns.json');
-import { loadMap } from '../m59-map.mjs';
+import { loadMap, findPath } from '../m59-map.mjs';
 import { loadoutFor } from '../m59-loadout.mjs';
 import { resolveRoomNum, routeIntent } from './m59-route.mjs';
 import { CombatController } from './m59-combat.mjs';
@@ -1303,7 +1303,35 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           const fullBand = policy?.threatBand ?? Math.floor(level / 2);
           const band = isArmed ? fullBand : Math.floor(fullBand / 2);
           const ceiling = level + band;
-          const hunt = nearestHuntRoom(resolved, ceiling);
+          // ASSIGNED ROOM (session.policy.assignedRoom — makeDecider's
+          // closure policy is {} in production; the keeper puts the fleet
+          // policy on session.policy): when set, it IS the destination and
+          // nearestHuntRoom is only the fallback. The assigned room must
+          // still qualify — same in-band candidate list (band + spider
+          // exclusions) and a real route — otherwise fall back with a
+          // message instead of marching somewhere unsurvivable or
+          // unreachable.
+          const pol = session?.policy ?? policy;
+          let hunt = null;
+          const assigned = Number(pol?.assignedRoom);
+          if (Number.isFinite(assigned)) {
+            const cands = huntRoomsAtOrBelow(level, ceiling);
+            const match = cands.find(c => Number(c.room) === assigned);
+            if (match && Number(resolved) === assigned) {
+              hunt = { ...match, hops: 0, path: [] };
+            } else if (match) {
+              try {
+                const r = findPath(map, resolved, match.room, { danger: false });
+                if (r?.found) hunt = { ...match, hops: r.hops.length, path: r.hops.map(h => h.to) };
+                else onDecision?.({ ticks, goal: 'hunt', action: null,
+                  what: `assigned room ${assigned} unreachable; falling back to nearest`, sent: false });
+              } catch { /* fall through to nearest below */ }
+            } else {
+              onDecision?.({ ticks, goal: 'hunt', action: null,
+                what: `assigned room ${assigned} has nothing in band (ceiling ${ceiling}); falling back to nearest`, sent: false });
+            }
+          }
+          if (!hunt) hunt = nearestHuntRoom(resolved, ceiling);
           // MAX LEVEL DELTA: the mob's level should not be more than 12 above
           // the character's level. This matches the original ceiling formula
           // (level + floor(level/2)): for a lv24 character, the ceiling is
