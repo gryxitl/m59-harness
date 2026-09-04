@@ -706,7 +706,10 @@ export class Router {
     // beyond the boundary (for the actual crossing). Both are "exit" squares
     // the geometry may mark "no floor" for.
     const isStandOn = (at && this.leg.edgeTarget) ? true : (aim.col === this.leg.standOn?.col && aim.row === this.leg.standOn?.row);
-    this.mover.to(aim.col, aim.row, { standOn: isStandOn });
+    // Convert aim to {col, row} if it's the edgeTarget ({x, y} protocol units).
+    const aimCol = aim.col ?? Math.floor(aim.x / 64);
+    const aimRow = aim.row ?? Math.floor(aim.y / 64);
+    this.mover.to(aimCol, aimRow, { standOn: isStandOn, edgeTarget: this.leg.edgeTarget });
     const mr = this.mover.tick({ col: me.col, row: me.row, x: me.x, y: me.y });
     if (mr.state === 'blocked')
       return this._say('blocked', { why: mr.why, next: this.leg.next });

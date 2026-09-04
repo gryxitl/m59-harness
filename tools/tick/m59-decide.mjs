@@ -612,6 +612,10 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // The vigor_low goal yields when the character is moving — resting would
     // stop the movement.
     ws._moving = session?._router?.dest != null;
+    // Expose whether the character is at a boundary (the router is in the
+    // crossing state). The vigor_low goal yields when the character is at a
+    // boundary — resting would prevent the crossing.
+    ws._crossing = session?._router?.lastState === 'crossing';
 
     // CASTER GATE (decorated here, NOT in worldstate: the loadout is a file read and
     // worldstate producers are pure by contract — see its header). A caster is a
@@ -1453,6 +1457,9 @@ export const DEFAULT_GOALS = [
       // Resting would stop the movement. The character can rest when he
       // arrives (the router clears the destination).
       if (ws._moving) return false;
+      // YIELD when the character is at a boundary (the router is in the
+      // crossing state). Resting would prevent the crossing.
+      if (ws._crossing) return false;
       return v != null && v < 60 && ws.in_reach !== true;
     } },
   // LEAVE RAZA: in the newbie zone at level >= 25, route to the Grand

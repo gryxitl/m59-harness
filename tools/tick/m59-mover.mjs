@@ -129,7 +129,7 @@ export class Mover {
    * Set the destination. col/row are protocol square coordinates
    * (the same space as client.self.col/.row).
    */
-  to(col, row, { standOn = false } = {}) {
+  to(col, row, { standOn = false, edgeTarget = null } = {}) {
     // A NEW destination (different from the current one) resets the lazy-report gate so the
     // first position packet goes out immediately. The router calls to() every tick with the
     // same aim while walking, so we must NOT reset on a no-op to() — that would defeat the
@@ -142,6 +142,11 @@ export class Mover {
     // the server handles the transition. The mover skips the floor check and
     // lets the raw-move fallback carry the character onto it.
     this._destIsStandOn = standOn;
+    // PHASE 2: the edge target. The square beyond the boundary (in the other
+    // room). Used to compute the edge direction for the walk-past-boundary
+    // check. The direction from the stand_on square to the edgeTarget is the
+    // edge direction (away from the room interior).
+    this._edgeTarget = edgeTarget;
     // Centre of the destination square in protocol units.
     this.destProto = {
       x: col * KOD_FINENESS + HALF,
@@ -359,8 +364,11 @@ export class Mover {
     }
 
     // ARRIVED: check if we're at the destination.
+    // SKIP for stand_on destinations: the character needs to walk PAST the
+    // stand_on (into the wall) to trigger the transition. The boundary-
+    // crossing check (below) handles that.
     const destDist = Math.hypot(this.destProto.x - myProtoX, this.destProto.y - myProtoY);
-    if (destDist < KOD_FINENESS * 0.5) { // within ~0.5 protocol units
+    if (destDist < KOD_FINENESS * 0.5 && !this._destIsStandOn) { // within ~0.5 protocol units
       this.clear();
       return { state: 'arrived', position: { col: effMe.col, row: effMe.row } };
     }
@@ -428,7 +436,7 @@ export class Mover {
     // FIX: check the path to the AIM (not the target) — the velocity
     // declaration sends the character toward the aim (waypoint), not the
     // target (beeline).
-    if (ownPhysics) {
+    if (ownPhysics && !this._destIsStandOn) {
       const geo = this.session?.world?.geometry;
       if (geo?.traceFineMoveClient) {
         const clientX = protocolToClient(myProtoX), clientY = protocolToClient(myProtoY);
@@ -492,14 +500,68 @@ export class Mover {
     // the server processes the transition. The velocity declaration
     // (moveTo) does not trigger the door crossing; the character gets
     // stuck at the boundary.
-    if (ownPhysics && this._destIsStandOn) {
+    if (this._destIsStandOn) {
+      const geo = this.session?.world?.geometry;
       const distToDest = Math.hypot(this.destProto.x - myProtoX, this.destProto.y - myProtoY);
-      const aimOOB = geo?.inBounds?.(Math.floor(aimY / KOD_FINENESS), Math.floor(aimX / KOD_FINENESS)) === false;
+      const aimOOB = geo?.inBounds?.(Math.floor(aimY / KOD_FINENESS) + 1, Math.floor(aimX / KOD_FINENESS) + 1) === false;
       if (distToDest < KOD_FINENESS * 4 || aimOOB) {
-        // Send the go() command to trigger the door crossing.
-        Promise.resolve(s.pacer.submit('go', () => c.go(), 100)).catch(() => {});
-        this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
-        return { state: 'crossing', go: true };
+        // WALK PAST THE BOUNDARY (into the wall) to trigger the transition.
+        // The character needs to hit the wall (the boundary) for the server
+        // to process the transition. The go() command does not work — the
+        // character must walk into the wall.
+        // Compute a target PAST the boundary: one square beyond the stand_on
+        // square (in the other room). Use the EDGE DIRECTION (away from the
+        // room interior), not the character-to-stand_on direction (which is
+        // degenerate when the character is at the stand_on).
+        const destCol = Math.floor(this.destProto.x / KOD_FINENESS);
+        const destRow = Math.floor(this.destProto.y / KOD_FINENESS);
+        // Determine the edge direction from the edgeTarget (the square beyond
+        // the boundary, in the other room). The direction from the stand_on
+        // square to the edgeTarget is the edge direction (away from the room
+        // interior).
+        let edgeDx = 0, edgeDy = 0;
+        if (this._edgeTarget) {
+          // edgeTarget is {x, y} in protocol units.
+          const dx = this._edgeTarget.x - this.destProto.x;
+          const dy = this._edgeTarget.y - this.destProto.y;
+          const dist = Math.hypot(dx, dy);
+          if (dist > 0) {
+            edgeDx = dx / dist;
+            edgeDy = dy / dist;
+          }
+        }
+        // Fallback: if the edgeTarget is not set, use the room boundary check.
+        if (edgeDx === 0 && edgeDy === 0) {
+          const destCol = Math.floor(this.destProto.x / KOD_FINENESS);
+          const destRow = Math.floor(this.destProto.y / KOD_FINENESS);
+          if (destRow === 0) { edgeDy = -1; } // north edge
+          else if (destRow === (geo?.rows ?? 63) - 1) { edgeDy = 1; } // south edge
+          else if (destCol === 0) { edgeDx = -1; } // west edge
+          else if (destCol === (geo?.cols ?? 63) - 1) { edgeDx = 1; } // east edge
+        }
+        // Fallback: if the edge direction is still (0,0), use the character-to-stand_on
+        // direction (the character is not at the stand_on yet).
+        if (edgeDx === 0 && edgeDy === 0) {
+          const dx = this.destProto.x - myProtoX;
+          const dy = this.destProto.y - myProtoY;
+          const dist = Math.hypot(dx, dy);
+          if (dist > 0) {
+            edgeDx = dx / dist;
+            edgeDy = dy / dist;
+          } else {
+            // Character is at the stand_on square and no edge direction available.
+            // Default to north (the most common boundary).
+            edgeDy = -1;
+          }
+        }
+        // The past target is the edge target (the wall). The character needs
+        // to hit the wall (the boundary) to trigger the transition. Walking
+        // past the wall does not trigger the transition.
+        const pastX = this._edgeTarget ? this._edgeTarget.x : this.destProto.x + edgeDx * 32;
+        const pastY = this._edgeTarget ? this._edgeTarget.y : this.destProto.y + edgeDy * 32;
+        Promise.resolve(s.pacer.submit('move', () => c.moveTo(Math.round(pastX), Math.round(pastY), 18, c.room?.id ?? 0), 100)).catch(() => {});
+        this._recordSend(pastX, pastY, myProtoX, myProtoY);
+        return { state: 'crossing', walkPast: true };
       }
     }
 
