@@ -548,7 +548,10 @@ export class Mover {
         this._recordSend(aimX, aimY, myProtoX, myProtoY);
         this._recordReport(fanX, fanY);
         this._fanTarget = { x: protocolToClient(fanX), y: protocolToClient(fanY) };
-        this._fanFrom = { x: myX, y: myY };
+        // NOTE: myX/myY live in _sendWaypoint's scope, not here — use the
+        // same client-unit conversion as the fan init above (a bare myX
+        // reference throws ReferenceError and kills the tick).
+        this._fanFrom = { x: protocolToClient(myProtoX), y: protocolToClient(myProtoY) };
         this._fanIndex = idx;
       }
       return { state: 'raw-move', fanIndex: idx, velocity: true };
