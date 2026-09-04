@@ -1384,9 +1384,47 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             const me = client?.self;
             const now = Date.now();
             // PATROL: nudge every 5 seconds (or on the first tick if
-            // _lastHuntNudge is unset).
+            // _lastHuntNudge is unset). Drive the tick Mover DIRECTLY with
+            // a fine-validated target — never the legacy walkTo, whose raw
+            // fallback walks through walls (that is how characters end up
+            // inside them). The router is idle in-room, so the mover is ours.
+            const mv = session?._mover;
+            const pos = me ? { col: me.col, row: me.row, x: me.x, y: me.y } : undefined;
+            if (me && mv && (session._lastHuntNudge == null || now - session._lastHuntNudge > 5000)) {
+              // Nudge: a few squares in a random direction, retried until
+              // the TARGET square is fine-walkable (the mover validates
+              // each step, but starting toward a wall square is pointless).
+              const geo = session?.world?.geometry;
+              let nc = null, nr = null;
+              for (let tries = 0; tries < 6; tries++) {
+                const dx = (Math.random() > 0.5 ? 1 : -1) * (2 + Math.floor(Math.random() * 3));
+                const dy = (Math.random() > 0.5 ? 1 : -1) * (2 + Math.floor(Math.random() * 3));
+                const tc = Math.max(1, Math.min(20, me.col + dx));
+                const tr = Math.max(1, Math.min(15, me.row + dy));
+                const f = geo?.fineWalkable ? geo.fineWalkable(tr, tc) : undefined;
+                if (f !== false) { nc = tc; nr = tr; break; }
+              }
+              if (nc != null) {
+                _patrolTarget = { col: nc, row: nr };
+                mv.to(nc, nr);
+                const mr = mv.tick(pos);
+                session._lastHuntNudge = now;
+                onDecision?.({ ticks, goal: 'hunt', action: 'travel',
+                  what: `patrolling hunt room (mover ${mr.state} to ${nc},${nr})`, sent: true });
+                return;
+              }
+              // No walkable nudge found: wait for a target without moving.
+            }
+            // Keep driving an active patrol nudge every tick (one mover.tick
+            // per nudge is not enough — the mover needs all 10 ticks/s).
+            if (mv?.active && me) {
+              const mr = mv.tick(pos);
+              onDecision?.({ ticks, goal: 'hunt', action: 'travel',
+                what: `patrolling hunt room (mover ${mr.state} -> ${_patrolTarget?.col},${_patrolTarget?.row})`, sent: mr.state === 'moving' || mr.state === 'raw-move' || mr.state === 'crossing' });
+              return;
+            }
             if (me && (session._lastHuntNudge == null || now - session._lastHuntNudge > 5000)) {
-              // Nudge: move a few squares in a random direction.
+              // No tick mover (shouldn't happen): legacy fallback.
               const dx = (Math.random() > 0.5 ? 1 : -1) * (2 + Math.floor(Math.random() * 3));
               const dy = (Math.random() > 0.5 ? 1 : -1) * (2 + Math.floor(Math.random() * 3));
               const nc = Math.max(1, Math.min(20, me.col + dx));
