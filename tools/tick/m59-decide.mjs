@@ -304,7 +304,7 @@ export const INTENTS = {
         if (s) s._buyingActive = true;
         const mv = s._mover;
         if (mv) {
-          mv.to(target.col, target.row);
+          mv.to(target.col, target.row, { by: 'buy' });
           // Drive the mover this tick so it actually steps toward the merchant (the
           // router is not involved — same-room approach, and the tick loop does not
           // call mover.tick on its own; the intent must).
@@ -1481,7 +1481,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
               }
               if (_recoveryTarget && mv) {
                 if (!mv.active || mv.dest?.col !== _recoveryTarget.col || mv.dest?.row !== _recoveryTarget.row) {
-                  mv.to(_recoveryTarget.col, _recoveryTarget.row);
+                  mv.to(_recoveryTarget.col, _recoveryTarget.row, { by: 'recovery' });
                 }
                 const mr = mv.tick(pos);
                 onDecision?.({ ticks, goal: 'hunt', action: 'travel',
@@ -1514,7 +1514,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
               }
               if (nc != null) {
                 _patrolTarget = { col: nc, row: nr };
-                mv.to(nc, nr);
+                mv.to(nc, nr, { by: 'patrol' });
                 const mr = mv.tick(pos);
                 session._lastHuntNudge = now;
                 onDecision?.({ ticks, goal: 'hunt', action: 'travel',

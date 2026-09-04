@@ -449,6 +449,49 @@ console.log('\nTHE 5s ANTI-DEADLOCK FLOOR (the gate/fan stall fix)');
   const r = mover.tick();
   ok('stand_on exit square does not start an escape fan', r.why !== 'no-floor start: escape fan', `${r.state} ${r.why ?? ''}`);
 }
+{
+  // OPEN VOID WITH BLINK AVAILABLE: sliding is pointless (the server accepts
+  // every probe, so headings never refuse), so the mover blinks out on the
+  // first tick instead of fanning.
+  const voidGeo = {
+    collisionReady: true,
+    traceFineMoveClient() { return { blocked: true, moved: false, arrived: false }; },
+    finePathProtocol() { return { found: false, reason: 'void', waypoints: [] }; },
+    fineWalkable() { return true; },
+    standable() { return false; },
+  };
+  const { mover, sent, session } = rig({ geo: voidGeo });
+  session.client.cast = (id) => sent.push({ cast: id });
+  session.client.spells = [{ id: 9, name: 'blink' }];
+  mover.session.policy = { ownPhysics: true };
+  mover.to(4, 2);
+  const r = mover.tick();
+  ok('open void blinks out instead of sliding', r.state === 'blink' && /void/.test(r.why ?? ''), `${r.state} ${r.why ?? ''}`);
+  ok('no fan engaged for a void blink', mover._fanIndex == null && mover._fanTarget == null);
+  ok('blink held pending', mover._blinkPending === true);
+}
+{
+  // ROOM-CHANGE HOLD: a room transition clears dead reckoning and holds sends
+  // until the server places us in the new room (like the real client).
+  const { mover, sent, session } = rig({ geo: clearGeometry() });
+  session._pose = { server: { col: 2, row: 2, x: 160, y: 160 }, updatedAt: Date.now(), reset() {} };
+  session.client.room = { id: 1, num: 7 };
+  mover.session.policy = {};
+  mover.to(4, 2);
+  mover.tick(); // establishes _roomKey (and may send)
+  sent.length = 0;
+  session.client.room = { id: 2, num: 8 }; // crossed into a new room, no echo yet
+  const r = mover.tick();
+  ok('room change holds movement', r.state === 'waiting-room', r.state);
+  mover.tick();
+  ok('no sends while waiting for the new room position', sent.length === 0, JSON.stringify(sent));
+  // The server places us in the new room: the hold releases.
+  session._pose.server = { col: 5, row: 5, x: 352, y: 352 };
+  session._pose.updatedAt = mover._roomChangedAt + 50; // strictly after the change
+  session.client.self = { col: 5, row: 5, x: 352, y: 352 };
+  const r2 = mover.tick();
+  ok('fresh server position releases the hold', r2.state !== 'waiting-room', r2.state);
+}
 
 console.log('\nNEVER ENTER A VOID (step model)');
 {

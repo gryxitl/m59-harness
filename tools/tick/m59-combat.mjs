@@ -626,7 +626,7 @@ export class CombatController {
       // replanning the A* path every tick).
       if (!this._walkDest || this._walkDest.col !== dest.col || this._walkDest.row !== dest.row) {
         this._walkDest = { col: dest.col, row: dest.row };
-        mover.to(dest.col, dest.row);
+        mover.to(dest.col, dest.row, { by: 'combat' });
       }
       const r = mover.tick(me ? { col: me.col, row: me.row, x: me.x, y: me.y } : undefined);
       if (r.state === 'arrived') {

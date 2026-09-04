@@ -124,6 +124,9 @@ export class Mover {
     this._blinkPending = false;
     this._blinkFrom = null;
     this._blinkAt = null;
+    this._voidBlinkAt = 0;   // wall-clock ms of the last void-blink attempt
+    this._roomKey = null;    // last seen room identity (id|num|name)
+    this._roomChangedAt = 0; // wall-clock ms of the last room change
     this._simX = null;
     this._simY = null;
     this._simAt = 0;
@@ -153,7 +156,7 @@ export class Mover {
    * Set the destination. col/row are protocol square coordinates
    * (the same space as client.self.col/.row).
    */
-  to(col, row, { standOn = false, edgeTarget = null } = {}) {
+  to(col, row, { standOn = false, edgeTarget = null, by = null } = {}) {
     // Never poison the destination: a non-finite col/row makes destProto NaN,
     // and every later send throws RangeError inside a swallowed catch —
     // counted by the pacer, never on the wire, frozen with zero errors.
@@ -168,7 +171,7 @@ export class Mover {
     const isNewDest = !this.dest || this.dest.col !== col || this.dest.row !== row;
     if (isNewDest && Date.now() - (this._toDbgAt ?? 0) > 5000) {
       this._toDbgAt = Date.now();
-      try { console.error(`[movedbg] t4 to() -> ${col},${row} (was ${this.dest ? this.dest.col + ',' + this.dest.row : 'none'})`); } catch {}
+      try { console.error(`[movedbg] t4 to() -> ${col},${row} (was ${this.dest ? this.dest.col + ',' + this.dest.row : 'none'}) by=${by ?? '?'}`); } catch {}
     }
     this.dest = { col, row };
     // PHASE 2: the stand_on flag. When true, the destination is an exit square
@@ -357,6 +360,37 @@ export class Mover {
     const c = s?.client;
     if (!c || c.state !== 'game') return { state: 'not-in-game' };
 
+    // ROOM-CHANGE HOLD: when the room identity changes, drop dead reckoning
+    // from the old room and wait for the server's first position in the new
+    // one — like the real client, which never acts on a stale room. Sending
+    // old-room positions (or planning from them) strands characters in the
+    // new room's walls/voids. Bounded (5s) so a missing echo can never stall.
+    // Without a Pose there is no echo tracking, so don't hold (tests).
+    const roomKey = [c.room?.id ?? '?', c.room?.num ?? '?', c.roomNameRsc ?? c.room?.name ?? '?'].join('|');
+    if (this._roomKey == null) {
+      this._roomKey = roomKey;
+    } else if (this._roomKey !== roomKey) {
+      this._roomKey = roomKey;
+      this._simX = null; this._simY = null; this._simAt = 0;
+      try { this.session?._pose?.reset(); } catch {}
+      this.path = null; this.pathIdx = 0;
+      this._fanIndex = null; this._fanTarget = null; this._fanFrom = null;
+      this._roomChangedAt = Date.now();
+    }
+    if (this._roomChangedAt) {
+      if (Date.now() - this._roomChangedAt > 5000) {
+        this._roomChangedAt = 0; // give up waiting; proceed on best available
+      } else if (this.session?._pose) {
+        const srvUpd = this.session._pose.updatedAt ?? 0;
+        if (srvUpd <= this._roomChangedAt) {
+          return { state: 'waiting-room', why: 'room changed; awaiting server position' };
+        }
+        this._roomChangedAt = 0;
+      } else {
+        this._roomChangedAt = 0;
+      }
+    }
+
     // SINGLE POSITION TRUTH: read from the Pose (sim while fresh, else the
     // server echo). Fall back to the raw getter only when the Pose is stale.
     const _pose = s?._pose?.current?.();
@@ -489,9 +523,23 @@ export class Mover {
     const atStandOnExit = this._destIsStandOn === true && this.dest != null
       && this.dest.col === startCol && this.dest.row === startRow;
     if (startHasNoFloor && !atStandOnExit && this._fanIndex == null && this._fanTarget == null) {
+      this.stuckTicks = 3; // bypass the 3-tick wait (and satisfy _tryBlink's stalled check)
+      // Open void (no BSP floor at all, not just a wall center): sliding is
+      // pointless — the dumb server accepts every probe, so headings always
+      // "succeed" and the fan never reaches its blink fallback. Blink out
+      // first; fall back to the escape fan when blink is unavailable.
+      // One attempt per 30s so a failed cast can't spam stands/casts.
+      if (startVoidByFloor && !this._blinkPending && Date.now() - (this._voidBlinkAt ?? 0) > 30000) {
+        this._voidBlinkAt = Date.now();
+        if (this._tryBlink()) {
+          this._blinkFrom = { x: protocolToClient(myProtoX), y: protocolToClient(myProtoY) };
+          this._blinkPending = true;
+          this._blinkAt = Date.now();
+          return { state: 'blink', why: 'in open void: blinking out' };
+        }
+      }
       this._fanIndex = 0;
       this._fanFrom = { x: protocolToClient(myProtoX), y: protocolToClient(myProtoY) };
-      this.stuckTicks = 3; // bypass the 3-tick wait
       return { state: 'raw-move', fanIndex: 0, why: 'no-floor start: escape fan' };
     }
     // Whether the start square itself is floorless (and not a deliberate exit).

@@ -745,7 +745,7 @@ export class Router {
     // Convert aim to {col, row} if it's the edgeTarget ({x, y} protocol units).
     const aimCol = aim.col ?? Math.floor(aim.x / 64);
     const aimRow = aim.row ?? Math.floor(aim.y / 64);
-    this.mover.to(aimCol, aimRow, { standOn: isStandOn, edgeTarget: this.leg.edgeTarget });
+    this.mover.to(aimCol, aimRow, { standOn: isStandOn, edgeTarget: this.leg.edgeTarget, by: 'router' });
     const mr = this.mover.tick({ col: me.col, row: me.row, x: me.x, y: me.y });
     if (mr.state === 'blocked')
       return this._say('blocked', { why: mr.why, next: this.leg.next });
