@@ -288,7 +288,7 @@ export const INTENTS = {
     // this tick, and route toward the merchant with the mover. When we are near, the
     // next pass fires the actual (async) shop-open + purchase.
     {
-      const me = c.self;
+      const me = ctx.session?._pose?.current?.() ?? c.self;
       const distToNearest = me
         ? Math.min(...merchants.map(o => Math.hypot((o.col ?? 0) - me.col, (o.row ?? 0) - me.row)))
         : Infinity;
@@ -349,7 +349,7 @@ export const INTENTS = {
     const c = ctx.client;
     const objects = c.room?.objects;
     // Find the nearest portal.
-    const me = c.self;
+    const me = ctx.session?._pose?.current?.() ?? c.self;
     if (!me) return { sent: false, why: 'no position' };
     let portal = null, bestDist = Infinity;
     if (objects instanceof Map) {
@@ -717,7 +717,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // the room and set _targetId, _targetLevel, _threatCeiling.
     {
       const objects = client?.room?.objects;
-      const me = client?.self;
+      const me = session._pose?.current?.() ?? client?.self;
       // Reset each tick: the target-selection block sets has_target true
       // only when a target exists. Without this, a dropped target (killed,
       // left the room, blacklisted) leaves has_target stale-true and the
@@ -1092,7 +1092,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       const now2 = now();
       if (hp < maxHp && now2 - _hpPokeAt > 30000) {
         _hpPokeAt = now2;
-        const me = client.self;
+        const me = session._pose?.current?.() ?? client.self;
         if (me && me.col != null) {
           // Find the nearest walkable neighbor to step to (N, S, E, W).
           const geo = session.world?.geometry;
@@ -1271,7 +1271,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
         if (roomNum === 1018) {
           const pc = 11, pr = 2; // portal location (from go action exit list)
           const c = session.client;
-          const me = c?.self;
+          const me = session._pose?.current?.() ?? c?.self;
           const atPortal = me && Math.abs(me.col - pc) <= 1 && Math.abs(me.row - pr) <= 1;
           if (!atPortal) {
             // Route to the portal.
@@ -1420,7 +1420,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
                 what: `in hunt room, yielding to travel (dest=${router.dest})`, sent: false });
               return;
             }
-            const me = client?.self;
+            const me = session._pose?.current?.() ?? client?.self;
             const now = Date.now();
             // PATROL: nudge every 5 seconds (or on the first tick if
             // _lastHuntNudge is unset). Drive the tick Mover DIRECTLY with

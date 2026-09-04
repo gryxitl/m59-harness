@@ -198,7 +198,7 @@ export class CombatController {
     const c = this.session?.client;
     if (!c || c.state !== 'game') return { kind: 'idle', why: 'not in game' };
 
-    const me = frame?.position ?? c.self;
+    const me = frame?.position ?? this.session?._pose?.current?.() ?? c.self;
     if (!me || me.col == null) return { kind: 'idle', why: 'no position' };
 
     // Build a walkable checker from the geometry.
@@ -459,7 +459,7 @@ export class CombatController {
    *   2. Melee swing: the default for an armed character.
    */
   _doFight(frame, act, target, dist, isAggroed, pathDist) {
-    const me = frame?.position ?? this.session?.client?.self;
+    const me = frame?.position ?? this.session?._pose?.current?.() ?? this.session?.client?.self;
     const client = this.session?.client;
     const reach = this._attackSpell() ? CAST_REACH : MELEE_REACH;
     // Use pathDist (A* tile count) if available, else fall back to Manhattan.
@@ -648,7 +648,7 @@ export class CombatController {
       return { kind: 'walk', what };
     }
     // Fallback: raw one-square step.
-    if (!me) me = this.session?.client?.self;
+    if (!me) me = this.session?._pose?.current?.() ?? this.session?.client?.self;
     if (!me) return { kind: 'idle', why: 'no position' };
     const dc = Math.sign(dest.col - me.col);
     const dr = Math.sign(dest.row - me.row);

@@ -162,6 +162,10 @@ export class Mover {
     // must NOT reset on a no-op to() — that would defeat planning and send a
     // packet every tick again. Only a genuine re-route resets it.
     const isNewDest = !this.dest || this.dest.col !== col || this.dest.row !== row;
+    if (isNewDest && Date.now() - (this._toDbgAt ?? 0) > 5000) {
+      this._toDbgAt = Date.now();
+      try { console.error(`[movedbg] t4 to() -> ${col},${row} (was ${this.dest ? this.dest.col + ',' + this.dest.row : 'none'})`); } catch {}
+    }
     this.dest = { col, row };
     // PHASE 2: the stand_on flag. When true, the destination is an exit square
     // (stand_on) — a square the character is meant to stand on to trigger a
@@ -201,6 +205,7 @@ export class Mover {
       this._simY = null;
       this._simAt = 0;
       this._lastWpKey = null;
+      try { this.session?._pose?.reset(); } catch {}
     }
     // A no-op to() (same destination, called every tick by the router) changes NOTHING.
     // It does not re-plan, does not reset stuckTicks (so the stuck detector can still
@@ -229,6 +234,7 @@ export class Mover {
     this._simY = null;
     this._simAt = 0;
     this._lastWpKey = null;
+    try { this.session?._pose?.reset(); } catch {}
   }
 
   get active() { return this.dest != null; }
@@ -340,7 +346,10 @@ export class Mover {
     const c = s?.client;
     if (!c || c.state !== 'game') return { state: 'not-in-game' };
 
-    const me = posOverride ?? c.self;
+    // SINGLE POSITION TRUTH: read from the Pose (sim while fresh, else the
+    // server echo). Fall back to the raw getter only when the Pose is stale.
+    const _pose = s?._pose?.current?.();
+    const me = posOverride ?? (_pose && !_pose.stale ? _pose : c.self);
     if (!me || !Number.isFinite(me.col) || !Number.isFinite(me.row)) return { state: 'no-position' };
 
     // THE SITTING TRAP: PFLAG_NO_MOVE refuses every move silently.
@@ -381,6 +390,7 @@ export class Mover {
           this._simX = null;
           this._simY = null;
           this._simAt = 0;
+          try { this.session?._pose?.reset(); } catch {}
           this.stuckTicks = 0;
           this.path = null; // replan from new position
           return { state: 'blinked', why: 'position changed after blink' };
@@ -409,17 +419,14 @@ export class Mover {
     // FINITE-CHAINED (not ??): a NaN coordinate passes ?? through (it only skips
     // null/undefined) and then poisons every distance, trace and gate below into
     // silent NaN-false — the observed prod-0 freeze with a live path.
-    // Prefer the frame position (Sensor now resolves it live from room
-    // objects) over c.self, which freezes at room-entry/teleport coords.
-    const selfPos = s.client?.self;
-    const curCol = (me && Number.isFinite(me.col)) ? me.col
-      : ((selfPos && Number.isFinite(selfPos.col)) ? selfPos.col : 0);
-    const curRow = (me && Number.isFinite(me.row)) ? me.row
-      : ((selfPos && Number.isFinite(selfPos.row)) ? selfPos.row : 0);
-    const myProtoX0 = (me && Number.isFinite(me.x)) ? me.x
-      : ((selfPos && Number.isFinite(selfPos.x)) ? selfPos.x : (curCol * KOD_FINENESS + HALF));
-    const myProtoY0 = (me && Number.isFinite(me.y)) ? me.y
-      : ((selfPos && Number.isFinite(selfPos.y)) ? selfPos.y : (curRow * KOD_FINENESS + HALF));
+    // SINGLE POSITION TRUTH: `me` comes from the Pose (validated finite at the
+    // entry). curCol/curRow are the SERVER square (for the 'arrived' and gate
+    // checks); myProtoX0/Y0 are the server point. The sim (below) supersedes
+    // them while fresh.
+    const curCol = me.col;
+    const curRow = me.row;
+    const myProtoX0 = Number.isFinite(me.x) ? me.x : (curCol * KOD_FINENESS + HALF);
+    const myProtoY0 = Number.isFinite(me.y) ? me.y : (curRow * KOD_FINENESS + HALF);
     // LOCAL SIMULATION: trust our own feet while fresh (see _recordReport).
     // Server echoes (~1/s) correct us when stale — including rubber-bands.
     const simFresh = this._simX != null && this._simY != null && (Date.now() - (this._simAt ?? 0)) < 2000;
@@ -651,6 +658,10 @@ export class Mover {
       // Cheat-clean: gate fan probes to the 1/s send law like every move.
       // Ungated this fires every tick (10/s) and trips speedhack detection.
       const fServerPX = curCol * KOD_FINENESS + HALF, fServerPY = curRow * KOD_FINENESS + HALF;
+      if (Date.now() - (this._fanDbgAt ?? 0) > 20000) {
+        this._fanDbgAt = Date.now();
+        try { const _g = this._movementGateOk(fanX, fanY, myProtoX, myProtoY, fServerPX, fServerPY); console.error(`[movedbg] t4 fan gate=${_g} me=(${Math.round(myProtoX)},${Math.round(myProtoY)}) srv=(${fServerPX},${fServerPY}) age=${Date.now() - (this._lastReportAt ?? 0)} idx=${idx} tgt=${this._fanTarget ? 'Y' : 'n'}`); } catch (e) { console.error(`[movedbg] t4 fan gate THROW: ${e.message}`); }
+      }
       if (this._movementGateOk(fanX, fanY, myProtoX, myProtoY, fServerPX, fServerPY)) {
         Promise.resolve(s.pacer.submit('move', () => c.moveTo(Math.round(fanX), Math.round(fanY), speed, c.room?.id ?? 0), 100)).catch(() => {});
         this._recordSend(aimX, aimY, myProtoX, myProtoY);
@@ -1213,6 +1224,8 @@ export class Mover {
     this._simX = protoX;
     this._simY = protoY;
     this._simAt = Date.now();
+    // Keep the shared Pose in step with our own feet (single position truth).
+    try { this.session?._pose?.advance(protoX, protoY); } catch {}
     // LOCAL SIMULATION (official client model, move.c): our own feet are
     // authoritative between server echoes. Every send advances the sim to
     // the declared point; planning reads it while fresh (<2s) so waypoints

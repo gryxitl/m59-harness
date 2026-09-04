@@ -22,6 +22,7 @@ import { autopilotFor, dropAutopilot, autopilotIfAny } from './m59-autopilot.mjs
 import { TickLoop } from './tick/m59-tick.mjs';
 import { makeDecider, DEFAULT_GOALS, intend, INTENTS } from './tick/m59-decide.mjs';
 import { Router, routeIntent } from './tick/m59-route.mjs';
+import { Pose } from './tick/m59-pose.mjs';
 import { protocolToClient, clientToProtocol, buildAllRoomGeometry } from './m59-roo.mjs';
 import { loadMap, buildReverseEdges } from './m59-map.mjs';
 import { attachStepMasks } from './m59-routes.mjs';
@@ -124,6 +125,10 @@ async function join() {
       const router = new Router({ session });
       session._mover = router.mover;
       session._router = router;
+      // SINGLE POSITION TRUTH. The Sensor updates it each frame; the Mover
+      // advances it on each send and resets it on teleport/blink/room change.
+      // Every other tick file reads session._pose.current() and nothing else.
+      session._pose = new Pose();
       // PHASE 0: expose the policy on the session so the Mover can read
       // policy.ownPhysics (the continuous-motion opt-in flag).
       session.policy = policy;
@@ -1201,6 +1206,8 @@ const server = createServer(async (req, res) => {
             break;
           }
           case 'moverstate': { // live mover internals (diagnostics)
+            const _ids = (globalThis.__objIds ??= new WeakMap());
+            const _idOf = o => { if (o == null) return null; if (!_ids.has(o)) _ids.set(o, _ids.size + 1); return _ids.get(o); };
             const mv = session?._mover;
             const me = session?.client?.self;
             let gateProbe = null;
@@ -1210,6 +1217,9 @@ const server = createServer(async (req, res) => {
             result = {
               hasMover: !!mv, hasRouter: !!session?._router,
               sameMover: session?._mover === session?._router?.mover,
+              sessionId: _idOf(session), clientId: _idOf(session?.client),
+              pacerId: _idOf(session?.pacer), moverSessionId: _idOf(mv?.session),
+              moverClientId: _idOf(mv?.session?.client), moverPacerId: _idOf(mv?.session?.pacer),
               dest: mv?.dest ?? null, pathLen: mv?.path?.length ?? null,
               pathIdx: mv?.pathIdx ?? null, fanIdx: mv?.fanIndex ?? null,
               fanTgt: mv?._fanTarget != null, blink: mv?._blinkPending ?? null,

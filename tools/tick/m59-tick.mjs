@@ -116,17 +116,16 @@ export class Sensor {
     this.lastAt = at;
     if (!c || s.live !== true || c.state !== 'game')
       return { in_game: false, at, dt_ms: dt };
-    const raw = c.self;
-    // LIVE FIRST: c.self goes stale (frozen at room-entry/teleport coords)
-    // while room.objects tracks the server truth via BP_MOVE. Prefer the
-    // room-object self entry; fall back to c.self. A stale me poisons every
-    // aim, arrival check and sub-leg advance downstream.
-    let me = raw;
+    // SINGLE POSITION TRUTH: feed the Pose the live room-objects self entry
+    // (the server echo) each frame, then read position from the Pose so the
+    // sim/server reconciliation lives in exactly one place.
+    const pose = s._pose;
     try {
       const id = c.selfId;
       const live = (id != null && c.room?.objects?.get) ? c.room.objects.get(id) : null;
-      if (live && live.col != null && live.row != null) me = live;
+      if (pose) pose.updateServer(live ?? c.self);
     } catch {}
+    const me = pose ? pose.current() : c.self;
     return {
       at,
       dt_ms: dt,

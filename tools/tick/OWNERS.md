@@ -15,6 +15,7 @@ The tick driver's decision loop and movement. Only the tick driver imports these
 | `m59-mover.mjs` | the fine-model `Mover` (one legal step per tick) |
 | `m59-route.mjs` | the `Router` (room-to-room legs, drives the `Mover`) |
 | `m59-combat.mjs` | the `CombatController` (facing, zapping, weapon choice) |
+| `m59-pose.mjs` | the `Pose` — the single position truth (sim + server echo, reconciled) |
 
 ## Shared (in `tools/`, read by the tick driver, **do not modify for tick work**)
 
@@ -57,6 +58,14 @@ dispatches on `entry.autopilot.mode`:
 A change to the dispatcher is a two-system change.
 
 ## The rule
+
+**One position truth.** The tick brain reads "where am I" from `session._pose` and
+nothing else. The Sensor (`m59-tick.mjs`) feeds it the live room-objects self entry
+each frame; the `Mover` advances it on each send and resets it on teleport/blink/room
+change. The `Mover`, `Router`, `Decide` and `Combat` all read `session._pose.current()`
+(sim while fresh, else the server echo). The only raw `client.self` reads are in the
+Sensor (the designated feeder) and as last-resort fallbacks behind the Pose. See
+`docs/tick/POSITION.md` for the audit of the five sources this replaced.
 
 **A change that leaves the tick driver still calling `session.walkTo` /
 `session.travel` / `session.leaveVia` for its own movement is not a tick-driver

@@ -210,7 +210,7 @@ export class Router {
     // it for hours alternating between two escape squares. Compute the fine-reachable set
     // ONCE here (bounded BFS, cached) and sort candidates that can actually be WALKED to
     // ahead of ones that cannot.
-    const meNow = this.session?.client?.self ?? null;
+    const meNow = this.session?._pose?.current?.() ?? this.session?.client?.self ?? null;
     let fineSet = null;
     if (meNow?.col != null) {
       try { fineSet = this._fineReachableSet(this._geo(), meNow.col, meNow.row); }
@@ -683,7 +683,7 @@ export class Router {
     // not be detected as `at`, and the crossing (or the walk-past-boundary) would never
     // trigger. client.self is updated by every position packet and is the source the
     // probe/room-view use.
-    const selfPosAt = this.session?.client?.self;
+    const selfPosAt = this.session?._pose?.current?.() ?? this.session?.client?.self;
     const at = (me.col === this.leg.standOn.col && me.row === this.leg.standOn.row)
       || (selfPosAt && selfPosAt.col === this.leg.standOn.col && selfPosAt.row === this.leg.standOn.row);
 
@@ -709,7 +709,7 @@ export class Router {
     }
     const sub = this.subWp && this.subWp.length ? this.subWp[0] : null;
     if (sub) {
-      const selfPos = this.session?.client?.self;
+      const selfPos = this.session?._pose?.current?.() ?? this.session?.client?.self;
       const onSub = (selfPos && selfPos.col === sub.col && selfPos.row === sub.row)
         || (me.col === sub.col && me.row === sub.row);
       if (onSub) this._advanceSubLeg({ col: sub.col, row: sub.row });
@@ -771,6 +771,10 @@ export function routeIntent(router) {
   return (frame, act) => {
     const r = router.tick(frame, act);
     const sent = r.state === 'moving' || r.state === 'crossing';
+    if (Date.now() - (router._dbgAt ?? 0) > 15000) {
+      router._dbgAt = Date.now();
+      try { console.error(`[routedbg] dest=${router.dest} rstate=${r.state} why=${r.why ?? '-'}`); } catch {}
+    }
     return { sent, what: sent ? `travel ${r.state} -> ${router.dest}` : null,
              why: sent ? null : (r.why ?? r.state) };
   };
