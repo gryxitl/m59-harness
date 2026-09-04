@@ -19,10 +19,10 @@ function ok(cond, msg) {
   ok(c.col == null, 'empty pose has no col');
 }
 
-// 2. Server echo is read when no sim is fresh.
+// 2. Server echo is read when there is no sim.
 {
   const p = new Pose();
-  p.updateServer({ col: 10, row: 20, x: 10 * 1024 + 512, y: 20 * 1024 + 512, predicted: false });
+  p.updateServer({ col: 10, row: 20, x: 10 * 64 + 32, y: 20 * 64 + 32, predicted: false });
   const c = p.current();
   ok(c.source === 'server', 'server echo read when no sim');
   ok(c.col === 10 && c.row === 20, 'server echo col/row correct');
@@ -30,34 +30,35 @@ function ok(cond, msg) {
   ok(c.stale === false, 'server echo not stale');
 }
 
-// 3. A fresh sim supersedes the server echo.
+// 3. The sim supersedes the server echo (units are KOD protocol units).
 {
   const p = new Pose();
-  p.updateServer({ col: 10, row: 20, x: 10 * 1024 + 512, y: 20 * 1024 + 512, predicted: false });
-  p.advance(11 * 1024 + 512, 21 * 1024 + 512);
+  p.updateServer({ col: 10, row: 20, x: 10 * 64 + 32, y: 20 * 64 + 32, predicted: false });
+  p.advance(11 * 64 + 32, 21 * 64 + 32);
   const c = p.current();
-  ok(c.source === 'sim', 'fresh sim supersedes server');
-  ok(c.col === 11 && c.row === 21, 'sim col/row derived from x/y');
+  ok(c.source === 'sim', 'sim supersedes server');
+  ok(c.col === 11 && c.row === 21, 'sim col/row derived from x/y in KOD units');
   ok(c.predicted === true, 'sim is predicted=true');
 }
 
-// 4. A stale sim (no advance for >2s) falls back to the server echo.
+// 4. The sim NEVER expires: an old advance is still our best track (echoes
+// confirm it; only reset() clears it). No more 2s fallback to stale echoes.
 {
   const p = new Pose();
-  p.updateServer({ col: 10, row: 20, x: 10 * 1024 + 512, y: 20 * 1024 + 512, predicted: false });
-  p.advance(11 * 1024 + 512, 21 * 1024 + 512);
-  // Force the sim to be stale by backdating simAt.
-  p.simAt = Date.now() - 3000;
+  p.updateServer({ col: 10, row: 20, x: 10 * 64 + 32, y: 20 * 64 + 32, predicted: false });
+  p.advance(11 * 64 + 32, 21 * 64 + 32);
+  // Age the sim far past the old freshness window.
+  p.simAt = Date.now() - 30000;
   const c = p.current();
-  ok(c.source === 'server', 'stale sim falls back to server');
-  ok(c.col === 10, 'fallback col is the server col');
+  ok(c.source === 'sim', 'aged sim still reported (track entirely)');
+  ok(c.col === 11 && c.row === 21, 'aged sim position intact');
 }
 
 // 5. reset() clears the sim so the server echo resumes immediately.
 {
   const p = new Pose();
-  p.updateServer({ col: 10, row: 20, x: 10 * 1024 + 512, y: 20 * 1024 + 512, predicted: false });
-  p.advance(11 * 1024 + 512, 21 * 1024 + 512);
+  p.updateServer({ col: 10, row: 20, x: 10 * 64 + 32, y: 20 * 64 + 32, predicted: false });
+  p.advance(11 * 64 + 32, 21 * 64 + 32);
   p.reset();
   const c = p.current();
   ok(c.source === 'server', 'reset clears sim, server resumes');
@@ -67,20 +68,32 @@ function ok(cond, msg) {
 // 6. updateServer with a non-finite/absent object is ignored.
 {
   const p = new Pose();
-  p.updateServer({ col: 10, row: 20, x: 10 * 1024 + 512, y: 20 * 1024 + 512, predicted: false });
+  p.updateServer({ col: 10, row: 20, x: 10 * 64 + 32, y: 20 * 64 + 32, predicted: false });
   p.updateServer(null);
   p.updateServer({ col: NaN, row: 20 });
   const c = p.current();
   ok(c.col === 10, 'bad updateServer does not clobber the last good echo');
 }
 
-// 7. x/y default to square-center when absent.
+// 7. x/y default to square-center when absent (KOD units).
 {
   const p = new Pose();
   p.updateServer({ col: 5, row: 6 });
   const c = p.current();
-  ok(c.x === 5 * 1024 + 512, 'x defaults to square center');
-  ok(c.y === 6 * 1024 + 512, 'y defaults to square center');
+  ok(c.x === 5 * 64 + 32, 'x defaults to square center');
+  ok(c.y === 6 * 64 + 32, 'y defaults to square center');
+}
+
+// 8. divergence() measures track-vs-echo disagreement (null when either side missing).
+{
+  const p = new Pose();
+  ok(p.divergence() === null, 'no data means null divergence');
+  p.updateServer({ col: 10, row: 20, x: 10 * 64 + 32, y: 20 * 64 + 32 });
+  ok(p.divergence() === null, 'no sim means null divergence');
+  p.advance(10 * 64 + 32, 20 * 64 + 32);
+  ok(p.divergence() === 0, 'agreed track reads zero');
+  p.advance(14 * 64 + 32, 20 * 64 + 32);
+  ok(p.divergence() === 256, 'split track reads the gap in proto units');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

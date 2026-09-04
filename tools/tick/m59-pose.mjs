@@ -14,9 +14,15 @@
 //
 // MODEL (matches the official client, see m59-client.mjs predictSelf):
 //   - We are client-authoritative: a move we send is a move that happened.
-//   - The server echoes our position ~1/s (BP_MOVE), which corrects us.
-//   - While a send is FRESH (< SIM_FRESH_MS) we trust our own feet (the sim);
-//     otherwise we trust the last server echo.
+//     The track never expires and is never rewritten by an echo. Teleports,
+//     blinks and room changes are known discontinuities with explicit reset()
+//     calls, and they are the ONLY thing that invalidates the track.
+//   - Server echoes (~1/s BP_MOVE) are confirmations, not positions. Agreement
+//     (a fresh echo near the sim) lets commitment proceed; sustained
+//     disagreement (echo frozen or far behind while sends flow) means our
+//     moves are not landing — it blocks arrival and feeds stall escalation,
+//     but it never moves our believed position. The server has no persistent
+//     truth to snap to: it records our last declaration.
 //   - `predicted` distinguishes "server said so" from "we think so".
 //
 // OWNERSHIP: the Sensor calls updateServer() each frame with the room-objects
@@ -26,12 +32,12 @@
 // This is a pure data holder: no client, no pacer, no geometry. It can be unit
 // tested with no network.
 
-const SIM_FRESH_MS = 2000;
+import { KOD_FINENESS } from '../m59-roo.mjs';
 
 export class Pose {
   constructor() {
     this.server = null;   // { col, row, x, y, predicted } — last server echo
-    this.sim = null;      // { x, y } — dead-reckoned feet
+    this.sim = null;      // { x, y } — dead-reckoned feet (never expires)
     this.simAt = 0;       // wall-clock ms of the last advance()
     this.updatedAt = 0;   // wall-clock ms of the last updateServer()
   }
@@ -42,8 +48,9 @@ export class Pose {
     if (obj && Number.isFinite(obj.col) && Number.isFinite(obj.row)) {
       this.server = {
         col: obj.col, row: obj.row,
-        x: Number.isFinite(obj.x) ? obj.x : (obj.col * 1024 + 512),
-        y: Number.isFinite(obj.y) ? obj.y : (obj.row * 1024 + 512),
+        // KOD protocol units (64 per square), matching advance().
+        x: Number.isFinite(obj.x) ? obj.x : (obj.col * KOD_FINENESS + KOD_FINENESS / 2),
+        y: Number.isFinite(obj.y) ? obj.y : (obj.row * KOD_FINENESS + KOD_FINENESS / 2),
         predicted: obj.predicted === true,
       };
       this.updatedAt = Date.now();
@@ -64,17 +71,27 @@ export class Pose {
     this.simAt = 0;
   }
 
-  get _simFresh() {
-    return this.sim != null && (Date.now() - this.simAt) < SIM_FRESH_MS;
+  // Disagreement between our track and the last echo, in protocol units
+  // (null when either side is missing). A small gap is normal echo lag (up
+  // to a stride behind while running); a large, persistent gap means our
+  // sends are not landing.
+  divergence() {
+    if (this.sim == null || this.server == null) return null;
+    const sx = Number.isFinite(this.server.x) ? this.server.x : null;
+    const sy = Number.isFinite(this.server.y) ? this.server.y : null;
+    if (sx == null || sy == null) return null;
+    return Math.hypot(this.sim.x - sx, this.sim.y - sy);
   }
 
   // THE single read. Returns { col, row, x, y, predicted, source, stale }.
-  //   source: 'sim' (fresh dead-reckoning) | 'server' (last echo) | 'none'
+  //   source: 'sim' (our tracked position) | 'server' (last echo) | 'none'
   //   stale:  true when neither source is available.
+  // Units are KOD protocol units throughout (64 per square) — the sim is
+  // advanced with protocol coordinates, so it must be read back in them.
   current() {
-    if (this._simFresh) {
-      const col = Math.floor(this.sim.x / 1024);
-      const row = Math.floor(this.sim.y / 1024);
+    if (this.sim != null) {
+      const col = Math.floor(this.sim.x / KOD_FINENESS);
+      const row = Math.floor(this.sim.y / KOD_FINENESS);
       return { col, row, x: this.sim.x, y: this.sim.y,
               predicted: true, source: 'sim', stale: false };
     }

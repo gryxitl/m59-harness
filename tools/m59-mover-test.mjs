@@ -9,6 +9,7 @@
 // around the segment.
 
 import { Mover, MOVEUNITS_PROTO } from './tick/m59-mover.mjs';
+import { Pose } from './tick/m59-pose.mjs';
 
 let pass = 0, fail = 0;
 const ok = (what, cond, detail) => {
@@ -312,6 +313,24 @@ console.log('\nPHASE 0a: NO hold gate (ownPhysics on)');
   const r3 = mover.tick();
   ok('no false arrival while the server never moved', r3.state !== 'arrived', r3.state);
   ok('mover state survives (no clear)', mover.dest != null && mover.dest.col === 4, JSON.stringify(mover.dest));
+}
+{
+  // RESPONSIVE ARRIVAL: with echo tracking, sim-near plus a server that
+  // visibly moved toward this destination commits immediately — no echo wait.
+  // (Without corroboration this would be the pseudo-progress loop above.)
+  const { mover, sent, session } = rig({ geo: clearGeometry() });
+  session._pose = new Pose();
+  session._pose.updateServer({ col: 2, row: 2, x: 160, y: 160 });
+  mover.session.policy = {};
+  mover.to(4, 2);
+  mover.tick(); // step toward dest; sim advances; server still behind
+  session._pose.updateServer({ col: 3, row: 2, x: 224, y: 160 }); // echo confirms
+  mover.tick(); // another step; sim covers the destination
+  session._pose.updateServer({ col: 4, row: 2, x: 288, y: 160 }); // echo confirms
+  sent.length = 0;
+  const r = mover.tick();
+  ok('tracked arrival commits on confirmation', r.state === 'arrived', r.state);
+  ok('no extra send after arrival', sent.length === 0, JSON.stringify(sent));
 }
 
 console.log('\nPHASE 0a: the hold gate is off by default (ownPhysics off)');
