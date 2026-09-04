@@ -147,8 +147,18 @@ async function join() {
         const t0 = Date.now();
         if (router.dest != null) {
           const r = intend('travel', frame, act, { client: session.client, session, ws: {} });
+          // TEMP DEBUG (t4 stall): travel result each 10s.
+          if (Date.now() - (session._travDbgAt ?? 0) > 10000) {
+            session._travDbgAt = Date.now();
+            try { console.error(`[travdbg] dest=${router.dest} sent=${r.sent} what=${r.what ?? '-'} why=${r.why ?? '-'}`); } catch {}
+          }
           if (r.sent) { decideTimes.push(Date.now() - t0); _maybeLogMetrics(); return; }
         }
+        // ISOLATION SWITCH (mover testing): travel-only, no goal ladder.
+        // policy.tickIsolate='travel' (fleet-state) or M59_TICK_ISOLATE=travel.
+        // Set destinations manually via POST /action travel. Everything else
+        // (armed/buy/hunt/rest/fight/unstuck) stays off: mover+router alone.
+        if (policy.tickIsolate === 'travel' || process.env.M59_TICK_ISOLATE === 'travel') return;
         plannerDecide(frame, act, loop);
         decideTimes.push(Date.now() - t0);
         _maybeLogMetrics();
