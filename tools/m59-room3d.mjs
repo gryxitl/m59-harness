@@ -417,6 +417,45 @@ function setTargetBeacon(t) {
   targetBeacon = { group, shaftMat, ring, ringMat };
 }
 setTargetBeacon(TARGET);
+// Self beacon: the same tall-beacon treatment for our own character, so he is
+// findable at a glance in a big room (the ground ring alone gets lost).
+let selfBeacon = null;
+function setSelfBeacon(s) {
+  // Remove existing.
+  if (selfBeacon) {
+    selfBeacon.group.traverse(n => { n.geometry?.dispose?.(); n.material?.map?.dispose?.(); n.material?.dispose?.(); });
+    scene.remove(selfBeacon.group);
+    selfBeacon = null;
+  }
+  if (!s) return;
+  const x = s.x + 0.5, z = s.z + 0.5;
+  const oh = heightAt(s.x, s.z);
+  const group = new THREE.Group();
+  const shaftGeo = new THREE.CylinderGeometry(0.18, 0.35, 22, 16, 1, true);
+  const shaftMat = new THREE.MeshBasicMaterial({
+    color: 0x44ffaa, transparent: true, opacity: 0.5,
+    side: THREE.DoubleSide, depthWrite: false,
+  });
+  const shaft = new THREE.Mesh(shaftGeo, shaftMat);
+  shaft.position.set(x, 11 + oh, z);
+  group.add(shaft);
+  const ringGeo = new THREE.RingGeometry(0.5, 0.85, 32);
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: 0x44ffaa, transparent: true, opacity: 0.9,
+    side: THREE.DoubleSide, depthWrite: false,
+  });
+  const ring = new THREE.Mesh(ringGeo, ringMat);
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.set(x, 0.05 + oh, z);
+  group.add(ring);
+  const label = makeLabel('YOU: ' + (s.name || '?'), '#55ffaa');
+  label.position.set(x, 23 + oh, z);
+  label.scale.set(5, 1.2, 1);
+  group.add(label);
+  scene.add(group);
+  selfBeacon = { group, shaftMat, ring, ringMat };
+}
+setSelfBeacon((OBJECTS || []).find(o => o.t === 0) ?? null);
 const colors = [0x44ffaa, 0xff4444, 0xffaa44];
 const selfRing = { mesh: null };
 
@@ -560,6 +599,9 @@ async function pollData() {
       // Update the tall target beacon to track the current target.
       var tObj = (d.objects || []).find(function(o) { return o._objId === targetId; });
       setTargetBeacon(tObj ? { x: tObj.x, z: tObj.z, name: tObj.n } : null);
+      // Update the self beacon to track our own character.
+      var sObj = (d.objects || []).find(function(o) { return o.t === 0; });
+      setSelfBeacon(sObj ? { x: sObj.x, z: sObj.z, name: sObj.n } : null);
     }
     // Update the debug path overlay (fine path + direct raycast) on EVERY poll —
     // the path can replan even when the entity set is unchanged.
@@ -599,16 +641,20 @@ let _t0 = performance.now();
 (function animate() {
   requestAnimationFrame(animate);
   controls.update();
-  // Pulse the target beacon: the ring expands + fades, the shaft shimmers.
-  if (targetBeacon) {
+  // Pulse the beacons: rings expand + fade, shafts shimmer. Target runs hot
+  // red, self runs green; shared phase so they read as a pair.
+  if (targetBeacon || selfBeacon) {
     const t = (performance.now() - _t0) / 1000;
     const pulse = (Math.sin(t * 4) + 1) / 2;  // 0..1, ~1.5Hz
-    targetBeacon.ringMat.opacity = 0.4 + 0.6 * pulse;
-    const s = 0.7 + 0.9 * pulse;
-    targetBeacon.ring.scale.set(s, s, 1);
-    targetBeacon.shaftMat.opacity = 0.25 + 0.35 * pulse;
-    // Slow spin of the shaft for extra visibility.
-    targetBeacon.group.children[0].rotation.y = t * 0.8;
+    for (const b of [targetBeacon, selfBeacon]) {
+      if (!b) continue;
+      b.ringMat.opacity = 0.4 + 0.6 * pulse;
+      const s = 0.7 + 0.9 * pulse;
+      b.ring.scale.set(s, s, 1);
+      b.shaftMat.opacity = 0.25 + 0.35 * pulse;
+      // Slow spin of the shaft for extra visibility.
+      b.group.children[0].rotation.y = t * 0.8;
+    }
   }
   renderer.render(scene, camera);
 })();
