@@ -44,6 +44,10 @@ export const MOVEUNITS_PROTO = 16;
 // 10; we require RUN_VIGOR_FLOOR so sustained travel doesn't arrive gassed
 // and immediately rest). Packets displaced ≥ ~14 squares trip teleport
 // detection (blink exempt), so aims are clamped to one stride.
+// RUN IS OPT-IN (policy.allowRun): running drains vigor ~4x per move
+// (exertion scales with speed squared, user.kod), which feeds rest-thrash
+// (drain below 60 → sit → refused moves → restore → stand → repeat) and
+// net travel time goes DOWN, not up. Default is official walking parity.
 export const WALK_STRIDE_PROTO = 160;
 export const RUN_STRIDE_PROTO = 320;
 export const RUN_VIGOR_FLOOR = 80;
@@ -475,7 +479,7 @@ export class Mover {
     // a distant waypoint can't trip teleport detection, and the per-second
     // displacement IS the speed (walk 2.5 sq/s, run 5 sq/s).
     const vigorNow = s.client?.vitals?.()?.vigor?.value ?? 0;
-    const runNow = vigorNow >= RUN_VIGOR_FLOOR;
+    const runNow = s?.policy?.allowRun === true && vigorNow >= RUN_VIGOR_FLOOR;
     const strideNow = runNow ? RUN_STRIDE_PROTO : WALK_STRIDE_PROTO;
     // Boundary checks (0c slide, raycast-ahead) skip only on the FINAL
     // APPROACH to an exit square. En route, a blocked direct path means a
