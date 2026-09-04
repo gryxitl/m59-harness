@@ -268,18 +268,6 @@ export class Mover {
     const me = posOverride ?? c.self;
     if (!me || me.col == null) return { state: 'no-position' };
 
-    // NO-FLOOR START: if the character's square has no floor (a wall square,
-    // reached by teleport or fine movement along a ledge), the path planner
-    // can't find a path. Fire the escape fan immediately (not after 3 ticks)
-    // to walk to a nearby walkable square.
-    const startGeo = this.session?.world?.geometry;
-    if (startGeo?.fineWalkable?.(me.row, me.col) === false && this._fanIndex == null && this._fanTarget == null) {
-      this._fanIndex = 0;
-      this._fanFrom = { x: me.col * KOD_FINENESS + HALF, y: me.row * KOD_FINENESS + HALF };
-      this.stuckTicks = 3; // bypass the 3-tick wait
-      return { state: 'raw-move', fanIndex: 0, why: 'no-floor start: escape fan' };
-    }
-
     // THE SITTING TRAP: PFLAG_NO_MOVE refuses every move silently.
     // Stand first.
     if (this.sitting) {
@@ -340,6 +328,22 @@ export class Mover {
     this.drY = protocolToClient(myProtoY);
     // The 'arrived' and gate checks below use curCol/curRow (the current position).
     const effMe = { col: curCol, row: curRow, x: myProtoX, y: myProtoY };
+
+    // NO-FLOOR START: if the character's square has no floor (a wall square,
+    // reached by teleport or fine movement along a ledge), the path planner
+    // can't find a path. Fire the escape fan immediately (not after 3 ticks)
+    // to walk to a nearby walkable square. Placed AFTER the position block:
+    // it needs myProtoX/myProtoY, and client col/row are 1-indexed while
+    // fineWalkable takes 0-indexed squares.
+    const startGeo = this.session?.world?.geometry;
+    const startCol = Math.floor(myProtoX / KOD_FINENESS);
+    const startRow = Math.floor(myProtoY / KOD_FINENESS);
+    if (startGeo?.fineWalkable?.(startRow, startCol) === false && this._fanIndex == null && this._fanTarget == null) {
+      this._fanIndex = 0;
+      this._fanFrom = { x: protocolToClient(myProtoX), y: protocolToClient(myProtoY) };
+      this.stuckTicks = 3; // bypass the 3-tick wait
+      return { state: 'raw-move', fanIndex: 0, why: 'no-floor start: escape fan' };
+    }
 
     // (Blink progress check moved to the top of tick() — see the BLINK
     // PROGRESS + HOLD block above.)
@@ -402,7 +406,15 @@ export class Mover {
     let holdSend = false;
     if (ownPhysics && this._lastSentKey === targetKey && this._lastSentPos) {
       const progress = Math.hypot(myProtoX - this._lastSentPos.x, myProtoY - this._lastSentPos.y);
-      if (progress > 4) { // moved > 4 protocol units since the last send
+      if (progress > KOD_FINENESS * 8) {
+        // TELEPORT JUMP (blink, rescue, room change): the displacement since
+        // the last send is impossibly large for one send interval (walk 2.5
+        // sq/s, run 5 sq/s at 1 send/s). The old send is meaningless — reset
+        // instead of holding, or the gate deadlocks (holds forever while the
+        // character sits still, displaced from the stale send position).
+        this._lastSentKey = null;
+        this._lastSentPos = null;
+      } else if (progress > 4) { // moved > 4 protocol units since the last send
         holdSend = true;
       }
     }

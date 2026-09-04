@@ -503,7 +503,9 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             // to escape the stall (walk to an open neighbor / blink) and keep
             // the same target.
             // Check the 4 neighbors for an open square.
-            const geo = session._roomGeo ?? null;
+            // NOTE: session._roomGeo was never assigned anywhere, so this
+            // always fell through to blink. Use the live world geometry.
+            const geo = session?.world?.geometry ?? null;
             const dirs = [[0,-1],[0,1],[-1,0],[1,0]]; // N,S,W,E
             let escape = null;
             if (geo) {
