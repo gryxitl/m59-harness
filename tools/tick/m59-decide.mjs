@@ -352,29 +352,40 @@ export const INTENTS = {
     // Find the nearest portal.
     const me = ctx.session?._pose?.current?.() ?? c.self;
     if (!me) return { sent: false, why: 'no position' };
-    let portal = null, bestDist = Infinity;
+    const now3 = Date.now();
+    // Collect every portal match, nearest first. A name-match is not proof
+    // of an exit: watched live, Lee stood centered on the nearest one with
+    // no transition. Squares that already failed get skipped (10min expiry).
+    let matches = [];
     if (objects instanceof Map) {
       for (const o of objects.values()) {
         const name = c.rsc?.get?.(o.nameRsc) ?? o.name ?? '';
-        if (/portal/i.test(name) && o.col != null) {
-          const d = Math.hypot(o.col - me.col, o.row - me.row);
-          if (d < bestDist) { bestDist = d; portal = o; }
+        if (/portal/i.test(name) && o.col != null && o.row != null) matches.push(o);
+      }
+    }
+    if (!matches.length) return { sent: false, why: 'no portal in room' };
+    const dead = (ctx.session?._deadPortals ?? []).filter(d => now3 - (d.at ?? 0) < 600000);
+    if (ctx.session) ctx.session._deadPortals = dead;
+    const isDead = (o) => dead.some(d => d.col === o.col && d.row === o.row);
+    matches.sort((a, b) => (Math.hypot(a.col - me.col, a.row - me.row) - Math.hypot(b.col - me.col, b.row - me.row)));
+    const portal = matches.find(o => !isDead(o)) ?? matches[0];
+    // Standing on the chosen portal with no transition for 15s = dead portal:
+    // blacklist the square so the next tick walks to the next candidate.
+    if (me.col === portal.col && me.row === portal.row) {
+      const key = `${portal.col},${portal.row}`;
+      if (ctx.session) {
+        if (ctx.session._portalStoodKey !== key) {
+          ctx.session._portalStoodKey = key;
+          ctx.session._portalStoodAt = now3;
+        } else if (now3 - (ctx.session._portalStoodAt ?? now3) > 15000 && !isDead(portal)) {
+          dead.push({ col: portal.col, row: portal.row, at: now3 });
+          ctx.session._deadPortals = dead;
+          ctx.session._portalStoodKey = null;
         }
       }
+    } else if (ctx.session) {
+      ctx.session._portalStoodKey = null;
     }
-    if (!portal) return { sent: false, why: 'no portal in room' };
-    // Report portal identity (name/flags/count) so a dead portal is visible:
-    // standing on the nearest name-match means nothing if it is unlit or the
-    // wrong portal. Decision lines dedup on change, so this logs once.
-    let portalCount = 0;
-    if (objects instanceof Map) {
-      for (const o of objects.values()) {
-        const name = c.rsc?.get?.(o.nameRsc) ?? o.name ?? '';
-        if (/portal/i.test(name)) portalCount++;
-      }
-    }
-    const portalName = c.rsc?.get?.(portal.nameRsc) ?? portal.name ?? '?';
-    const portalFlags = portal.flags ?? null;
     // Walk toward the portal (one step per SEND LAW via the actuator —
     // act.step defaults to 250ms gaps (4/s) which trips speedhack detection
     // (threshold ~2/s averaged); the escape runs every tick, so gate it to
@@ -383,12 +394,13 @@ export const INTENTS = {
     // never drops, so submitting every tick (10Hz) builds an unbounded queue
     // of stale positions (watched live: 1491 deep). Submit at most 1/s; the
     // newest target supersedes, so dropped calls lose nothing.
-    const now3 = Date.now();
     if (now3 - (ctx.session?._lastEscapeStep ?? 0) >= 1000) {
       if (ctx.session) ctx.session._lastEscapeStep = now3;
       act.step(portal.col, portal.row, { minGapMs: 1000 });
     }
-    return { sent: true, what: `escape: walk to portal at (${portal.col},${portal.row}) [${portalName} flags=${portalFlags} seen=${portalCount}]` };
+    const portalName = c.rsc?.get?.(portal.nameRsc) ?? portal.name ?? '?';
+    const portalIdx = matches.indexOf(portal) + 1;
+    return { sent: true, what: `escape: walk to portal at (${portal.col},${portal.row}) [${portalName} candidate ${portalIdx}/${matches.length} dead=${dead.length}]` };
   },
 };
 
