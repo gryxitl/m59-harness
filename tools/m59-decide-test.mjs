@@ -160,5 +160,34 @@ console.log('\nmob names normalize across game and compendium');
   ok('empty safe', normMobName(null) === '' && normMobName(undefined) === '');
 }
 
+console.log('\nattacker-switch: hold unless traveling, healthy, and the attacker is in band');
+{
+  const { findAttackerSwitch, normMobName } = await import('./tick/m59-decide.mjs');
+  const mobNames = new Set(['giant rat', 'mummy'].map(normMobName));
+  const mkObjs = (list) => { const m = new Map(); list.forEach((o, i) => m.set(o.id ?? 100 + i, o)); return m; };
+  const base = { meCol: 10, meRow: 10, currentId: 1, blacklist: new Set(), ceiling: 30, mobNames, nameOf: (o) => o.name ?? '' };
+  const rat = (id, col, row, extra = {}) => ({ id, col, row, name: 'giant rat', max_health: 30, ...extra });
+  // Traveling (far target), healthy, in-band attacker in melee -> switch.
+  let r = findAttackerSwitch({ ...base, targetDist2: 100, hpPct: 80,
+    objects: mkObjs([{ id: 1, col: 20, row: 20, name: 'giant rat', max_health: 30 }, rat(2, 11, 10)]) });
+  ok('switches to the melee attacker while traveling healthy', r && r.id === 2, JSON.stringify(r?.id));
+  // Already joined (target reached) -> hold, finish it.
+  r = findAttackerSwitch({ ...base, targetDist2: 4, hpPct: 80,
+    objects: mkObjs([{ id: 1, col: 12, row: 10, name: 'giant rat', max_health: 30 }, rat(2, 11, 10)]) });
+  ok('holds when already in melee with the target', r === null, JSON.stringify(r?.id));
+  // Hurt (<50%) -> hold, don't collect a second fight.
+  r = findAttackerSwitch({ ...base, targetDist2: 100, hpPct: 40,
+    objects: mkObjs([{ id: 1, col: 20, row: 20, name: 'giant rat', max_health: 30 }, rat(2, 11, 10)]) });
+  ok('holds while hurt', r === null, JSON.stringify(r?.id));
+  // Out-of-band attacker in melee -> hold (don't collect it).
+  r = findAttackerSwitch({ ...base, targetDist2: 100, hpPct: 80,
+    objects: mkObjs([{ id: 1, col: 20, row: 20, name: 'giant rat', max_health: 30 }, { id: 3, col: 11, row: 10, name: 'dragon', max_health: 200 }]) });
+  ok('holds when the melee mob is out of band', r === null, JSON.stringify(r?.id));
+  // Nothing in melee -> hold.
+  r = findAttackerSwitch({ ...base, targetDist2: 100, hpPct: 80,
+    objects: mkObjs([{ id: 1, col: 20, row: 20, name: 'giant rat', max_health: 30 }, rat(2, 15, 15)]) });
+  ok('holds with no mob in melee', r === null, JSON.stringify(r?.id));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

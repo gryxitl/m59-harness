@@ -137,6 +137,35 @@ const SPAWNS_FILE = join(__dirname, '..', '..', 'compendium', 'data', 'spawns.js
 export function normMobName(s) {
   return String(s ?? '').toLowerCase().replace(/[^a-z]/g, '');
 }
+
+// ATTACKER-SWITCH DECISION (pure — unit tested). Returns the mob to switch to,
+// or null to hold the sticky target. The ONLY sanctioned switch: we have not
+// yet reached the current target (still traveling to it), a different in-band
+// mob is in melee range, and we have the health to take it (hpPct >= 50).
+// One focused fight is safer than collecting 2-3. Never abandon a joined
+// fight (targetDist2 <= 4), never switch while hurt, never collect out-of-band.
+export function findAttackerSwitch({ meCol, meRow, objects, currentId, blacklist,
+                                     ceiling, hpPct, targetDist2, mobNames, nameOf }) {
+  if (targetDist2 <= 4) return null;   // already joined: finish it
+  if (hpPct < 50) return null;         // too hurt to collect a second fight
+  const meleeD2 = 5;                   // MELEE_REACH=2, squared=4, small margin
+  let attacker = null, attackerD2 = Infinity;
+  for (const o of (objects?.values?.() ?? [])) {
+    if (o.is_self) continue;
+    if (o.col == null || o.row == null) continue;
+    const oId = o.id ?? o.obj_id;
+    if (oId != null && (oId === currentId || blacklist?.has(oId))) continue;
+    const objName = normMobName(nameOf ? nameOf(o) : (o.name ?? ''));
+    const isMob = (o.is_player && o.can_attack) || (mobNames?.size > 0 && mobNames.has(objName));
+    if (!isMob) continue;
+    const d2 = (o.col - meCol) ** 2 + (o.row - meRow) ** 2;
+    if (d2 > meleeD2) continue;
+    const aLevel = o.max_health ?? o.health ?? null;
+    if (aLevel != null && aLevel > ceiling) continue; // out of band: don't collect it
+    if (d2 < attackerD2) { attackerD2 = d2; attacker = o; }
+  }
+  return attacker;
+}
 import { loadMap, findPath } from '../m59-map.mjs';
 import { loadoutFor } from '../m59-loadout.mjs';
 import { resolveRoomNum, routeIntent } from './m59-route.mjs';
@@ -810,50 +839,49 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             }
           }
         }
-        // Re-target if a MUCH closer candidate exists. Only run this check occasionally
-        // (throttled) so it doesn't add cost to every tick.
-        if (target && now() - retargetCheckAt > 2000) {
+        // ATTACKER-SWITCH (the ONLY sanctioned switch): otherwise HOLD the
+        // sticky target. Every switch resets the mover's path, so switching
+        // per-hit is how 1 rat becomes 3-4: nobody ever gets finished. Switch
+        // only when ALL of these hold:
+        //   (1) we have NOT yet reached the current target (still traveling
+        //       to it — never abandon a fight already joined),
+        //   (2) a DIFFERENT in-band mob is in melee range hitting us (the game
+        //       sends no "hit by X"; the mob on top of us is the attacker),
+        //   (3) we have the health to take it (hp >= 50%).
+        // One focused fight is safer than collecting attackers.
+        if (target && ws._justDamaged && now() - retargetCheckAt > 2000) {
           retargetCheckAt = now();
           const tD2 = (target.col - me.col) ** 2 + (target.row - me.row) ** 2;
-          let closestD2 = Infinity;
-          // Build creature names (same as the if(!target) block below).
+          const hpNow = client.vitals?.()?.health;
+          const hpPct = hpNow && hpNow.max ? (hpNow.value / hpNow.max) * 100 : 100;
+          // Threat ceiling (same formula as target selection below).
+          const maxHp = client.vitals?.()?.health?.max ?? 20;
+          const lvl = maxHp;
+          const isArmed = ws.armed === true;
+          const fullBand = policy?.threatBand ?? Math.floor(lvl / 2);
+          const ceiling = lvl + (isArmed ? fullBand : Math.floor(fullBand / 2));
+          // Creature names (same as the if(!target) block below).
           let cNames = new Set();
           try {
             const spawns = loadSpawns(SPAWNS_FILE);
             if (spawns?.byMonster) for (const name of Object.keys(spawns.byMonster)) cNames.add(normMobName(name));
           } catch { /* compendium unavailable */ }
-          for (const o of objects.values()) {
-            if (o.is_self) continue;
-            if (o.col == null || o.row == null) continue;
-            const oId = o.id ?? o.obj_id;
-            if (oId != null && (oId === _lastTargetId || _blacklist.has(oId))) continue;
-            const objName = normMobName(client.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
-            const isMob = (o.is_player && o.can_attack) || (cNames.size > 0 && cNames.has(objName));
-            if (!isMob) continue;
-            const d2 = (o.col - me.col) ** 2 + (o.row - me.row) ** 2;
-            if (d2 < closestD2) closestD2 = d2;
-          }
-          // Re-target if a candidate is less than 50% of the current distance (squared: 25%).
-          if (closestD2 < tD2 * 0.25) {
-            target = null;  // drop the sticky target; the if(!target) block will pick the closer one
-          }
-          // Re-target if we just took damage and a mob is in melee range (the attacker).
-          // The game doesn't send "hit by X"; melee range is ~2 squares, so the mob on top
-          // of us is the one hitting us. If our current target is NOT that mob, drop it so
-          // we fight the actual attacker instead of a passive mummy that's ignoring us.
-          if (target && ws._justDamaged) {
-            const meleeD2 = 5;  // MELEE_REACH=2, squared=4, use 5 for a small margin
-            let attackerInMelee = false;
-            for (const o of objects.values()) {
-              if (o.is_self) continue;
-              if (o.col == null || o.row == null) continue;
-              const oId = o.id ?? o.obj_id;
-              if (oId != null && (oId === _lastTargetId || _blacklist.has(oId))) continue;
-              const d2 = (o.col - me.col) ** 2 + (o.row - me.row) ** 2;
-              if (d2 <= meleeD2) { attackerInMelee = true; break; }
-            }
-            if (attackerInMelee) {
-              target = null;  // drop the sticky target; pick the attacker (nearest in melee)
+          const attacker = findAttackerSwitch({
+            meCol: me.col, meRow: me.row, objects,
+            currentId: _lastTargetId, blacklist: _blacklist, ceiling,
+            hpPct, targetDist2: tD2, mobNames: cNames,
+            nameOf: (o) => client.rsc?.get?.(o.nameRsc) ?? o.name ?? '',
+          });
+          if (attacker) {
+            // Switch: point every layer at the attacker. The else-branch
+            // below re-derives in_reach/has_target from `target`, so assign
+            // it (and the ids) here rather than dropping to the picker.
+            const aId = attacker.id ?? attacker.obj_id;
+            target = attacker;
+            if (aId != null) {
+              _lastTargetId = aId;
+              ws._targetId = aId;
+              _currentTargetId = aId;
             }
           }
         }
