@@ -204,6 +204,12 @@ export class Actuator {
   walk(col, row, { maxSteps = 1 } = {}) {
     const rec = { kind: 'walk', at: Date.now(), ok: null, to: { col, row } };
     if (this.walking) { rec.ok = false; rec.why = 'a move is already in flight'; return rec; }
+    // DO NOT call the legacy walkTo when the Mover is active (the router has
+    // a destination). The legacy walkTo runs in parallel with the Mover,
+    // causing conflicts (the character walks through walls).
+    if (this.session?._router?.dest != null) {
+      rec.ok = false; rec.why = 'mover active (router has destination)'; return rec;
+    }
     if (typeof this.session.walkTo !== 'function') {
       rec.ok = false; rec.why = 'no walker on this session'; return rec;
     }
