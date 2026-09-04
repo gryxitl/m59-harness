@@ -382,6 +382,14 @@ export class Mover {
     // PROGRESS + HOLD block above.)
 
     // FAN PROGRESS: if we fired a raw move last tick, check position.
+    // ECHO PATIENCE: server echoes arrive ~1200ms after a send (BP_MOVE
+    // cadence) but exhaustion hits at 9 ticks (900ms). Assessing before the
+    // echo can possibly arrive declares failure just ahead of confirmation
+    // every cycle (chronic stuck/blink loop). Wait out one echo window per
+    // probe before advancing the fan or judging movement.
+    if (this._fanTarget != null && this._fanSentAt != null && Date.now() - this._fanSentAt < 1500) {
+      return { state: 'raw-move', fanIndex: this._fanIndex ?? 0, waiting: true };
+    }
     if (this._fanTarget != null) {
       const curX = protocolToClient(me.x ?? (me.col * KOD_FINENESS + HALF));
       const curY = protocolToClient(me.y ?? (me.row * KOD_FINENESS + HALF));
@@ -548,6 +556,7 @@ export class Mover {
         this._recordSend(aimX, aimY, myProtoX, myProtoY);
         this._recordReport(fanX, fanY);
         this._fanTarget = { x: protocolToClient(fanX), y: protocolToClient(fanY) };
+        this._fanSentAt = Date.now();
         // NOTE: myX/myY live in _sendWaypoint's scope, not here — use the
         // same client-unit conversion as the fan init above (a bare myX
         // reference throws ReferenceError and kills the tick).
@@ -713,7 +722,9 @@ export class Mover {
       // and flags the account (speedhack counter threshold 2).
       const vServerPX = curCol * KOD_FINENESS + HALF, vServerPY = curRow * KOD_FINENESS + HALF;
       const gateOk = this._movementGateOk(aimX, aimY, myProtoX, myProtoY, vServerPX, vServerPY);
-      if (gateOk) {
+      // TEMP BISECT (t4 freeze): bypass gate once to test if submits flow.
+      const bisect = process.env.M59_BISECT_SEND === '1';
+      if (bisect || gateOk) {
         Promise.resolve(s.pacer.submit('move', () => c.moveTo(Math.round(aimX), Math.round(aimY), speed, c.room?.id ?? 0), 100)).catch(() => {});
         this._recordSend(aimX, aimY, myProtoX, myProtoY);
         this._recordReport(aimX, aimY);
