@@ -149,6 +149,15 @@ export function mobNameKey(s) {
   return spaced.toLowerCase().split(/[^a-z]+/).filter(Boolean).sort().join(' ');
 }
 
+// Spiders are excluded from targeting unless the character is explicitly
+// specialized (policy.huntSpiders === true): most spiders badly outclass an
+// unspecialized character. Baby spiders are exempt (good eating).
+export function spiderProhibited(name, policy) {
+  if (policy?.huntSpiders === true) return false;
+  const key = mobNameKey(name);
+  return key.split(' ').includes('spider') && key !== 'baby spider';
+}
+
 // ATTACKER-SWITCH DECISION (pure — unit tested). Returns the mob to switch to,
 // or null to hold the sticky target. The ONLY sanctioned switch: we have not
 // yet reached the current target (still traveling to it), a different in-band
@@ -882,6 +891,16 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             }
           }
         }
+        // SPIDERS: never hold one (unless specialized). A spider picked up
+        // before this rule (or before the policy) is dropped here so the
+        // picker below looks for anything else. Baby spiders are exempt.
+        if (target) {
+          const tName = client.rsc?.get?.(target.nameRsc) ?? target.name ?? '';
+          if (spiderProhibited(tName, session?.policy ?? policy)) {
+            _lastTargetId = null;
+            target = null;
+          }
+        }
         // ATTACKER-SWITCH (the ONLY sanctioned switch): otherwise HOLD the
         // sticky target. Every switch resets the mover's path, so switching
         // per-hit is how 1 rat becomes 3-4: nobody ever gets finished. Switch
@@ -907,7 +926,9 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           let cNames = new Set();
           try {
             const spawns = loadSpawns(SPAWNS_FILE);
-            if (spawns?.byMonster) for (const name of Object.keys(spawns.byMonster)) cNames.add(mobNameKey(name));
+            if (spawns?.byMonster) for (const name of Object.keys(spawns.byMonster)) {
+              if (!spiderProhibited(name, session?.policy ?? policy)) cNames.add(mobNameKey(name));
+            }
           } catch { /* compendium unavailable */ }
           const attacker = findAttackerSwitch({
             meCol: me.col, meRow: me.row, objects,
@@ -948,7 +969,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             const spawns = loadSpawns(SPAWNS_FILE);
             if (spawns?.byMonster) {
               for (const name of Object.keys(spawns.byMonster)) {
-                creatureNames.add(mobNameKey(name));
+                if (!spiderProhibited(name, session?.policy ?? policy)) creatureNames.add(mobNameKey(name));
               }
             }
           } catch { /* compendium unavailable */ }
