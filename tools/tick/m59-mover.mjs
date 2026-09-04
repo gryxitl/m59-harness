@@ -854,22 +854,45 @@ export class Mover {
       // is unreachable past this return. Without this, pathIdx freezes on a
       // reached waypoint, aim == position, the send gate closes forever —
       // the observed one-step-then-stop.
+      let cornerAim = null;
       if (this.path && this.pathIdx < this.path.length) {
-        // Stride lookahead: consume every waypoint within one stride so each
-        // send covers the full official distance. Corner-cutting is safe:
-        // the 0c trace below validates the resulting aim segment, and the
-        // fan takes over wherever it is blocked.
+        // Stride lookahead, TRACE-GATED: consume every waypoint within one
+        // stride whose beeline from here is trace-clear, so each send covers
+        // the full official distance on straightaways. Stop at the first
+        // waypoint whose beeline is blocked (a corner): aiming past it would
+        // cut the corner through the wall and trip the 0c fan into minutes of
+        // sliding. The corner waypoint is consumed on arrival (its beeline is
+        // trivially clear once reached), so curves flow without fanning.
+        const geoLA = this.session?.world?.geometry;
+        const beelineClear = (wx, wy) => {
+          if (!geoLA || !geoLA.traceFineMoveClient) return true;
+          try {
+            const t = geoLA.traceFineMoveClient(
+              protocolToClient(myProtoX), protocolToClient(myProtoY),
+              protocolToClient(wx), protocolToClient(wy),
+              { slide: false, playerRadius: 32 });
+            return !(t && t.blocked && !t.arrived);
+          } catch { return true; }
+        };
+        let lastClear = -1;
         while (this.pathIdx < this.path.length) {
           const w = this.path[this.pathIdx];
-          if (Math.hypot(w.x - myProtoX, w.y - myProtoY) < strideNow) this.pathIdx++;
-          else break;
+          if (Math.hypot(w.x - myProtoX, w.y - myProtoY) >= strideNow) break;
+          if (!beelineClear(w.x, w.y)) {
+            cornerAim = lastClear >= 0 ? this.path[lastClear] : null;
+            break;
+          }
+          lastClear = this.pathIdx;
+          this.pathIdx++;
         }
       }
       if (!this.path || this.pathIdx >= this.path.length) {
         // Past all waypoints (or no path): fall through to the
         // destination-direct logic below.
       } else {
-        const w = this.path[this.pathIdx];
+        // At a corner the lookahead stops early: aim at the furthest CLEAR
+        // waypoint (cornerAim), not the blocked one the index points at.
+        const w = cornerAim ?? this.path[this.pathIdx];
         aimX = w.x; aimY = w.y;
         // Re-clamp: the new aim may be farther than one stride.
         const adx = aimX - myProtoX, ady = aimY - myProtoY;

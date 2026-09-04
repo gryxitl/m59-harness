@@ -502,5 +502,32 @@ console.log('\nNEVER ENTER A VOID (step model)');
   ok('raw push does not fire into a floorless non-exit', sent.length === 1 && !(sent[0][0] === 224 && sent[0][1] === 160), JSON.stringify(sent));
 }
 
+console.log('\nCORNER FLOW (trace-gated lookahead)');
+{
+  // An L-turn: the beeline to wp2 cuts the corner (blocked), the beeline to
+  // wp1 is clear. The mover must aim at wp1 and keep striding — not hand the
+  // tick to the 0c fan.
+  const cornerGeo = {
+    collisionReady: true,
+    standable() { return true; },
+    traceFineMoveClient(x0, y0, x1, y1) {
+      // Client units here: wp1 ends at (2560,1536), wp2 at (2560,4608).
+      // Block any segment ending past y=2560 (the corner cut).
+      if (x1 >= 2560 && y1 > 2560) return { blocked: true, moved: false, arrived: false };
+      return { blocked: false, moved: true, arrived: true, x: x1, y: y1 };
+    },
+  };
+  const { mover, sent } = rig({ col: 2, row: 2, geo: cornerGeo });
+  mover.session.policy = { ownPhysics: true };
+  mover.to(3, 4);
+  mover.path = [{ x: 3 * 64 + 32, y: 2 * 64 + 32 }, { x: 3 * 64 + 32, y: 4 * 64 + 32 }];
+  mover.pathIdx = 0;
+  const r = mover.tick();
+  ok('corner aims at the clear waypoint, striding', r.state === 'moving', `${r.state} ${r.why ?? ''}`);
+  ok('the send goes to wp1, not into the wall', sent.length === 1 && sent[0][0] === 224 && sent[0][1] === 160, JSON.stringify(sent));
+  ok('the fan stays out of it', mover._fanIndex == null && mover._fanTarget == null);
+  ok('wp1 consumed, corner kept for arrival', mover.pathIdx === 1, `idx=${mover.pathIdx}`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
