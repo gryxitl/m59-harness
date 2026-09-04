@@ -166,7 +166,7 @@ console.log('\nmob names normalize across game and compendium');
 console.log('\nattacker-switch: hold unless traveling, healthy, and the attacker is in band');
 {
   const { findAttackerSwitch, normMobName, mobNameKey } = await import('./tick/m59-decide.mjs');
-  const mobNames = new Set(['giant rat', 'mummy'].map(normMobName));
+  const mobNames = new Set(['giant rat', 'mummy'].map(mobNameKey));
   const mkObjs = (list) => { const m = new Map(); list.forEach((o, i) => m.set(o.id ?? 100 + i, o)); return m; };
   const base = { meCol: 10, meRow: 10, currentId: 1, blacklist: new Set(), ceiling: 30, mobNames, nameOf: (o) => o.name ?? '' };
   const rat = (id, col, row, extra = {}) => ({ id, col, row, name: 'giant rat', max_health: 30, ...extra });
