@@ -489,6 +489,14 @@ const server = createServer(async (req, res) => {
             const t = room.objects.get(tid);
             if (t) return { col: t.col, row: t.row, name: c?.rsc?.get?.(t.nameRsc) ?? '' };
           }
+          // Decider selection can lag (or miss) while combat is already engaged:
+          // fall back to the combat controller's live target so the beacon
+          // shows who the character is actually fighting.
+          const ctid = session?._combat?.targetId ?? null;
+          if (ctid != null) {
+            const t = room.objects.get(ctid);
+            if (t && t.col != null) return { col: t.col, row: t.row, name: c?.rsc?.get?.(t.nameRsc) ?? session._combat.targetName ?? '' };
+          }
           const router = session._router;
           if (router?.status?.()) {
             const st = router.status();

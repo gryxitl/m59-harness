@@ -143,5 +143,13 @@ console.log('\nend to end: a real TickLoop driving a real decider');
   ok('and kept sending while commands were in flight', sent.length >= loop.stats.ticks - 1);
 }
 
+console.log('\ncast intent fires by spell name (the conjure path)');
+{
+  const { session } = world({ spells: [{ id: 42, name: 'create weapon' }] });
+  const act = new Actuator(session);
+  const r = intend('cast create weapon', { in_game: true }, act, { client: session.client, session, ws: {} });
+  ok('cast intent sends', r.sent === true, JSON.stringify(r));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

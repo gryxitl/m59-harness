@@ -129,7 +129,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SPAWNS_FILE = join(__dirname, '..', 'compendium', 'data', 'spawns.json');
+const SPAWNS_FILE = join(__dirname, '..', '..', 'compendium', 'data', 'spawns.json');
 import { loadMap, findPath } from '../m59-map.mjs';
 import { loadoutFor } from '../m59-loadout.mjs';
 import { resolveRoomNum, routeIntent } from './m59-route.mjs';
@@ -1609,7 +1609,19 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     if (active.goal === 'armed' && first === 'equip'
         && !pickWieldableWeapon(client, session)
         && (session?.policy ?? policy)?.buyWeapons !== false) {
-      actionName = 'buy';
+      // CONJURE FIRST: a free conjured weapon beats a shopping trip. If the
+      // character knows `create weapon` and hasn't tried recently, cast it;
+      // the created weapon lands in the pack and equip picks it up next pass.
+      // Cooldown so a slow conjuration doesn't cast every tick.
+      const now5 = now();
+      const canConjure = knownSpells(client).some(sp =>
+        String(client.rsc?.get?.(sp.nameRsc) ?? sp.name ?? '').toLowerCase() === 'create weapon');
+      if (canConjure && now5 - (session?._lastCreateWeaponAt ?? 0) > 30000) {
+        if (session) session._lastCreateWeaponAt = now5;
+        actionName = 'cast create weapon';
+      } else {
+        actionName = 'buy';
+      }
     }
     const r = intend(actionName, frame, act, { client, session, ws });
     note(active.goal, r.sent);
