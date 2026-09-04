@@ -45,13 +45,16 @@ export const MOVEUNITS_PROTO = 16;
 // 10; we require RUN_VIGOR_FLOOR so sustained travel doesn't arrive gassed
 // and immediately rest). Packets displaced ≥ ~14 squares trip teleport
 // detection (blink exempt), so aims are clamped to one stride.
-// RUN IS OPT-IN (policy.allowRun): running drains vigor ~4x per move
-// (exertion scales with speed squared, user.kod), which feeds rest-thrash
-// (drain below 60 → sit → refused moves → restore → stand → repeat) and
-// net travel time goes DOWN, not up. Default is official walking parity.
+// RUN IS THE DEFAULT (policy.allowRun === false opts out): speed is survival —
+// walking through danger gets characters killed. Running drains vigor ~4x per
+// move (exertion scales with speed squared, user.kod). RUN_VIGOR_FLOOR keeps a
+// margin above kod VIGOR_RUN_THRESHOLD (10, below which >18 rubber-bands) and
+// keeps the character fight-capable on arrival (ineffective below 20). Walk is
+// reserved for low/unknown vigor and the precision paths below (fan probes,
+// door pushes, boundary walk-past, step model), which hardcode speed 18.
 export const WALK_STRIDE_PROTO = 160;
 export const RUN_STRIDE_PROTO = 320;
-export const RUN_VIGOR_FLOOR = 80;
+export const RUN_VIGOR_FLOOR = 25;
 export const RUNUNITS_PROTO = 32;
 
 // LAZY POSITION REPORTING — modeled directly on the real client (clientd3d/move.c).
@@ -589,7 +592,7 @@ export class Mover {
     // a distant waypoint can't trip teleport detection, and the per-second
     // displacement IS the speed (walk 2.5 sq/s, run 5 sq/s).
     const vigorNow = s.client?.vitals?.()?.vigor?.value ?? 0;
-    const runNow = s?.policy?.allowRun === true && vigorNow >= RUN_VIGOR_FLOOR;
+    const runNow = s?.policy?.allowRun !== false && vigorNow >= RUN_VIGOR_FLOOR;
     const strideNow = runNow ? RUN_STRIDE_PROTO : WALK_STRIDE_PROTO;
     // Boundary checks (0c slide, raycast-ahead) skip only on the FINAL
     // APPROACH to an exit square. En route, a blocked direct path means a
