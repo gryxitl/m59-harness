@@ -162,7 +162,15 @@ export const INTENTS = {
     // PHASE 0a fix: mark the mover as sitting so the sitting-trap
     // check fires and stands the character before the next move.
     if (ctx.session?._mover?.markSitting) ctx.session._mover.markSitting();
-    return { sent: !!act.rest(),  what: 'rest' };
+    // PRODUCTION GATE: rest is idempotent state, and the Pacer spaces sends
+    // but never drops — submitting every tick floods the queue with stale
+    // rests (watched live: rest 4/s, depth 80). Submit at most 1/s.
+    const now7 = Date.now();
+    if (now7 - (ctx.session?._lastRestStep ?? 0) >= 1000) {
+      if (ctx.session) ctx.session._lastRestStep = now7;
+      return { sent: !!act.rest(),  what: 'rest' };
+    }
+    return { sent: true, what: 'rest (holding)' };
   },
   stand: (f, act) => ({ sent: !!act.stand(), what: 'stand' }),
 
