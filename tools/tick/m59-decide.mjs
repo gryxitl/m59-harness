@@ -130,6 +130,13 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SPAWNS_FILE = join(__dirname, '..', '..', 'compendium', 'data', 'spawns.json');
+// Mob-name normalization: game names have spaces ('giant rat'), compendium
+// keys don't ('GiantRat'). Lowercasing alone never matches multi-word mobs,
+// which blinded the decider to every rat, orc, and skeleton (single-word
+// 'mummy' worked, hiding the bug). Strip non-letters on both sides.
+export function normMobName(s) {
+  return String(s ?? '').toLowerCase().replace(/[^a-z]/g, '');
+}
 import { loadMap, findPath } from '../m59-map.mjs';
 import { loadoutFor } from '../m59-loadout.mjs';
 import { resolveRoomNum, routeIntent } from './m59-route.mjs';
@@ -805,14 +812,14 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           let cNames = new Set();
           try {
             const spawns = loadSpawns(SPAWNS_FILE);
-            if (spawns?.byMonster) for (const name of Object.keys(spawns.byMonster)) cNames.add(name.toLowerCase());
+            if (spawns?.byMonster) for (const name of Object.keys(spawns.byMonster)) cNames.add(normMobName(name));
           } catch { /* compendium unavailable */ }
           for (const o of objects.values()) {
             if (o.is_self) continue;
             if (o.col == null || o.row == null) continue;
             const oId = o.id ?? o.obj_id;
             if (oId != null && (oId === _lastTargetId || _blacklist.has(oId))) continue;
-            const objName = String(client.rsc?.get?.(o.nameRsc) ?? o.name ?? '').toLowerCase();
+            const objName = normMobName(client.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
             const isMob = (o.is_player && o.can_attack) || (cNames.size > 0 && cNames.has(objName));
             if (!isMob) continue;
             const d2 = (o.col - me.col) ** 2 + (o.row - me.row) ** 2;
@@ -862,7 +869,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             const spawns = loadSpawns(SPAWNS_FILE);
             if (spawns?.byMonster) {
               for (const name of Object.keys(spawns.byMonster)) {
-                creatureNames.add(name.toLowerCase());
+                creatureNames.add(normMobName(name));
               }
             }
           } catch { /* compendium unavailable */ }
@@ -903,8 +910,8 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             // Skip blacklisted (unreachable) mobs.
             const oId = o.id ?? o.obj_id;
             if (oId != null && _blacklist.has(oId)) continue;
-            // Resolve the name from nameRsc
-            const objName = String(client.rsc?.get?.(o.nameRsc) ?? o.name ?? '').toLowerCase();
+            // Resolve the name from nameRsc (normalized: 'giant rat' == 'GiantRat').
+            const objName = normMobName(client.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
             // A mob is either: flagged as a player with
             // can_attack (enriched object), OR its name
             // exactly matches a compendium creature.

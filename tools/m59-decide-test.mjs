@@ -151,5 +151,14 @@ console.log('\ncast intent fires by spell name (the conjure path)');
   ok('cast intent sends', r.sent === true, JSON.stringify(r));
 }
 
+console.log('\nmob names normalize across game and compendium');
+{
+  const { normMobName } = await import('./tick/m59-decide.mjs');
+  ok("'giant rat' == 'GiantRat'", normMobName('giant rat') === normMobName('GiantRat'));
+  ok("'black mummy' == 'BlackMummy'", normMobName('black mummy') === normMobName('BlackMummy'));
+  ok("'mummy' unchanged", normMobName('mummy') === 'mummy');
+  ok('empty safe', normMobName(null) === '' && normMobName(undefined) === '');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
