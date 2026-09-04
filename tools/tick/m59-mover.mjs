@@ -579,8 +579,25 @@ export class Mover {
       // position per packet. The fan heading is the direction; the target is
       // ONE STEP ahead (16 units = MOVEUNITS), not 100 units (a far target
       // could jump a wall the segment check can't see).
-      const fanX = myProtoX + Math.cos(finalAngle) * MOVEUNITS_PROTO; // one step ahead
-      const fanY = myProtoY + Math.sin(finalAngle) * MOVEUNITS_PROTO;
+      // STRIDE-SCALED PROBES (parity): a fixed 16-proto probe caps wall-
+      // following at 1/4 sq/s. Extend along the heading up to the official
+      // stride (walk 160 / run 320) when the SEGMENT validates clean via
+      // trace (arrived===true) — safe by construction, 10x faster along
+      // clear slides. Falls back to the 16-probe on any block.
+      let fanX = myProtoX + Math.cos(finalAngle) * MOVEUNITS_PROTO;
+      let fanY = myProtoY + Math.sin(finalAngle) * MOVEUNITS_PROTO;
+      const _fgeo = this.session?.world?.geometry;
+      if (_fgeo?.traceFineMoveClient) {
+        const _fx = myProtoX + Math.cos(finalAngle) * strideNow;
+        const _fy = myProtoY + Math.sin(finalAngle) * strideNow;
+        try {
+          const _tr = _fgeo.traceFineMoveClient(
+            protocolToClient(myProtoX), protocolToClient(myProtoY),
+            protocolToClient(_fx), protocolToClient(_fy),
+            { slide: false, playerRadius: 32 });
+          if (_tr && _tr.blocked !== true) { fanX = _fx; fanY = _fy; }
+        } catch {}
+      }
       const speed = 18; // walking speed
       // Cheat-clean: gate fan probes to the 1/s send law like every move.
       // Ungated this fires every tick (10/s) and trips speedhack detection.
