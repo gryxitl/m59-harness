@@ -138,6 +138,17 @@ export function normMobName(s) {
   return String(s ?? '').toLowerCase().replace(/[^a-z]/g, '');
 }
 
+// Mob-identity key: token SET, sorted and joined. Game names have spaces
+// ('baby spider'), compendium keys are CamelCase ('SpiderBaby') — plain
+// normalization matches neither direction for multi-word names, which blinded
+// the decider to every spider, orc and skeleton. Token sets match regardless
+// of separation or order ('baby spider' == 'SpiderBaby'), while still
+// distinguishing 'spider' from 'baby spider' (different sets).
+export function mobNameKey(s) {
+  const spaced = String(s ?? '').replace(/([a-z])([A-Z])/g, '$1 $2');
+  return spaced.toLowerCase().split(/[^a-z]+/).filter(Boolean).sort().join(' ');
+}
+
 // ATTACKER-SWITCH DECISION (pure — unit tested). Returns the mob to switch to,
 // or null to hold the sticky target. The ONLY sanctioned switch: we have not
 // yet reached the current target (still traveling to it), a different in-band
@@ -155,7 +166,7 @@ export function findAttackerSwitch({ meCol, meRow, objects, currentId, blacklist
     if (o.col == null || o.row == null) continue;
     const oId = o.id ?? o.obj_id;
     if (oId != null && (oId === currentId || blacklist?.has(oId))) continue;
-    const objName = normMobName(nameOf ? nameOf(o) : (o.name ?? ''));
+    const objName = mobNameKey(nameOf ? nameOf(o) : (o.name ?? ''));
     const isMob = (o.is_player && o.can_attack) || (mobNames?.size > 0 && mobNames.has(objName));
     if (!isMob) continue;
     const d2 = (o.col - meCol) ** 2 + (o.row - meRow) ** 2;
@@ -896,7 +907,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           let cNames = new Set();
           try {
             const spawns = loadSpawns(SPAWNS_FILE);
-            if (spawns?.byMonster) for (const name of Object.keys(spawns.byMonster)) cNames.add(normMobName(name));
+            if (spawns?.byMonster) for (const name of Object.keys(spawns.byMonster)) cNames.add(mobNameKey(name));
           } catch { /* compendium unavailable */ }
           const attacker = findAttackerSwitch({
             meCol: me.col, meRow: me.row, objects,
@@ -937,7 +948,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             const spawns = loadSpawns(SPAWNS_FILE);
             if (spawns?.byMonster) {
               for (const name of Object.keys(spawns.byMonster)) {
-                creatureNames.add(normMobName(name));
+                creatureNames.add(mobNameKey(name));
               }
             }
           } catch { /* compendium unavailable */ }
@@ -978,8 +989,8 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             // Skip blacklisted (unreachable) mobs.
             const oId = o.id ?? o.obj_id;
             if (oId != null && _blacklist.has(oId)) continue;
-            // Resolve the name from nameRsc (normalized: 'giant rat' == 'GiantRat').
-            const objName = normMobName(client.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
+            // Resolve the name from nameRsc (token-set key: 'baby spider' == 'SpiderBaby').
+            const objName = mobNameKey(client.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
             // A mob is either: flagged as a player with
             // can_attack (enriched object), OR its name
             // exactly matches a compendium creature.
