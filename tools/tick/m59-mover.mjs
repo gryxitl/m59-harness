@@ -334,7 +334,7 @@ export class Mover {
     // or holding, which made multi-minute stalls undiagnosable. One line.
     if (Date.now() - (this._hbAt ?? 0) > 60000) {
       this._hbAt = Date.now();
-      try { console.error(`[mover-hb] dest=${this.dest ? this.dest.col + ',' + this.dest.row : 'null'} path=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} fan=${this._fanIndex} stuck=${this.stuckTicks} sends=${this._sendCount ?? 0} ownPhys=${this.session?.policy?.ownPhysics === true} gateAge=${Date.now() - (this._lastReportAt ?? 0)}`); } catch {}
+      try { console.error(`[mover-hb] dest=${this.dest ? this.dest.col + ',' + this.dest.row : 'null'} path=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} fan=${this._fanIndex} stuck=${this.stuckTicks} sends=${this._sendCount ?? 0} ownPhys=${this.session?.policy?.ownPhysics === true} gateAge=${Date.now() - (this._lastReportAt ?? 0)} cli=${this.session?.client ? this.session.client.state : 'noclient'} pacer=${this.session?.pacer ? 'Y' : 'n'}`); } catch {}
     }
     const s = this.session;
     const c = s?.client;
@@ -647,10 +647,6 @@ export class Mover {
       // Cheat-clean: gate fan probes to the 1/s send law like every move.
       // Ungated this fires every tick (10/s) and trips speedhack detection.
       const fServerPX = curCol * KOD_FINENESS + HALF, fServerPY = curRow * KOD_FINENESS + HALF;
-      if (Date.now() - (this._fanDbgAt ?? 0) > 15000) {
-        this._fanDbgAt = Date.now();
-        try { console.error(`[movedbg] t4 fan gate=${this._movementGateOk(fanX, fanY, myProtoX, myProtoY, fServerPX, fServerPY)} fan=(${Math.round(fanX)},${Math.round(fanY)}) me=(${Math.round(myProtoX)},${Math.round(myProtoY)}) srv=(${fServerPX},${fServerPY}) aim=(${Math.round(aimX)},${Math.round(aimY)}) dest=${this.destProto ? Math.round(this.destProto.x) + ',' + Math.round(this.destProto.y) : 'null'}`); } catch {}
-      }
       if (this._movementGateOk(fanX, fanY, myProtoX, myProtoY, fServerPX, fServerPY)) {
         Promise.resolve(s.pacer.submit('move', () => c.moveTo(Math.round(fanX), Math.round(fanY), speed, c.room?.id ?? 0), 100)).catch(() => {});
         this._recordSend(aimX, aimY, myProtoX, myProtoY);

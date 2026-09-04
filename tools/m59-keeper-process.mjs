@@ -147,11 +147,6 @@ async function join() {
         const t0 = Date.now();
         if (router.dest != null) {
           const r = intend('travel', frame, act, { client: session.client, session, ws: {} });
-          // TEMP DEBUG (t4 stall): travel result each 10s.
-          if (Date.now() - (session._travDbgAt ?? 0) > 10000) {
-            session._travDbgAt = Date.now();
-            try { console.error(`[travdbg] dest=${router.dest} sent=${r.sent} what=${r.what ?? '-'} why=${r.why ?? '-'}`); } catch {}
-          }
           if (r.sent) { decideTimes.push(Date.now() - t0); _maybeLogMetrics(); return; }
         }
         // ISOLATION SWITCH (mover testing): travel-only, no goal ladder.
@@ -1203,6 +1198,29 @@ const server = createServer(async (req, res) => {
           case 'escape_pocket': {
             const { escapePocket } = await import('./m59-act/escape-pocket.mjs');
             result = await escapePocket(session.client, session);
+            break;
+          }
+          case 'moverstate': { // live mover internals (diagnostics)
+            const mv = session?._mover;
+            const me = session?.client?.self;
+            let gateProbe = null;
+            try {
+              gateProbe = mv ? mv._movementGateOk(100, 100, 0, 0, 0, 0) : 'nomover';
+            } catch (e) { gateProbe = 'throw:' + e.message; }
+            result = {
+              hasMover: !!mv, hasRouter: !!session?._router,
+              sameMover: session?._mover === session?._router?.mover,
+              dest: mv?.dest ?? null, pathLen: mv?.path?.length ?? null,
+              pathIdx: mv?.pathIdx ?? null, fanIdx: mv?.fanIndex ?? null,
+              fanTgt: mv?._fanTarget != null, blink: mv?._blinkPending ?? null,
+              sitting: mv?.sitting ?? null, stuck: mv?.stuckTicks ?? null,
+              sends: mv?._sendCount ?? null,
+              lastRepAge: mv ? Date.now() - (mv._lastReportAt ?? 0) : null,
+              reportIntervalMs: mv?.reportIntervalMs ?? null,
+              gateProbe, me: me ? { col: me.col, row: me.row, x: me.x, y: me.y } : null,
+              routerDest: session?._router?.dest ?? null,
+              ownPhysics: session?.policy?.ownPhysics ?? null,
+            };
             break;
           }
           default:
