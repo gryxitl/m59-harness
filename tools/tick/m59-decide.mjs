@@ -1538,11 +1538,12 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             // as combat may own it; driving the tick is still correct, but
             // don't claim its destination in the log).
             if (mv?.active && me) {
+              const preDest = mv.dest ? { col: mv.dest.col, row: mv.dest.row } : null;
               const mr = mv.tick(pos);
-              const ours = _patrolTarget && mv.dest?.col === _patrolTarget.col && mv.dest?.row === _patrolTarget.row;
+              const ours = _patrolTarget && preDest?.col === _patrolTarget.col && preDest?.row === _patrolTarget.row;
               onDecision?.({ ticks, goal: 'hunt', action: 'travel',
                 what: ours ? `patrolling hunt room (mover ${mr.state} -> ${_patrolTarget?.col},${_patrolTarget?.row})`
-                            : `keeping mover ticking (dest ${mv.dest?.col},${mv.dest?.row} owned elsewhere)`,
+                            : `keeping mover ticking (dest ${preDest?.col},${preDest?.row} owned elsewhere)`,
                 sent: mr.state === 'moving' || mr.state === 'raw-move' || mr.state === 'crossing' });
               return;
             }
