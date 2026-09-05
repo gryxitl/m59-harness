@@ -649,15 +649,17 @@ export class Router {
         const net = Math.max(Math.abs(me.col - anchor.col), Math.abs(me.row - anchor.row));
         if (net < PROGRESS_MIN_NET) {
           this._oscillations++;
-          const aim = this.leg?.standOn;
-          if (aim && this.leg?.next != null)
-            this._badStandOn.add(`${this.leg.next}:${aim.col},${aim.row}`);
           const osc = this._oscillations;
-          this.leg = null;
-          this.mark = null;
-          this.subWp = null;
+          // PRESS, DON'T ALTERNATE. Condemning the stand_on and re-planning
+          // to an alternate approach ping-pongs forever: each leg's movement
+          // resets this counter, so MAX is never reached. Keep pressing the
+          // same stand_on (the mover's raw-door-push is built for doors);
+          // only at MAX do we condemn (the next route then avoids it) + drop.
           P.length = 0;
           if (osc >= OSCILLATION_MAX) {
+            const aim = this.leg?.standOn;
+            if (aim && this.leg?.next != null)
+              this._badStandOn.add(`${this.leg.next}:${aim.col},${aim.row}`);
             // This room's exits are not working. Drop the whole route; the caller's
             // goal (hunt) will re-plan — and its own room-escape escalation takes over.
             const wasDest = this.dest;
@@ -667,7 +669,7 @@ export class Router {
                                               `x${osc}; route to ${wasDest} dropped` });
           }
           return this._say('oscillating', { why: `no net progress for ${Math.round(PROGRESS_WINDOW_MS/1000)}s ` +
-                                            `(x${osc}); condemning (${aim?.col ?? '?'},${aim?.row ?? '?'}) and re-planning` });
+                                            `(x${osc}); pressing the same approach` });
         }
         // Real net movement happened within the window: not oscillating. A single
         // window of progress forgives earlier verdicts — the counter is for CONSECUTIVE

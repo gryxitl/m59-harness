@@ -367,6 +367,25 @@ console.log('\nmulti-leg: a fine-model island standOn is decomposed into reachab
   }
 }
 
+console.log('\noscillation breaker: presses the same approach, condemns only at MAX');
+{
+  const { router, act, frame, advance } = rig({ col: 5, row: 5 });
+  router.to(20);
+  router.tick(frame(5, 5), act);
+  // One dead window: bounce with zero net displacement.
+  let firstVerdict = null;
+  for (let i = 0; i < 10; i++) {
+    advance(3000);
+    const pos = i % 2 === 0 ? [6, 5] : [5, 5];
+    const r = router.tick(frame(pos[0], pos[1]), act);
+    if (r.state === 'oscillating' && !firstVerdict) firstVerdict = r;
+    if (firstVerdict) break;
+  }
+  ok('first dead window earns a verdict', !!firstVerdict, firstVerdict?.why ?? 'none');
+  ok('the leg is kept (pressing, not alternating)', router.leg != null, 'leg=' + (router.leg ? 'kept' : 'null'));
+  ok('nothing condemned yet', router._badStandOn.size === 0, 'size=' + router._badStandOn.size);
+}
+
 console.log('\noscillation breaker: a bouncing character drops the route, not just the leg');
 {
   // A character that alternates between two squares forever is "moving" — every
