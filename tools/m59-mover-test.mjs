@@ -797,5 +797,17 @@ console.log('\nEXACT-POINT VOID (square floored, body point leafless)');
   void sent;
 }
 
+console.log('\norderCandidates: straight while moving, taboo only when stuck');
+{
+  const { orderCandidates } = await import('./tick/m59-mover.mjs');
+  const cands = [[2, 5], [3, 5], [4, 5]];  // goal-ward first
+  let o = orderCandidates(cands, ['2,5'], 0);
+  ok('moving: keeps goal order (no dither)', o[0][0] === 2 && o[1][0] === 3, JSON.stringify(o));
+  o = orderCandidates(cands, ['2,5'], 3);
+  ok('stuck: unvisited first', o[0][0] === 3 && o[2][0] === 2, JSON.stringify(o));
+  o = orderCandidates(cands, [], 5);
+  ok('stuck, empty taboo: unchanged', o.length === 3 && o[0][0] === 2, JSON.stringify(o));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

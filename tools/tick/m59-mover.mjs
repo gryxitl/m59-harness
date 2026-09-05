@@ -33,6 +33,17 @@
 import { protocolToClient, clientToProtocol, KOD_FINENESS, PLAYER_RADIUS } from '../m59-roo.mjs';
 import { isGrounded, segHeightOk } from './m59-ground.mjs';
 import '../m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
+// CANDIDATE ORDERING (pure, unit tested). Loop avoidance (unvisited
+// squares first) engages ONLY while stuck: applied every tick it turns
+// straight walks into a drunkard's dither. While the server advances,
+// walk straight at the goal; dead ends backtrack once static.
+export function orderCandidates(candidates, recentSteps, stuckTicks) {
+  const taboo = stuckTicks > 0 ? (recentSteps ?? []) : [];
+  return taboo.length
+    ? [...candidates.filter(([cc, rr]) => !taboo.includes(cc + ',' + rr)),
+       ...candidates.filter(([cc, rr]) => taboo.includes(cc + ',' + rr))]
+    : candidates;
+}
 
 // 256 client units = 16 protocol units per 100ms tick (walking).
 // Running is 2 * MOVEUNITS = 32 protocol units.
@@ -1214,12 +1225,11 @@ export class Mover {
       }
       let stepCol = null, stepRow = null;
       // Loop avoidance: try unvisited squares first (recently-sent last).
-      // Never exclude (dead ends must backtrack).
-      const taboo0 = this._recentSteps ?? [];
-      const ordered0 = taboo0.length
-        ? [...candidates.filter(([cc, rr]) => !taboo0.includes(cc + ',' + rr)),
-           ...candidates.filter(([cc, rr]) => taboo0.includes(cc + ',' + rr))]
-        : candidates;
+      // Never exclude (dead ends must backtrack). Engaged ONLY while stuck:
+      // applied every tick it turns straight walks into a drunkard's dither
+      // (each step avoids the last, so open ground random-walks at ~0 net).
+      // While the server position advances, walk straight at the goal.
+      const ordered0 = orderCandidates(candidates, this._recentSteps, this.stuckTicks);
       for (const [nc, nr] of ordered0) {
         const f = geo?.fineWalkable ? geo.fineWalkable(nr, nc) : undefined;
         const c = geo?.walkable ? geo.walkable(nr, nc) : undefined;
@@ -1326,12 +1336,9 @@ export class Mover {
     }
     // Find the first candidate that is valid. Unvisited squares first
     // (loop avoidance — see above); never exclude, dead ends backtrack.
+    // Same stuck-gating as the waypoint branch: straight while moving.
     let stepCol = null, stepRow = null;
-    const taboo1 = this._recentSteps ?? [];
-    const ordered1 = taboo1.length
-      ? [...candidates.filter(([cc, rr]) => !taboo1.includes(cc + ',' + rr)),
-         ...candidates.filter(([cc, rr]) => taboo1.includes(cc + ',' + rr))]
-      : candidates;
+    const ordered1 = orderCandidates(candidates, this._recentSteps, this.stuckTicks);
     for (const [nc, nr] of ordered1) {
       // The FINE grid is the authoritative collision model. When the two
       // grids disagree (fine says walkable, coarse says not), trust the
