@@ -40,6 +40,30 @@ export function isEmbedded(geo, protoX, protoY) {
     return undefined;
   }
 }
+// TRANSIT BAN (square level). Walls, out-of-bounds, and point-less nooks
+// are banned as aims/steps; thickets (standable-false WITH a stand point)
+// PASS — the server walks them daily and detouring around 65% of a forest
+// is the observed 556 slowness. When the geometry has no standPoint
+// function the distinction is unavailable and this falls back to the legacy
+// strictness (isGrounded), so old fixtures keep their behavior.
+export function transitBanned(geo, row, col) {
+  if (!geo) return undefined;
+  try {
+    if (geo.inBounds && geo.inBounds(row, col) === false) return true;
+    if (geo.fineWalkable) {
+      try { if (geo.fineWalkable(row, col) === false) return true; } catch {}
+    }
+    if (typeof geo.standPoint === 'function') {
+      try { return geo.standPoint(row, col) == null; } catch {}
+    }
+    if (typeof geo.standable === 'function') {
+      try { if (geo.standable(row, col) === false) return true; } catch {}
+    }
+    return false;
+  } catch {
+    return undefined;
+  }
+}
 export function isGrounded(geo, row, col) {
   if (!geo) return undefined;
   try {

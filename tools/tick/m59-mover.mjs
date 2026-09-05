@@ -31,7 +31,7 @@
 // the fine model says "wall" but the server says "floor".
 
 import { protocolToClient, clientToProtocol, KOD_FINENESS, PLAYER_RADIUS } from '../m59-roo.mjs';
-import { isGrounded, isEmbedded, nearestGrounded, segHeightOk } from './m59-ground.mjs';
+import { isGrounded, isEmbedded, nearestGrounded, segHeightOk, transitBanned } from './m59-ground.mjs';
 import '../m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
 // CANDIDATE ORDERING (pure, unit tested). Loop avoidance (unvisited
 // squares first) engages ONLY while stuck: applied every tick it turns
@@ -593,9 +593,13 @@ export class Mover {
     // A dumb server can accept a declared position outside the BSP, so a void
     // must be detected locally. fineWalkable only tests the cell centre against
     // wall segments and can be true in open void; standable tests the BSP for
-    // occupiable floor anywhere in the square.
+    // occupiable floor anywhere in the square. A standable-false square WITH a
+    // stand point is a thicket (transited daily, no fan); without one it is a
+    // hole or wall-pocket (escape fan, blink-first when leafless-open).
     const startVoidByFloor = startGeo?.collisionReady === true
-      && startGeo?.standable?.(startRow, startCol) === false;
+      && startGeo?.standable?.(startRow, startCol) === false
+      && (typeof startGeo?.standPoint !== 'function'
+          || startGeo.standPoint(startRow, startCol) == null);
     const startHasNoFloor = startFine === false || startVoidByFloor;
     // EXACT-POINT floor: the square can hold floor elsewhere (standable true)
     // while the body's own point sits in a BSP coverage gap (no leaf at all).
@@ -904,7 +908,7 @@ export class Mover {
         // Skip headings into floorless ground OR up unclimbable faces. The
         // stride extension above already refused wall/height-blocked segments;
         // this covers the 16-unit base probe the extension falls back to.
-        if (!startIsVoid && !sqIsExit && (isGrounded(_fgeo, sqR, sqC) === false
+        if (!startIsVoid && !sqIsExit && (transitBanned(_fgeo, sqR, sqC) === true
             || segHeightOk(_fgeo, myProtoX, myProtoY, fanX, fanY) === false)) {
           this._fanIndex = idx + 1;
           if (this._fanIndex >= 9) {
@@ -1140,7 +1144,7 @@ export class Mover {
         const destSqC = this.destProto ? Math.floor(this.destProto.x / KOD_FINENESS) : null;
         const destSqR = this.destProto ? Math.floor(this.destProto.y / KOD_FINENESS) : null;
         const aimIsExit = this._destIsStandOn === true && aimSqC === destSqC && aimSqR === destSqR;
-        if (!startIsVoid && !aimIsExit && isGrounded(this.session?.world?.geometry, aimSqR, aimSqC) === false) {
+        if (!startIsVoid && !aimIsExit && transitBanned(this.session?.world?.geometry, aimSqR, aimSqC) === true) {
           this.stuckTicks++;
           return { state: 'stuck', why: 'aim has no floor' };
         }
@@ -1194,8 +1198,7 @@ export class Mover {
       const standOnNear = this._destIsStandOn && distToDest0 < KOD_FINENESS * 4;
       // NEVER PUSH INTO A VOID: a floorless non-exit destination is a bad
       // target, not a door alcove. Stand_on exits are exempt by design.
-      const destGround = isGrounded(geoRef, destRow, destCol);
-      const destGroundOk = this._destIsStandOn === true || destGround !== false;
+      const destGroundOk = this._destIsStandOn === true || transitBanned(geoRef, destRow, destCol) !== true;
       if (distToDest0 < KOD_FINENESS * 4 && (destFineOk === false || noPathToNearDest || standOnNear) && destGroundOk) {
         const rx = this.destProto.x - myProtoX, ry = this.destProto.y - myProtoY;
         const rd = Math.hypot(rx, ry) || 1;
@@ -1268,7 +1271,7 @@ export class Mover {
           const sy = Math.round(srvY + (ndy / nd) * slen);
           const sqC = Math.floor(sx / KOD_FINENESS), sqR = Math.floor(sy / KOD_FINENESS);
           const sqIsExit = this._destIsStandOn === true && sqC === destCol && sqR === destRow;
-          const sqGroundOk = sqIsExit || isGrounded(geo, sqR, sqC) !== false;
+          const sqGroundOk = sqIsExit || transitBanned(geo, sqR, sqC) !== true;
           let segOk = false;
           if (sqGroundOk && geo?.traceFineMoveClient) {
             try {
@@ -1324,7 +1327,7 @@ export class Mover {
           const destSqC1 = this.destProto ? Math.floor(this.destProto.x / KOD_FINENESS) : null;
           const destSqR1 = this.destProto ? Math.floor(this.destProto.y / KOD_FINENESS) : null;
           const isExitDest1 = this._destIsStandOn === true && nc === destSqC1 && nr === destSqR1;
-          if (!isExitDest1 && isGrounded(geo, nr, nc) === false) continue;
+          if (!isExitDest1 && transitBanned(geo, nr, nc) === true) continue;
         }
         stepCol = nc; stepRow = nr;
         break;
@@ -1470,7 +1473,7 @@ export class Mover {
         const destSqC0 = this.destProto ? Math.floor(this.destProto.x / KOD_FINENESS) : null;
         const destSqR0 = this.destProto ? Math.floor(this.destProto.y / KOD_FINENESS) : null;
         const isExitDest0 = this._destIsStandOn === true && nc === destSqC0 && nr === destSqR0;
-        if (!isExitDest0 && isGrounded(geo, nr, nc) === false) continue;
+        if (!isExitDest0 && transitBanned(geo, nr, nc) === true) continue;
       }
       if (f === true) { stepCol = nc; stepRow = nr; break; }  // fine says ok
       if (f === undefined && s === false) continue;   // no fine data, coarse blocked

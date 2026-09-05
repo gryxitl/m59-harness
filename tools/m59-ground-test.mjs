@@ -73,5 +73,23 @@ console.log('\nisEmbedded: sub-body-width cracks are not walkable');
   ok(isEmbedded({}, 100, 100) === undefined, 'no trace model is unknown');
 }
 
+console.log('\ntransitBanned: thickets pass, holes and walls refuse');
+{
+  const { transitBanned } = await import('./tick/m59-ground.mjs');
+  const mk = (stand, point, fine) => ({
+    inBounds: () => true,
+    fineWalkable: () => fine,
+    standable: () => stand,
+    standPoint: () => point,
+  });
+  ok('thicket (standable false, point) passes', transitBanned(mk(false, { x: 1, y: 2 }, true), 1, 1) === false, 'thicket');
+  ok('hole (standable false, no point) banned', transitBanned(mk(false, null, true), 1, 1) === true, 'hole');
+  ok('wall (fine false) banned even with point', transitBanned(mk(true, { x: 1 }, false), 1, 1) === true, 'wall');
+  ok('ground passes', transitBanned(mk(true, { x: 1 }, true), 1, 1) === false, 'ground');
+  ok('oob banned', transitBanned({ inBounds: () => false }, 1, 1) === true, 'oob');
+  const legacy = { inBounds: () => true, standable: () => false };
+  ok('no standPoint fn: legacy strictness', transitBanned(legacy, 1, 1) === true, 'legacy');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
