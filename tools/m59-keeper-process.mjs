@@ -949,8 +949,9 @@ const server = createServer(async (req, res) => {
             // the tick loop's travel/hunt goal drives the hops one per tick.
             const router = session._router;
             if (router) {
-              router.to(Number(dest));
-              result = { sent: true, what: `travel to room ${dest} (router set, tick-driven)` };
+              const ok = router.to(Number(dest));
+              result = ok ? { sent: true, what: `travel to room ${dest} (router set, tick-driven)` }
+                          : { sent: false, what: `travel refused: ${router._refusedHazard?.why ?? 'invalid destination'}` };
             } else {
               // No router (standalone session): fall back to the blocking call.
               result = await session.travel(dest, { maxHops });

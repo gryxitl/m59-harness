@@ -33,7 +33,7 @@
 // Walking from A to B does not put you where the return trip starts, and the edge back
 // to A can be most of a room away from where you arrive. So the leg is recomputed from
 // scratch on every room change rather than reversed, inverted, or remembered.
-import { loadMap, findPath } from '../m59-map.mjs';
+import { loadMap, findPath, hazardReason } from '../m59-map.mjs';
 import { objIdToNum } from '../m59-hunt-room.mjs';
 import { Mover } from './m59-mover.mjs';
 import { tickEdgeExits } from './m59-exits.mjs';
@@ -151,6 +151,15 @@ export class Router {
   to(roomNum) {
     const n = Number(roomNum);
     if (!Number.isFinite(n)) return false;
+    // NEVER-ENTER CHOKE POINT: no caller (hunt, flee, stuck-escape, travel
+    // command) may park the router on a room that kills by arithmetic. The
+    // route planner refuses these too, but refusing here stops the
+    // destination from latching while every goal yields to it forever.
+    const hazard = hazardReason(n);
+    if (hazard) {
+      this._refusedHazard = { dest: n, why: hazard, at: Date.now() };
+      return false;
+    }
     if (this.dest !== n) {
       this.dest = n; this.leg = null; this.mark = null; this.subWp = null; this._subWpReplans = 0;
       this._progress = []; this._oscillations = 0; this._badStandOn.clear();

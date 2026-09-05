@@ -416,5 +416,14 @@ console.log('\noscillation breaker: real progress forgives earlier verdicts');
      `sawVerdict=${sawVerdict} sawMovingAfter=${sawMovingAfter}`);
 }
 
+console.log('\nRouter.to refuses never-enter rooms');
+{
+  const router = new Router({ session: {}, now: () => 0 });
+  ok('hazard dest refused', router.to(555) === false, 'to(555)=' + router.to(555));
+  ok('dest not latched', router.dest !== 555, 'dest=' + router.dest);
+  ok('refusal recorded', !!router._refusedHazard?.why, router._refusedHazard?.why ?? 'none');
+  ok('normal dest accepted', router.to(535) === true && router.dest === 535, 'dest=' + router.dest);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
