@@ -1234,6 +1234,7 @@ const server = createServer(async (req, res) => {
               fanTgt: mv?._fanTarget != null, blink: mv?._blinkPending ?? null,
               sitting: mv?.sitting ?? null, stuck: mv?.stuckTicks ?? null,
               sends: mv?._sendCount ?? null,
+              progWin: mv?._progWin?.length ?? null,
               lastSent: mv ? { x: mv._lastReportX ?? null, y: mv._lastReportY ?? null } : null,
               lastRepAge: mv ? Date.now() - (mv._lastReportAt ?? 0) : null,
               reportIntervalMs: mv?.reportIntervalMs ?? null,
