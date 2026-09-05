@@ -835,10 +835,12 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // Expose room number and max HP for the hunt goal's Raza check.
     ws._roomNum = session?.world?.room?.num ?? client?.room?.num ?? null;
     // UNDERWORLD GROUND TRUTH (tick-owned): the shared in_underworld symbol
-    // is name-rsc/id based and flaps (rest preempts escape for hours). Room
-    // NUMBER 1 is The Underworld, stable — OR it in, never clear from here
-    // (leaving the room clears it via the shared symbol going false).
-    if (ws._roomNum === 1) ws.in_underworld = true;
+    // is name-rsc/id based and flaps across room changes (stale name reads
+    // as Underworld in the inn, so escape and travel yank the destination
+    // opposite ways every few ticks — self-inflicted rubber-banding). Room
+    // NUMBER 1 is The Underworld and is the stable identity: authoritative
+    // both ways.
+    if (ws._roomNum != null) ws.in_underworld = ws._roomNum === 1;
     ws._maxHp = client?.vitals?.()?.health?.max ?? null;
     // Expose whether the character is moving (the router has a destination).
     // The vigor_low goal yields when the character is moving — resting would
