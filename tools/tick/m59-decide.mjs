@@ -158,6 +158,28 @@ export function spiderProhibited(name, policy) {
   return key.split(' ').includes('spider') && key !== 'baby spider';
 }
 
+// DANGER-CLOSE DECISION (pure — unit tested). Returns the threatening mob or
+// null: nearest hostile in melee range that is EITHER a prohibited spider
+// (never fightable, but very much able to eat us) or known over the threat
+// ceiling. Unknown non-spiders default open (consistent with target_in_band).
+export function findDangerClose({ meCol, meRow, objects, ceiling, allowSpiders, mobNames, nameOf }) {
+  const meleeD2 = 5;
+  let best = null, bestD2 = Infinity;
+  for (const o of (objects?.values?.() ?? [])) {
+    if (o.is_self) continue;
+    if (o.col == null || o.row == null) continue;
+    const objName = mobNameKey(nameOf ? nameOf(o) : (o.name ?? ''));
+    const isMob = (o.is_player && o.can_attack) || (mobNames?.size > 0 && mobNames.has(objName));
+    if (!isMob) continue;
+    const d2 = (o.col - meCol) ** 2 + (o.row - meRow) ** 2;
+    if (d2 > meleeD2) continue;
+    const aLevel = o.max_health ?? o.health ?? null;
+    const spider = objName.split(' ').includes('spider') && objName !== 'baby spider' && !allowSpiders;
+    if (!spider && (aLevel == null || aLevel <= ceiling)) continue;
+    if (d2 < bestD2) { bestD2 = d2; best = o; }
+  }
+  return best;
+}
 // ATTACKER-SWITCH DECISION (pure — unit tested). Returns the mob to switch to,
 // or null to hold the sticky target. The ONLY sanctioned switch: we have not
 // yet reached the current target (still traveling to it), a different in-band
@@ -165,8 +187,7 @@ export function spiderProhibited(name, policy) {
 // One focused fight is safer than collecting 2-3. Never abandon a joined
 // fight (targetDist2 <= 4), never switch while hurt, never collect out-of-band.
 export function findAttackerSwitch({ meCol, meRow, objects, currentId, blacklist,
-                                     ceiling, hpPct, targetDist2, mobNames, nameOf }) {
-  if (targetDist2 <= 4) return null;   // already joined: finish it
+                                     ceiling, hpPct, targetDist2, mobNames, nameOf }) {  if (targetDist2 <= 4) return null;   // already joined: finish it
   if (hpPct < 50) return null;         // too hurt to collect a second fight
   const meleeD2 = 5;                   // MELEE_REACH=2, squared=4, small margin
   let attacker = null, attackerD2 = Infinity;
@@ -1175,9 +1196,40 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           const d2 = (target.col - me.col) ** 2 + (target.row - me.row) ** 2;
           ws.in_reach = d2 <= 4;
           ws.has_target = true;
-          ws.target_in_band = true;  // DEBUG: force in-band to test
+          const tLevel = target.max_health ?? target.health ?? null;
+          ws.target_in_band = tLevel == null ? true : tLevel <= (ws._threatCeiling ?? Infinity);
         }
       }
+    }
+
+    // DANGER-CLOSE: a hostile in melee range that must make us leave, even
+    // though it is NOT our target (spiders are unselectable by policy, and an
+    // out-of-band mob near us is danger whether or not we chose it). Without
+    // this, an unselectable attacker chews us while every has_target-gated
+    // goal (fight, flee) sees nothing. Nearest dangerous mob or null.
+    ws._dangerClose = null;
+    const dObjs = client?.room?.objects;
+    const dMe = session._pose?.current?.() ?? client?.self;
+    if (dObjs instanceof Map && dMe?.col != null) {
+      try {
+        const maxHp = client.vitals?.()?.health?.max ?? 20;
+        const lvl = maxHp;
+        const isArmed = ws.armed === true;
+        const fullBand = policy?.threatBand ?? Math.floor(lvl / 2);
+        const ceiling = lvl + (isArmed ? fullBand : Math.floor(fullBand / 2));
+        let allNames = new Set();
+        try {
+          const spawns = loadSpawns(SPAWNS_FILE);
+          if (spawns?.byMonster) for (const name of Object.keys(spawns.byMonster)) allNames.add(mobNameKey(name));
+        } catch { /* compendium unavailable */ }
+        const danger = findDangerClose({
+          meCol: dMe.col, meRow: dMe.row, objects: dObjs, ceiling,
+          allowSpiders: (session?.policy ?? policy)?.huntSpiders === true,
+          mobNames: allNames,
+          nameOf: (o) => client.rsc?.get?.(o.nameRsc) ?? o.name ?? '',
+        });
+        if (danger) ws._dangerClose = { id: danger.id ?? danger.obj_id ?? null, col: danger.col, row: danger.row };
+      } catch { ws._dangerClose = null; }
     }
 
     // 1b. POSITION CONFIRMATION. The server does not push our position.
@@ -1795,7 +1847,7 @@ export const DEFAULT_GOALS = [
   // only flee when the out-of-band threat is in reach (actually a danger). An out-of-band
   // target that is NOT in reach is handled by the hunt goal (route to a better target or
   // approach it), not by fleeing.
-  { goal: 'flee_danger', when: ws => ws.has_target === true && ws.target_in_band === false && ws.in_reach === true },
+  { goal: 'flee_danger', when: ws => (ws.has_target === true && ws.target_in_band === false && ws.in_reach === true) || ws._dangerClose != null },
   // FLEE when hurt AND a target is actively in reach
   // (attacking you). If the target is in the room but
   // not in reach, fight it instead of fleeing.

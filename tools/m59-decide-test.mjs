@@ -168,7 +168,7 @@ console.log('\nmob names normalize across game and compendium');
 
 console.log('\nattacker-switch: hold unless traveling, healthy, and the attacker is in band');
 {
-  const { findAttackerSwitch, normMobName, mobNameKey, spiderProhibited } = await import('./tick/m59-decide.mjs');  const mobNames = new Set(['giant rat', 'mummy'].map(mobNameKey));
+  const { findAttackerSwitch, normMobName, mobNameKey, spiderProhibited, findDangerClose } = await import('./tick/m59-decide.mjs');  const mobNames = new Set(['giant rat', 'mummy'].map(mobNameKey));
   const mkObjs = (list) => { const m = new Map(); list.forEach((o, i) => m.set(o.id ?? 100 + i, o)); return m; };
   const base = { meCol: 10, meRow: 10, currentId: 1, blacklist: new Set(), ceiling: 30, mobNames, nameOf: (o) => o.name ?? '' };
   const rat = (id, col, row, extra = {}) => ({ id, col, row, name: 'giant rat', max_health: 30, ...extra });
@@ -217,6 +217,29 @@ console.log('\nequip condemns silent-broken weapons after 3 gated attempts');
   ok('fourth attempt condemns instead of retrying', r4.sent === false && /condemned/.test(r4.why ?? ''), JSON.stringify(r4));
   const r5 = fire();
   ok('condemned id routes to no-weapon refusal (conjure/buy next)', r5.sent === false && /no weapon/.test(r5.why ?? ''), JSON.stringify(r5));
+}
+
+console.log('\ndanger-close: spiders and over-ceiling mobs in melee raise the alarm');
+{
+  const { findDangerClose, mobNameKey } = await import('./tick/m59-decide.mjs');
+  const mkObjs = (list) => { const m = new Map(); list.forEach((o, i) => m.set(o.id ?? 100 + i, o)); return m; };
+  const mobNames = new Set(['giant rat', 'spider', 'mummy'].map(mobNameKey));
+  const base = { meCol: 10, meRow: 10, ceiling: 30, allowSpiders: false, mobNames, nameOf: (o) => o.name ?? '' };
+  // Prohibited spider in melee -> danger (even though unselectable as a target).
+  let r = findDangerClose({ ...base, objects: mkObjs([{ id: 1, col: 11, row: 10, name: 'spider' }]) });
+  ok('spider in melee raises danger', r && r.id === 1, JSON.stringify(r?.id));
+  // Baby spider in melee -> not danger (fightable).
+  r = findDangerClose({ ...base, objects: mkObjs([{ id: 2, col: 11, row: 10, name: 'baby spider', max_health: 25 }]) });
+  ok('baby spider is not danger', r === null, JSON.stringify(r?.id));
+  // Known over-ceiling mob in melee -> danger.
+  r = findDangerClose({ ...base, objects: mkObjs([{ id: 3, col: 10, row: 11, name: 'giant rat', max_health: 200 }]) });
+  ok('over-ceiling mob in melee raises danger', r && r.id === 3, JSON.stringify(r?.id));
+  // In-band mob in melee -> not danger (fight it normally).
+  r = findDangerClose({ ...base, objects: mkObjs([{ id: 4, col: 10, row: 11, name: 'giant rat', max_health: 30 }]) });
+  ok('in-band mob is not danger', r === null, JSON.stringify(r?.id));
+  // Spider far away -> not danger.
+  r = findDangerClose({ ...base, objects: mkObjs([{ id: 5, col: 20, row: 20, name: 'spider' }]) });
+  ok('distant spider is not danger', r === null, JSON.stringify(r?.id));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
