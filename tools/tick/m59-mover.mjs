@@ -54,6 +54,17 @@ export function orderCandidates(candidates, recentSteps, stuckTicks, opts = {}) 
        ...list.filter(([cc, rr]) => taboo.includes(cc + ',' + rr))]
     : list;
 }
+// DITHER VERDICT (pure — unit tested). The progress window holds
+// {t,col,row,sends} samples (server squares); full when it spans winMs.
+// Dithering = full window + net displacement under a square + sends flowed.
+export function dithered(window, nowMs, winMs) {
+  if (!window?.length) return false;
+  const first = window[0];
+  if (nowMs - first.t < winMs) return false;
+  const last = window[window.length - 1];
+  const net = Math.max(Math.abs(last.col - first.col), Math.abs(last.row - first.row));
+  return net < 1 && (last.sends ?? 0) > (first.sends ?? 0);
+}
 
 // 256 client units = 16 protocol units per 100ms tick (walking).
 // Running is 2 * MOVEUNITS = 32 protocol units.
@@ -754,6 +765,33 @@ export class Mover {
 
     // (No hold gate: the server never carries, so holding freezes. The 1/s
     // send gate below is the only throttle — the speedhack law.)
+
+    // DITHER ESCAPE (mover-level progress window). A 1-square N-S dither
+    // moves the server every tick (stuck stays 0) while going nowhere, so
+    // the stuck-gated fan never fires and A* can't round the building.
+    // Track net SERVER displacement over 15s; if sends flowed but net is
+    // under a square with a live dest and no fan, force the slide fan.
+    // Gated on sends (resting sends nothing — stillness without sends is
+    // rest, not dither).
+    if (this.dest != null && this._fanIndex == null && this._fanTarget == null) {
+      const winMs = this._progWinMs ?? 15000;
+      const pw = (this._progWin ??= []);
+      const sendsNow = this._sendCount ?? 0;
+      const sc = s?.client?.self;
+      const pc = (sc && Number.isFinite(sc.col)) ? sc.col : null;
+      const pr = (sc && Number.isFinite(sc.row)) ? sc.row : null;
+      if (pc != null) {
+        pw.push({ t: Date.now(), col: pc, row: pr, sends: sendsNow });
+        while (pw.length && Date.now() - pw[0].t > winMs) pw.shift();
+        if (dithered(pw, Date.now(), winMs)) {
+          this._fanIndex = 0;
+          this._fanFrom = { x: protocolToClient(myProtoX), y: protocolToClient(myProtoY) };
+          pw.length = 0;
+        }
+      }
+    } else if (this._progWin?.length) {
+      this._progWin.length = 0;
+    }
 
     // PHASE 0c: the slide-along-wall check. When ownPhysics is on and we're
     // about to send (not holding), check the direct path to the AIM (waypoint

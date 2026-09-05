@@ -835,5 +835,20 @@ console.log('\n_submitMove: central 1050ms cap across all sites');
   ok('after the window it goes again', mover._submitMove(s, c, () => {}) === true && calls === 2, 'calls=' + calls);
 }
 
+console.log('\ndithered: sends with no net progress over a full window');
+{
+  const { dithered } = await import('./tick/m59-mover.mjs');
+  const now = 1000000;
+  const win = (t0, cols, sends0) => cols.map((c, i) => ({ t: t0 + i * 1000, col: c[0], row: c[1], sends: sends0 + i }));
+  ok('empty window is not dither', dithered([], now, 15000) === false, 'empty');
+  ok('short window is not dither', dithered(win(now - 5000, [[2,2],[2,2]], 0), now, 15000) === false, 'short');
+  ok('full window, no net, sends flowed = dither',
+     dithered(win(now - 16000, [[2,2],[2,2],[2,3],[2,2]], 5), now, 15000) === true, 'dither');
+  ok('real progress is not dither',
+     dithered(win(now - 16000, [[2,2],[5,5]], 5), now, 15000) === false, 'progress');
+  ok('stillness without sends is rest, not dither',
+     dithered(win(now - 16000, [[2,2],[2,2]], 5).map(s => ({ ...s, sends: 5 })), now, 15000) === false, 'rest');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
