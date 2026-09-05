@@ -14,6 +14,8 @@
 
 import { KOD_FINENESS, protocolToClient } from '../m59-roo.mjs';
 import { zapStatus, shouldCastZap, findZapSpell, equippedWeapon } from '../m59-zap.mjs';
+import { recordKill } from '../m59-tougher.mjs';
+import { recordEvent as recordLedgerEvent } from '../m59-ledger.mjs';
 import '../m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
 
 /**
@@ -242,6 +244,30 @@ export class CombatController {
       this.targetId = null;
       this.targetName = null;
       this.phase = 'idle';
+      // KILL FEED: the dashboard's kill tally reads the ledger's `kill`
+      // events, which only the legacy keeper wrote — the tick driver went
+      // silent when the fleet moved over. Record when we were actively
+      // swinging at it (a target that vanishes mid-fight died; one that
+      // leaves untouched is a flee, not a kill).
+      try {
+        if (hadName && Date.now() - (this._lastSwingAt ?? 0) < 15000) {
+          const c = this.session?.client;
+          recordKill(this.session?.name ?? 'unknown', {
+            creature: hadName,
+            room: c?.room?.name ?? frame?.room?.name ?? null,
+            room_num: c?.room?.num ?? frame?.room?.num ?? null,
+          });
+          // ...and into the ledger, which is what the dashboard's
+          // kills_30m counts (ledger `killed` events).
+          try {
+            recordLedgerEvent(this.session?.name ?? 'unknown', 'killed', {
+              creature: hadName,
+              room: c?.room?.name ?? frame?.room?.name ?? null,
+              room_num: c?.room?.num ?? frame?.room?.num ?? null,
+            });
+          } catch { /* ledger must never break combat */ }
+        }
+      } catch { /* feed must never break combat */ }
       return { kind: 'loot', what: `target ${hadName ?? hadTarget} left — looting`, lootId: hadTarget };
     }
     if (!target) {
@@ -447,6 +473,7 @@ export class CombatController {
                   return { kind: 'cast', what: `retreat: cast ${spell.name} at closing mob (${hpPct}%)` };
                 }
                 act.swing(this.targetId);
+                this._lastSwingAt = Date.now();
                 return { kind: 'swing', what: `retreat: swing at closing mob (${hpPct}%)` };
               }
               return { kind: 'idle', what: `retreat: attack cooldown (${hpPct}%)` };
@@ -524,6 +551,7 @@ export class CombatController {
         act.face(((deg % 360) + 360) % 360);
       }
       act.swing(this.targetId);
+      this._lastSwingAt = Date.now();
       if (process.env.M59_DEBUG_SWING) {
         const sinceLast = Date.now() - (this._lastSwingLogAt ?? 0);
         this._lastSwingLogAt = Date.now();

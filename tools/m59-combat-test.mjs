@@ -239,6 +239,23 @@ console.log('\nprohibited kinds are not grabbed by the fallback scan');
   ok('fallback scan refuses the pede', r.kind === 'idle', r.kind);
 }
 
+console.log('\nkill feed: a swung-at target that vanishes is recorded');
+{
+  const { killFeed } = await import('./m59-tougher.mjs');
+  const t = rig({ meCol: 5, meRow: 5, targetCol: 6, targetRow: 5 });
+  t.session.client.rsc = { get: () => 'giant rat' };
+  const before = killFeed('test').length;
+  // Swing while in reach (records _lastSwingAt).
+  let r = t.controller.tick(t.frame(), t.act, { has_target: true });
+  // Target vanishes (died) -> loot transition records the kill.
+  t.frame().objects.clear();
+  r = t.controller.tick(t.frame(), t.act, { has_target: false });
+  ok('loot transition fires', r.kind === 'loot', r.kind);
+  const after = killFeed('test');
+  ok('kill recorded to the feed', after.length === before + 1 && after[after.length - 1].creature === 'giant rat',
+     JSON.stringify(after.slice(-1)));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
 
