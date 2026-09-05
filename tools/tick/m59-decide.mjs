@@ -1481,10 +1481,18 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
         // Walk toward the nearest exit. The router's leg planner
         // will find the exit staging square. We just need to give
         // it a destination: the room beyond the nearest exit.
+        // FLEE FORWARD when traveling: if the router is driving a route,
+        // run toward its next hop, not the nearest exit behind us. Fleeing
+        // backwards out of a gauntlet room means re-entering it; fleeing
+        // forwards exits sooner (the 556 spider gauntlet proved this: flee
+        // south = 50 squares chased, flee north = 20 to the door).
         try {
           const exits = session.world?.exits?.() ?? [];
           // Never flee into a never-enter room (acid-gas shrine et al).
-          const exit = exits.find(e => !hazardReason(e.to)) ?? null;
+          // Prefer the route's next hop when traveling (flee forward).
+          const hop = router?.leg?.next ?? null;
+          const exit = (hop != null ? exits.find(e => e.to === hop && !hazardReason(e.to)) : null)
+            ?? exits.find(e => !hazardReason(e.to)) ?? null;
           if (exit) {
             if (router.dest !== exit.to) {
               router.to(exit.to);
@@ -1506,13 +1514,15 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     }
 
     // 2b2. FLEE HURT: hurt with a target in the room. Same
-    // behavior as flee_danger: run for the nearest exit.
+    // behavior as flee_danger: run for the nearest exit (route hop first).
     if (active?.goal === 'flee_hurt') {
       const router = session._router;
       if (router) {
         try {
           const exits = session.world?.exits?.() ?? [];
-          const exit = exits.find(e => !hazardReason(e.to)) ?? null;
+          const hop = router?.leg?.next ?? null;
+          const exit = (hop != null ? exits.find(e => e.to === hop && !hazardReason(e.to)) : null)
+            ?? exits.find(e => !hazardReason(e.to)) ?? null;
           if (exit) {
             if (router.dest !== exit.to) {
               router.to(exit.to);
