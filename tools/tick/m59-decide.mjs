@@ -834,6 +834,11 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     ws._vigor = client?.vitals?.()?.vigor?.value ?? null;
     // Expose room number and max HP for the hunt goal's Raza check.
     ws._roomNum = session?.world?.room?.num ?? client?.room?.num ?? null;
+    // UNDERWORLD GROUND TRUTH (tick-owned): the shared in_underworld symbol
+    // is name-rsc/id based and flaps (rest preempts escape for hours). Room
+    // NUMBER 1 is The Underworld, stable — OR it in, never clear from here
+    // (leaving the room clears it via the shared symbol going false).
+    if (ws._roomNum === 1) ws.in_underworld = true;
     ws._maxHp = client?.vitals?.()?.health?.max ?? null;
     // Expose whether the character is moving (the router has a destination).
     // The vigor_low goal yields when the character is moving — resting would
@@ -1323,7 +1328,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // firing every tick with `use` at 10/s but equipment stuck at [] because he was
     // still sitting from the rest. `armed` is in the list so the stand goes out before
     // the plan/intend path tries to equip.
-    if (_wasResting && !_resting && active && (active.goal === 'hunt' || active.goal === 'flee_danger' || active.goal === 'flee_hurt' || active.goal === 'travel' || active.goal === '_fight' || active.goal === 'armed')) {
+    if (_wasResting && !_resting && active && (active.goal === 'hunt' || active.goal === 'flee_danger' || active.goal === 'flee_hurt' || active.goal === 'travel' || active.goal === '_fight' || active.goal === 'armed' || active.goal === '!in_underworld' || active.goal === 'unstuck' || active.goal === 'leave_raza')) {
       try { act.stand?.(); } catch { /* best effort */ }
       onDecision?.({ ticks, goal: active.goal, action: 'stand', sent: true, what: 'stand before ' + (active.goal === 'armed' ? 'equipping' : 'moving') });
       _wasResting = false;
