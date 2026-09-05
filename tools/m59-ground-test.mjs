@@ -2,7 +2,7 @@
 // m59-ground-test.mjs -- unit tests for the grounded-square predicate.
 // Offline, no network. Run: node tools/m59-ground-test.mjs
 
-import { isGrounded, nearestGrounded, segHeightOk } from './tick/m59-ground.mjs';
+import { isGrounded, isEmbedded, nearestGrounded, segHeightOk } from './tick/m59-ground.mjs';
 
 let pass = 0, fail = 0;
 function ok(cond, msg) {
@@ -62,6 +62,15 @@ console.log('\nsegHeightOk honors only the climb refusal');
   ok('clear passes', segHeightOk(clear, 160, 160, 320, 160) === true);
   ok('no trace passes (old behavior)', segHeightOk({}, 160, 160, 320, 160) === undefined);
   ok('no geometry passes', segHeightOk(null, 160, 160, 320, 160) === undefined);
+}
+
+console.log('\nisEmbedded: sub-body-width cracks are not walkable');
+{
+  // Fake geo: everything x < 1000 is a crack (trace reports blocked).
+  const geo = { traceFineMoveClient: (x1, y1, x2, y2) => ({ blocked: x1 < 1000 }) };
+  ok(isEmbedded(geo, 100, 100) === true, 'crack point is embedded');
+  ok(isEmbedded(geo, 50000, 50000) === false, 'open point is not embedded');
+  ok(isEmbedded({}, 100, 100) === undefined, 'no trace model is unknown');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -31,7 +31,7 @@
 // the fine model says "wall" but the server says "floor".
 
 import { protocolToClient, clientToProtocol, KOD_FINENESS, PLAYER_RADIUS } from '../m59-roo.mjs';
-import { isGrounded, segHeightOk } from './m59-ground.mjs';
+import { isGrounded, isEmbedded, segHeightOk } from './m59-ground.mjs';
 import '../m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
 // CANDIDATE ORDERING (pure, unit tested). Loop avoidance (unvisited
 // squares first) engages ONLY while stuck: applied every tick it turns
@@ -1246,6 +1246,10 @@ export class Mover {
         const c = geo?.walkable ? geo.walkable(nr, nc) : undefined;
         if (f === false) continue;
         if (f === undefined && c === false) continue;
+        // BODY CHECK: never ENTER a sub-body-width crack (fine-open but
+        // radius-embedded). Leaving one is always allowed (exit anywhere).
+        if (isEmbedded(geo, myProtoX, myProtoY) !== true
+            && isEmbedded(geo, nc * KOD_FINENESS + HALF, nr * KOD_FINENESS + HALF) === true) continue;
         // NEVER ENTER A VOID (same rule as the waypoint branch above).
         if (!startIsVoid) {
           const destSqC1 = this.destProto ? Math.floor(this.destProto.x / KOD_FINENESS) : null;
@@ -1367,6 +1371,9 @@ export class Mover {
       const f = geo?.fineWalkable ? geo.fineWalkable(nr, nc) : undefined;
       const s = geo?.standable ? geo.standable(nr, nc) : undefined;
       if (f === false) continue;                      // fine says blocked
+      // BODY CHECK (same rule as the no-path branch): never enter a crack.
+      if (isEmbedded(geo, myProtoX, myProtoY) !== true
+          && isEmbedded(geo, nc * KOD_FINENESS + HALF, nr * KOD_FINENESS + HALF) === true) continue;
       // THE EDGE, NOT JUST THE SQUARE. A neighbor can be fine-walkable as a
       // SQUARE while the EDGE from where we stand to it is walled (a wall
       // segment between the two squares' centres). Check with a radius-free

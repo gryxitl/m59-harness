@@ -24,6 +24,22 @@
  * geometry has no collision payload, so the caller must fall back to its
  * previous behavior). Out-of-bounds squares are false.
  */
+// BODY CHECK (configuration space). A square can be nominally walkable
+// (fineWalkable true) yet narrower than a body: wall faces within one
+// player radius of every point in the square. Routing through such cracks
+// looks like wall-walking and wedges plan-vs-validate (planner says open,
+// radius traces refuse). A zero-length trace reports embedded (blocked).
+export function isEmbedded(geo, protoX, protoY) {
+  if (!geo?.traceFineMoveClient) return undefined;
+  try {
+    const cx = protocolToClient(protoX), cy = protocolToClient(protoY);
+    const tr = geo.traceFineMoveClient(cx, cy, cx, cy, { slide: false, playerRadius: 32 });
+    if (tr?.blocked === true) return true;
+    return false;
+  } catch {
+    return undefined;
+  }
+}
 export function isGrounded(geo, row, col) {
   if (!geo) return undefined;
   try {
