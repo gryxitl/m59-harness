@@ -263,7 +263,7 @@ export function findAttackerSwitch({ meCol, meRow, objects, currentId, blacklist
   }
   return attacker;
 }
-import { loadMap, findPath } from '../m59-map.mjs';
+import { loadMap, findPath, hazardReason } from '../m59-map.mjs';
 import { loadoutFor } from '../m59-loadout.mjs';
 import { resolveRoomNum, routeIntent } from './m59-route.mjs';
 import { isGrounded, nearestGrounded } from './m59-ground.mjs';
@@ -1483,8 +1483,9 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
         // it a destination: the room beyond the nearest exit.
         try {
           const exits = session.world?.exits?.() ?? [];
-          if (exits.length > 0) {
-            const exit = exits[0]; // nearest exit
+          // Never flee into a never-enter room (acid-gas shrine et al).
+          const exit = exits.find(e => !hazardReason(e.to)) ?? null;
+          if (exit) {
             if (router.dest !== exit.to) {
               router.to(exit.to);
               onDecision?.({ ticks, goal: 'flee_danger', action: 'travel',
@@ -1511,8 +1512,8 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       if (router) {
         try {
           const exits = session.world?.exits?.() ?? [];
-          if (exits.length > 0) {
-            const exit = exits[0];
+          const exit = exits.find(e => !hazardReason(e.to)) ?? null;
+          if (exit) {
             if (router.dest !== exit.to) {
               router.to(exit.to);
               onDecision?.({ ticks, goal: 'flee_hurt', action: 'travel',
@@ -1933,6 +1934,9 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
         String(client.rsc?.get?.(sp.nameRsc) ?? sp.name ?? '').toLowerCase() === 'create weapon');
       if (canConjure && now5 - (session?._lastCreateWeaponAt ?? 0) > 30000) {
         if (session) session._lastCreateWeaponAt = now5;
+        // Stamp the casting hold HERE (before any mover driving this tick),
+        // not in castIntent after the move already broke concentration.
+        try { if (session) session._castingUntil = now5 + 5000; } catch {}
         actionName = 'cast create weapon';
       } else {
         actionName = 'buy';
