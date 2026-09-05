@@ -110,12 +110,15 @@ const HALF = KOD_FINENESS / 2; // 32 protocol units = half a square
  *   mover.clear();               // stop
  */
 export class Mover {
-  constructor(session, { reportIntervalMs = MOVE_INTERVAL_MS } = {}) {
+  constructor(session, { reportIntervalMs = MOVE_INTERVAL_MS, moveCapMs = 1050 } = {}) {
     this.session = session;
+    // The central move-submit cap, injectable like the report interval so the
+    // rig can tick in microseconds (live default 1050ms: the speedhack law).
     // The move gate's interval, injectable so the test rig can tick faster than
     // one step per second of wall time (the live default, MOVE_INTERVAL_MS, matches
     // the client's own report rate — move.c:60 — and must not change).
     this.reportIntervalMs = reportIntervalMs;
+    this._moveCapMs = moveCapMs;
     this.dest = null;       // { col, row } in protocol square coordinates
     this.destProto = null;  // { x, y } in protocol units (centre of dest square)
     this.path = null;       // [ {x, y} ] waypoints in protocol units, index 0 = next
@@ -861,7 +864,7 @@ export class Mover {
         try { const _g = this._movementGateOk(fanX, fanY, myProtoX, myProtoY, fServerPX, fServerPY); console.error(`[movedbg] t4 fan gate=${_g} me=(${Math.round(myProtoX)},${Math.round(myProtoY)}) srv=(${fServerPX},${fServerPY}) age=${Date.now() - (this._lastReportAt ?? 0)} idx=${idx} tgt=${this._fanTarget ? 'Y' : 'n'}`); } catch (e) { console.error(`[movedbg] t4 fan gate THROW: ${e.message}`); }
       }
       if (this._movementGateOk(fanX, fanY, myProtoX, myProtoY, fServerPX, fServerPY)) {
-        Promise.resolve(s.pacer.submit('move', () => c.moveTo(Math.round(fanX), Math.round(fanY), speed, c.room?.id ?? 0), 100)).catch(() => {});
+        this._submitMove(s, c, () => c.moveTo(Math.round(fanX), Math.round(fanY), speed, c.room?.id ?? 0));
         this._recordSend(aimX, aimY, myProtoX, myProtoY);
         this._recordReport(fanX, fanY);
         this._fanTarget = { x: protocolToClient(fanX), y: protocolToClient(fanY) };
@@ -963,7 +966,7 @@ export class Mover {
           return { state: 'stuck', why: 'exit climb refused' };
         }
         if (this._movementGateOk(pastX, pastY, myProtoX, myProtoY, wServerPX, wServerPY)) {
-          Promise.resolve(s.pacer.submit('move', () => c.moveTo(Math.round(pastX), Math.round(pastY), 18, c.room?.id ?? 0), 100)).catch(() => {});
+          this._submitMove(s, c, () => c.moveTo(Math.round(pastX), Math.round(pastY), 18, c.room?.id ?? 0));
           this._recordSend(pastX, pastY, myProtoX, myProtoY);
           this._recordReport(pastX, pastY);
         }
@@ -1092,7 +1095,7 @@ export class Mover {
       // TEMP BISECT (t4 freeze): bypass gate once to test if submits flow.
       const bisect = process.env.M59_BISECT_SEND === '1';
       if (bisect || gateOk) {
-        Promise.resolve(s.pacer.submit('move', () => c.moveTo(Math.round(aimX), Math.round(aimY), speed, c.room?.id ?? 0), 100)).catch(() => {});
+        this._submitMove(s, c, () => c.moveTo(Math.round(aimX), Math.round(aimY), speed, c.room?.id ?? 0));
         this._recordSend(aimX, aimY, myProtoX, myProtoY);
         this._recordReport(aimX, aimY);
       }
@@ -1163,7 +1166,7 @@ export class Mover {
         if (segHeightOk(geoRef, myProtoX, myProtoY, rawX, rawY) !== false) {
           if (Date.now() - (this._lastRawPushAt ?? 0) >= 500) {
             this._lastRawPushAt = Date.now();
-            Promise.resolve(s.pacer.submit('move', () => s.client.moveTo(rawX, rawY, 18, s.client.room?.id ?? 0), 100)).catch(() => {});
+            this._submitMove(s, c, () => s.client.moveTo(rawX, rawY, 18, s.client.room?.id ?? 0));
             this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
           }
           if (Date.now() - (this._lastRawLogAt ?? 0) > 5000) {
@@ -1222,7 +1225,7 @@ export class Mover {
           const srvPX = srvCol * KOD_FINENESS + HALF, srvPY = srvRow * KOD_FINENESS + HALF;
           if (segOk && this._movementGateOk(sx, sy, myProtoX, myProtoY, srvPX, srvPY)) {
             const npSpeed = runNow ? 36 : 18;
-            Promise.resolve(s.pacer.submit('move', () => c.moveTo(sx, sy, npSpeed, c.room?.id ?? 0), 100)).catch(() => {});
+            this._submitMove(s, c, () => c.moveTo(sx, sy, npSpeed, c.room?.id ?? 0));
             this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
             this._recordReport(sx, sy);
             return { state: 'moving', to: { col: destCol, row: destRow }, stride: true };
@@ -1565,11 +1568,27 @@ export class Mover {
     if (seen.length > 8) seen.length = 8;
   }
 
+  // CENTRAL MOVE CAP (user.kod speedhack law). Every UserMove packet feeds
+  // piMovesCounter (+1 per packet, -1 per server second, trip at >2 with a
+  // snap-back). The per-site gates each allow ~1/s, but sites overlap (two
+  // sites firing in one tick = 2 packets in one server second, sustained
+  // overlap trips the counter every few seconds: accept-jump, snap back,
+  // repeat). ALL position submits go through here: at most one per 1050ms
+  // (5% under the server budget so the counter drains instead of ratcheting).
+  // Drops, never queues — movement is latest-wins; the next tick re-fires.
+  _submitMove(s, c, sendFn) {
+    const t = Date.now();
+    if (t - (this._lastMoveSubmitAt ?? 0) < (this._moveCapMs ?? 1050)) return false;
+    this._lastMoveSubmitAt = t;
+    Promise.resolve(s.pacer.submit('move', sendFn, 100)).catch(() => {});
+    return true;
+  }
+
   // Returns true if a position packet was actually sent this tick.
   _maybeReportPosition(protoX, protoY, c, s, serverX, serverY) {
     if (!this._movementGateOk(protoX, protoY, serverX, serverY, serverX, serverY)) return false;
     const px = Math.round(protoX), py = Math.round(protoY);
-    Promise.resolve(s.pacer.submit('move', () => c.moveTo(px, py, 18, c.room?.id ?? 0), 100)).catch(() => {});
+    this._submitMove(s, c, () => c.moveTo(px, py, 18, c.room?.id ?? 0));
     this._recordSend(this.destProto?.x ?? protoX, this.destProto?.y ?? protoY, protoX, protoY);
     this._recordReport(protoX, protoY);
     return true;
@@ -1606,7 +1625,7 @@ export class Mover {
 
     const px = Math.round(protoX);
     const py = Math.round(protoY);
-    Promise.resolve(s.pacer.submit('move', () => c.moveTo(px, py, 18, c.room?.id ?? 0), 100)).catch(() => {});
+    this._submitMove(s, c, () => c.moveTo(px, py, 18, c.room?.id ?? 0));
     this.drX = protocolToClient(px);
     this.drY = protocolToClient(py);
 

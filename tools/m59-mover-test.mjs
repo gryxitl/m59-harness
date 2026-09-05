@@ -110,7 +110,7 @@ function rig({ col = 2, row = 2, destCol = 8, destRow = 2, geo } = {}) {
     walkTo: (col, row) => { sent.push([col * 64 + 32, row * 64 + 32]); return Promise.resolve({ arrived: true }); },
     world: { geometry: geo ?? wallGeometry() },
   };
-  const mover = new Mover(session, { reportIntervalMs: 0 });  // the rig ticks in microseconds; the 1s client gate is a LIVE constraint
+  const mover = new Mover(session, { reportIntervalMs: 0, moveCapMs: 0 });  // the rig ticks in microseconds; the 1s client gate is a LIVE constraint
   return { mover, sent, session };
 }
 
@@ -820,6 +820,19 @@ console.log('\norderCandidates: monster rule (never step directly away)');
   ok('moving: goal-ward still first', o[0][0] === 6 && o[0][1] === 5, JSON.stringify(o[0]));
   o = orderCandidates(cands, [], 4, goal);
   ok('stuck: backtrack allowed (nothing excluded)', o.length === 8, JSON.stringify(o.length));
+}
+
+console.log('\n_submitMove: central 1050ms cap across all sites');
+{
+  const { mover } = rig({});
+  mover._moveCapMs = 1050;  // live cap (the rig defaults it off)
+  const s = mover.session, c = s.client;
+  let calls = 0;
+  s.pacer = { submit: () => { calls++; return Promise.resolve(); } };
+  ok('first submit goes', mover._submitMove(s, c, () => {}) === true && calls === 1, 'calls=' + calls);
+  ok('immediate second is dropped', mover._submitMove(s, c, () => {}) === false && calls === 1, 'calls=' + calls);
+  mover._lastMoveSubmitAt = Date.now() - 2000;
+  ok('after the window it goes again', mover._submitMove(s, c, () => {}) === true && calls === 2, 'calls=' + calls);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
