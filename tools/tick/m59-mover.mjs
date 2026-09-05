@@ -62,7 +62,9 @@ export function orderCandidates(candidates, recentSteps, stuckTicks, opts = {}) 
 export function dithered(window, nowMs, winMs) {
   if (!window?.length) return false;
   const first = window[0];
-  if (nowMs - first.t < winMs) return false;
+  // 2s tolerance: ticks run slightly under 10Hz, so a nominally-15s window
+  // of ~148 samples spans ~14.8s and would otherwise never read full.
+  if (nowMs - first.t < winMs - 2000) return false;
   const last = window[window.length - 1];
   const net = Math.max(Math.abs(last.col - first.col), Math.abs(last.row - first.row));
   return net <= 1 && (last.sends ?? 0) > (first.sends ?? 0);
