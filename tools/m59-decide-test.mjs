@@ -287,6 +287,16 @@ console.log('\nprohibitedKind + knownLevel: pedes unhunted, true levels band');
   ok('specialized + weak pede is not danger', r === null, JSON.stringify(r?.id));
 }
 
+console.log('\nknownLevel: variant names resolve danger-side');
+{
+  const { knownLevel } = await import('./tick/m59-levels.mjs');
+  const { mobNameKey } = await import('./tick/m59-decide.mjs');
+  ok('sand ant is an ant (40)', knownLevel('sand ant', mobNameKey) === 40, String(knownLevel('sand ant', mobNameKey)));
+  ok('spider queen is 165, not 50', knownLevel('spider queen', mobNameKey) === 165, String(knownLevel('spider queen', mobNameKey)));
+  ok('giant rat stays 30 (no subset inflation)', knownLevel('giant rat', mobNameKey) === 30, String(knownLevel('giant rat', mobNameKey)));
+  ok('unknown stays null (HP proxy fallback)', knownLevel('grue', mobNameKey) === null, String(knownLevel('grue', mobNameKey)));
+}
+
 console.log('\nTOWN_SMITH: buy routes to the town smith shop');
 {
   const { TOWN_SMITH } = await import('./tick/m59-decide.mjs');

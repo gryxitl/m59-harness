@@ -76,4 +76,19 @@ export const MONSTER_LEVELS = {
   "yeti": 170,
   "zombie": 55
 };
-export function knownLevel(name, keyOf) { const k = (keyOf ?? ((s)=>String(s??"").toLowerCase()))(name); return MONSTER_LEVELS[k] ?? null; }
+export function knownLevel(name, keyOf) {
+  const k = (keyOf ?? ((s) => String(s ?? "").toLowerCase()))(name);
+  if (k in MONSTER_LEVELS) return MONSTER_LEVELS[k];
+  // VARIANT MATCH: a display name like "sand ant" isn't a table key, but
+  // every table entry whose tokens are all present is a candidate (a sand
+  // ant is an ant). Take the MAX (danger side): "cave orc" matches both
+  // orc (45) and cave orc (80) — it IS 80. Token-level only, so "giant"
+  // never matches "ant".
+  const toks = new Set(String(k).split(' ').filter(Boolean));
+  let best = null;
+  for (const [key, lvl] of Object.entries(MONSTER_LEVELS)) {
+    const kt = key.split(' ');
+    if (kt.every(t => toks.has(t)) && (best == null || lvl > best)) best = lvl;
+  }
+  return best;
+}
