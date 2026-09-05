@@ -399,7 +399,16 @@ export class Mover {
     // old-room positions (or planning from them) strands characters in the
     // new room's walls/voids. Bounded (5s) so a missing echo can never stall.
     // Without a Pose there is no echo tracking, so don't hold (tests).
-    const roomKey = [c.room?.id ?? '?', c.room?.num ?? '?', c.roomNameRsc ?? c.room?.name ?? '?'].join('|');
+    // Room identity is the map NUMBER + name, never the object id: at a
+    // boundary the server interleaves messages from both rooms and the
+    // object id flaps (watched: 2013<->2125), which reset the sim every few
+    // ticks, dropped aims back to stale echoes, and ping-ponged the
+    // character. A genuine transition changes the number (or name).
+    // Keyed on the map number ALONE: names/rscs also flutter at boundaries
+    // (each room's messages carry its own), but a genuine transition always
+    // changes the number, and nothing else does.
+    const wNum = this.session?.world?.room?.num ?? c.room?.num ?? '?';
+    const roomKey = String(wNum);
     if (this._roomKey == null) {
       this._roomKey = roomKey;
     } else if (this._roomKey !== roomKey) {
