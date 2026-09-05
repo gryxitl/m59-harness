@@ -131,6 +131,24 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SPAWNS_FILE = join(__dirname, '..', '..', 'compendium', 'data', 'spawns.json');
+// RSC -> ROOM NUMBER (stable across saves and boundary straddles, unlike
+// object ids). Built once; resolves the room number when world/client have
+// not caught up yet (the post-transition ticks where in_underworld flapped).
+let _rscRoomTable = null;
+function roomNumByRsc(rsc) {
+  if (rsc == null) return null;
+  try {
+    if (!_rscRoomTable) {
+      _rscRoomTable = new Map();
+      const map = loadMap();
+      for (const r of Object.values(map?.rooms ?? {})) {
+        if (r?.roomRsc != null) _rscRoomTable.set(r.roomRsc, r.num);
+        if (r?.nameRsc != null) _rscRoomTable.set(r.nameRsc, r.num);
+      }
+    }
+    return _rscRoomTable.get(rsc) ?? null;
+  } catch { return null; }
+}
 // TOWN -> SMITH SHOP. Buy routes here when the current room has no weapon
 // seller (pure — unit tested via TOWN_SMITH). Marion's Colhorr is in 201
 // (Ye Olde Slasher Salesman), reached by the go-door at (43,31) — the
@@ -844,7 +862,8 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // Expose the raw vigor value for the vigor_low goal.
     ws._vigor = client?.vitals?.()?.vigor?.value ?? null;
     // Expose room number and max HP for the hunt goal's Raza check.
-    ws._roomNum = session?.world?.room?.num ?? client?.room?.num ?? null;
+    ws._roomNum = session?.world?.room?.num ?? client?.room?.num
+      ?? roomNumByRsc(client?.roomNameRsc) ?? roomNumByRsc(client?.roomRsc) ?? null;
     // UNDERWORLD GROUND TRUTH (tick-owned): the shared in_underworld symbol
     // is name-rsc/id based and flaps across room changes (stale name reads
     // as Underworld in the inn, so escape and travel yank the destination
