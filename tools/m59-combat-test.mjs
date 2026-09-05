@@ -44,6 +44,10 @@ function rig({ meCol = 5, meRow = 5, targetCol = 8, targetRow = 5, targetId = 10
     vitals: { health: { value: hpPct, max: 100, pct: hpPct } },
   });
   const controller = new CombatController(session);
+  // Latch like live selection does: the decider sets ws._targetId and the
+  // controller binds by id (never scans). Without this the rig's mob is
+  // invisible to the id-only binding (by design: no furniture wars).
+  if (targetId != null) { controller.targetId = targetId; controller.targetName = 'giant rat'; }
   return { controller, act, sent, session, frame };
 }
 
@@ -141,7 +145,7 @@ console.log('\ncasts zap when it has blue mushrooms and the enchantment is down'
   const frame = { position: { col: 5, row: 5 }, objects, vitals: { health: { value: 100, max: 100, pct: 100 } } };
   const { CombatController } = await import('./tick/m59-combat.mjs');
   const controller = new CombatController(session);
-  const r = controller.tick(frame, act, { has_target: true });
+  const r = controller.tick(frame, act, { has_target: true, _targetId: 200 });
   ok('casts zap (kind=zap-cast)', r.kind === 'zap-cast', r.kind + ' ' + (r.what ?? ''));
   ok('unequipped the mace', sent.some(s => s.unuse === 'mace'), JSON.stringify(sent));
   ok('cast the zap spell', sent.some(s => s.cast === 'zap'), JSON.stringify(sent));
@@ -179,7 +183,7 @@ console.log('\ndoes not cast zap when the enchantment is already active');
   const frame = { position: { col: 5, row: 5 }, objects, vitals: { health: { value: 100, max: 100, pct: 100 } } };
   const { CombatController } = await import('./tick/m59-combat.mjs');
   const controller = new CombatController(session);
-  const r = controller.tick(frame, act, { has_target: true });
+  const r = controller.tick(frame, act, { has_target: true, _targetId: 200 });
   ok('does not cast (already active)', r.kind !== 'zap-cast', r.kind);
   ok('swings instead (zap-touched)', r.kind === 'swing', r.kind + ' ' + (r.what ?? ''));
 }
@@ -223,11 +227,11 @@ console.log('\npath distance counts squares, not nodes');
   const act = { step: (c, r) => sent.push({ step: [c, r] }), swing: (id) => sent.push({ swing: id }), face: () => {} };
   const frame = () => ({ position: { col: 5, row: 5 }, objects, vitals: { health: { value: 100, max: 100, pct: 100 } }, geometry: geo });
   const controller = new CombatController(session);
-  const r = controller.tick(frame(), act);
+  const r = controller.tick(frame(), act, { has_target: true, _targetId: 100 });
   ok('3 squares out walks instead of swinging at air', r.kind === 'walk', r.kind + ' ' + (r.what ?? ''));
 }
 
-console.log('\nprohibited kinds are not grabbed by the fallback scan');
+console.log('\nprohibited kinds are not latched, even by id');
 {
   const t = rig({ meCol: 5, meRow: 5, targetCol: 6, targetRow: 5 });
   t.controller.targetId = null;
@@ -235,8 +239,8 @@ console.log('\nprohibited kinds are not grabbed by the fallback scan');
   const objs = t.frame().objects;
   objs.clear();
   objs.set(100, { id: 100, col: 6, row: 5, name: 'centipede', flags: 0 });
-  const r = t.controller.tick(t.frame(), t.act, { has_target: true });
-  ok('fallback scan refuses the pede', r.kind === 'idle', r.kind);
+  const r = t.controller.tick(t.frame(), t.act, { has_target: true, _targetId: 100 });
+  ok('latch refuses the pede', r.kind === 'idle', r.kind);
 }
 
 console.log('\nkill feed: a swung-at target that vanishes is recorded');

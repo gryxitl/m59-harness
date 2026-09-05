@@ -196,6 +196,29 @@ export class CombatController {
    *   the swing must land on the same one.
    * @returns {object} { kind, what, why? }
    */
+  // Bind a target id to its room object, or null. Single choke for all
+  // three latch paths (selection, memory, fallback): exists, not self or a
+  // player, has coords, and never a prohibited kind (spiders/centipedes
+  // unless specialized — the decider excludes them from selection and this
+  // is the backstop; baby spiders exempt). Blindly grabbing the first named
+  // object swung at furniture (a flagpole, 10k+ swings). No decide import
+  // (cycle); canonical rule lives in m59-decide prohibitedKind.
+  _bindTarget(objects, id, c) {
+    if (id == null || !(objects instanceof Map)) return null;
+    const o = objects.get(id);
+    if (!o) return null;
+    const oNm = String(c?.rsc?.get?.(o?.nameRsc) ?? o?.name ?? '')
+      .replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()
+      .split(/[^a-z]+/).filter(Boolean).sort().join(' ');
+    const pol = (this.session?.policy ?? {});
+    if (oNm.split(' ').includes('spider') && oNm !== 'baby spider'
+        && pol?.huntSpiders !== true) return null;
+    if (oNm.split(' ').includes('centipede') && pol?.huntCentipedes !== true) return null;
+    if (o.is_self || o.is_player || o.col == null || o.row == null) return null;
+    this.targetId = o.id;
+    this.targetName = c?.rsc?.get?.(o.nameRsc) ?? o.name ?? 'mob';
+    return o;
+  }
   tick(frame, act, ws) {
     const c = this.session?.client;
     if (!c || c.state !== 'game') return { kind: 'idle', why: 'not in game' };
@@ -225,14 +248,9 @@ export class CombatController {
     // when the world state has no target (e.g. the controller was
     // created before the first evaluate).
     const objects = frame?.objects ?? c.room?.objects;
-    let target = null;
-    const wsTargetId = ws?._targetId;
-    if (wsTargetId != null && objects) {
-      target = objects instanceof Map ? objects.get(wsTargetId) : null;
-      if (target) { this.targetId = target.id; this.targetName = target.name ?? c.rsc?.get?.(target.nameRsc) ?? 'mob'; }
-    }
+    let target = this._bindTarget(objects, ws?._targetId ?? null, c);
     if (!target && this.targetId != null && objects) {
-      target = objects instanceof Map ? objects.get(this.targetId) : null;
+      target = this._bindTarget(objects, this.targetId, c);
     }
     // If the target left (died or fled), loot the floor before clearing.
     // The corpse's drops (gold, reagents, equipment) are on the ground where
@@ -271,33 +289,14 @@ export class CombatController {
       return { kind: 'loot', what: `target ${hadName ?? hadTarget} left — looting`, lootId: hadTarget };
     }
     if (!target) {
-      // No target from world state or memory: only scan the room
-      // for a hostile when the world state says there is one.
-      // This prevents swinging at items or exits.
-      if ((ws == null || ws?.has_target === true) && objects instanceof Map) {
-        for (const o of objects.values()) {
-          if (o.is_player || o.is_self) continue;
-          // Only consider objects that look like mobs (have a name
-          // that's not an item/exit). The world state already
-          // filtered for hostiles; we just need to find the object.
-          // Never grab spiders or centipedes unless specialized (policy): token-set key,
-          // duplicated here to avoid a decide import cycle (canonical rule
-          // lives in m59-decide prohibitedKind). Baby spiders exempt.
-          const oNm = String(c.rsc?.get?.(o.nameRsc) ?? o.name ?? '')
-            .replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()
-            .split(/[^a-z]+/).filter(Boolean).sort().join(' ');
-          const pol = (this.session?.policy ?? {});
-          if (oNm.split(' ').includes('spider') && oNm !== 'baby spider'
-              && pol?.huntSpiders !== true) continue;
-          if (oNm.split(' ').includes('centipede') && pol?.huntCentipedes !== true) continue;
-          if (o.col != null && o.row != null) {
-            target = o;
-            this.targetId = o.id;
-            this.targetName = c.rsc?.get?.(o.nameRsc) ?? o.name ?? 'mob';
-            break;
-          }
-        }
-      }
+      // No target from world state or memory: latch the SELECTED target by
+      // id (the decider picked a real mob — bind to it, never scan). The old
+      // blind scan grabbed the first named object: furniture (a flagpole,
+      // 10k+ swings, never dies) and logoff ghosts. If the selected id is
+      // gone from the room, the target died or fled — idle out and let the
+      // decider loot/re-target rather than swinging at scenery.
+      const wantId = this.targetId ?? ws?._targetId ?? null;
+      if (wantId != null) target = this._bindTarget(objects, wantId, c);
       if (!target) {
         this.phase = 'idle';
         return { kind: 'idle', what: 'no target in room' };
