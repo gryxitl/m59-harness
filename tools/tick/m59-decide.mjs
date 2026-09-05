@@ -2036,7 +2036,10 @@ export const DEFAULT_GOALS = [
                                  // Don't fight if the target is on a
                                  // different elevation (unreachable).
                                  && ws._targetElevated !== true
-                                 && fightEnvelopeOk({ traveling: ws._traveling, targetD2: ws._targetD2 }) },
+                                 && fightEnvelopeOk({ traveling: ws._traveling, targetD2: ws._targetD2 })
+                                 // While traveling, self-defense only (no
+                                 // close-gap chases: run past everything).
+                                 && (ws._traveling !== true || ws.in_reach === true) },
   { goal: 'armed',    when: ws => ws.armed === false && ws.is_caster !== true },
   // HUNT before eating: the character should go find work (a mob to fight)
   // rather than sitting in town eating. Vigor management matters during
