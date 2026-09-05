@@ -528,7 +528,7 @@ console.log('\nNEVER ENTER A VOID (step model)');
   mover.to(8, 2);
   mover.tick();
   ok('floorless neighbor toward dest is skipped', sent.length === 1 && !(sent[0][0] === 224 && sent[0][1] === 160), JSON.stringify(sent));
-  ok('a grounded neighbor is stepped to instead', sent.length === 1 && sent[0][0] === 96 && sent[0][1] === 160, JSON.stringify(sent));
+  ok('a grounded neighbor is stepped to instead (contour, not reversal)', sent.length === 1 && sent[0][0] === 160 && sent[0][1] === 224, JSON.stringify(sent));
 }
 {
   // Waypoint branch (step model): same rule when following a path.
