@@ -131,6 +131,11 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SPAWNS_FILE = join(__dirname, '..', '..', 'compendium', 'data', 'spawns.json');
+// TOWN -> SMITH SHOP. Buy routes here when the current room has no weapon
+// seller (pure — unit tested via TOWN_SMITH). Marion's Colhorr is in 201
+// (Ye Olde Slasher Salesman), reached by the go-door at (43,31) — the
+// buy-affordance object at (37,80) in Marion opens no shop list.
+export const TOWN_SMITH = { 200: 201, 202: 201, 50: 374, 1011: 1013, 1012: 1013 };
 // Mob-name normalization: game names have spaces ('giant rat'), compendium
 // keys don't ('GiantRat'). Lowercasing alone never matches multi-word mobs,
 // which blinded the decider to every rat, orc, and skeleton (single-word
@@ -397,12 +402,7 @@ export const INTENTS = {
     }
     // A merchant is present. But neither the Raza Inn (1011, innkeeper Marcus, no
     // weapons) nor the Raza field (1012, no merchant) has a weapon for sale. If we're
-// TOWN -> SMITH SHOP. Buy routes here when the current room has no weapon
-// seller (pure — unit tested via TOWN_SMITH). Marion's Colhorr is in 201
-// (Ye Olde Slasher Salesman), reached by the go-door at (43,31) — the
-// buy-affordance object at (37,80) in Marion opens no shop list.
-export const TOWN_SMITH = { 200: 201, 202: 201, 50: 374, 1011: 1013, 1012: 1013 };
-    // in either, route to the Raza Blacksmith (1013) where the smith sells weapons.
+    // in either, route to the town smith where the smith sells weapons.
     // Same if a cached list has no weapon.
     const roomNum = c.room?.num ?? s?.world?.room?.num;
     const buyList = c.buyList;
