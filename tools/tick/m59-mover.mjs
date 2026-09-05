@@ -543,12 +543,27 @@ export class Mover {
     const startVoidByFloor = startGeo?.collisionReady === true
       && startGeo?.standable?.(startRow, startCol) === false;
     const startHasNoFloor = startFine === false || startVoidByFloor;
+    // EXACT-POINT floor: the square can hold floor elsewhere (standable true)
+    // while the body's own point sits in a BSP coverage gap (no leaf at all).
+    // Watched live: 30 minutes pinned on a leafless corner point of an
+    // otherwise-floored square, with every square-level check passing. A body
+    // with no leaf has no floor — escape it the same way.
+    let startPointNoFloor = false;
+    if (startGeo?.collisionReady === true && typeof startGeo?.leafAtClient === 'function') {
+      try {
+        const cx = protocolToClient(srvX), cy = protocolToClient(srvY);
+        const leaf = startGeo.leafAtClient(cx, cy);
+        const base = leaf ? startGeo.floorBaseAtClient(cx, cy, leaf) : null;
+        startPointNoFloor = !leaf?.sector || base == null;
+      } catch { startPointNoFloor = false; }
+    }
+    const startHasNoFloor2 = startHasNoFloor || startPointNoFloor;
     // Don't steal a deliberate exit square: if this no-floor square is the
     // stand_on destination itself, let the boundary-crossing logic below
     // handle the transition instead of starting an escape fan.
     const atStandOnExit = this._destIsStandOn === true && this.dest != null
       && this.dest.col === startCol && this.dest.row === startRow;
-    if (startHasNoFloor && !atStandOnExit && this._fanIndex == null && this._fanTarget == null) {
+    if (startHasNoFloor2 && !atStandOnExit && this._fanIndex == null && this._fanTarget == null) {
       this.stuckTicks = 3; // bypass the 3-tick wait (and satisfy _tryBlink's stalled check)
       // Open void (no BSP floor at all, not just a wall center): sliding is
       // pointless — the dumb server accepts every probe, so headings always
@@ -572,7 +587,7 @@ export class Mover {
     // Whether the start square itself is floorless (and not a deliberate exit).
     // When true, the character is already in a void: traversal is allowed so the
     // escape fan can walk out. When false, no step may ENTER a floorless square.
-    const startIsVoid = startHasNoFloor && !atStandOnExit;
+    const startIsVoid = startHasNoFloor2 && !atStandOnExit;
 
     // (Blink progress check moved to the top of tick() — see the BLINK
     // PROGRESS + HOLD block above.)

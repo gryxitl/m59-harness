@@ -776,5 +776,26 @@ console.log('\nHEIGHT DISCIPLINE (move.c step limit)');
   ok('fan probe up a cliff is skipped, not sent', sent.length === 0 && mover._fanIndex === 1, `sent=${JSON.stringify(sent)} idx=${mover._fanIndex}`);
 }
 
+console.log('\nEXACT-POINT VOID (square floored, body point leafless)');
+{
+  // Square (2,2) has floor somewhere (standable true) but the character's
+  // exact point sits in a BSP coverage gap (no leaf). Must escape anyway.
+  const gapGeo = {
+    collisionReady: true,
+    standable: () => true,
+    fineWalkable: () => true,
+    leafAtClient: () => null,
+    floorBaseAtClient: () => null,
+    traceFineMoveClient: (x0, y0, x1, y1) => ({ blocked: false, arrived: true, x: x1, y: y1 }),
+    finePathProtocol: () => ({ found: false, reason: 'gap', waypoints: [] }),
+  };
+  const { mover, sent } = rig({ col: 2, row: 2, geo: gapGeo });
+  mover.session.policy = {};
+  mover.to(8, 2);
+  const r = mover.tick();
+  ok('leafless point fires the escape fan', r.state === 'raw-move' && mover._fanIndex === 0, `${r.state} idx=${mover._fanIndex}`);
+  void sent;
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
