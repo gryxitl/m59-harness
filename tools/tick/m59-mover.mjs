@@ -1304,7 +1304,7 @@ export class Mover {
         // raw moveTo directly means the shared geometry's floor check
         // ("goal square has no floor") no longer gates our movement. The server
         // accepts the declared position (server_validate=false for user moves).
-        Promise.resolve(s.client.moveTo(stepProtoX, stepProtoY, 18, s.client.room?.id ?? 0)).catch(() => {});
+        if (this._claimMoveSlot()) Promise.resolve(s.client.moveTo(stepProtoX, stepProtoY, 18, s.client.room?.id ?? 0)).catch(() => {});
         this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
         this._recordReport(stepProtoX, stepProtoY);
       }
@@ -1462,7 +1462,7 @@ export class Mover {
     if (this._movementGateOk(enrProtoX, enrProtoY, myProtoX, myProtoY, serverPX2, serverPY2)) {
       // PHASE 1: un-gate from session.walkTo. Same rationale as the waypoint
       // branch — the step is fine-model-validated, send it raw.
-      Promise.resolve(s.client.moveTo(enrProtoX, enrProtoY, 18, s.client.room?.id ?? 0))
+      if (this._claimMoveSlot()) Promise.resolve(s.client.moveTo(enrProtoX, enrProtoY, 18, s.client.room?.id ?? 0))
         .then(() => { if (process.env.M59_MOVE_DEBUG !== '0')
           console.error(`[movedbg] t3 gateOK step=(${stepCol},${stepRow}) me=(${me.col},${me.row}) moveTo sent`); })
         .catch(e => { if (process.env.M59_MOVE_DEBUG !== '0')
@@ -1586,10 +1586,17 @@ export class Mover {
   // (5% under the server budget so the counter drains instead of ratcheting).
   // Drops, never queues — movement is latest-wins; the next tick re-fires.
   _submitMove(s, c, sendFn) {
+    if (!this._claimMoveSlot()) return false;
+    Promise.resolve(s.pacer.submit('move', sendFn, 100)).catch(() => {});
+    return true;
+  }
+
+  // Claim one move slot without submitting (for the raw direct-send sites
+  // that bypass the pacer to avoid queue delay).
+  _claimMoveSlot() {
     const t = Date.now();
     if (t - (this._lastMoveSubmitAt ?? 0) < (this._moveCapMs ?? 1050)) return false;
     this._lastMoveSubmitAt = t;
-    Promise.resolve(s.pacer.submit('move', sendFn, 100)).catch(() => {});
     return true;
   }
 

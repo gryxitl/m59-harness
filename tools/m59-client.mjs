@@ -895,6 +895,17 @@ export class M59Client {
     if (!Number.isInteger(x) || x < 0 || x > 0xffff
         || !Number.isInteger(y) || y < 0 || y > 0xffff)
       throw new RangeError(`movement coordinates must be unsigned 16-bit integers, got (${x},${y})`);
+    // SPEEDHACK LAW (user.kod): the server budgets ~1 UserMove/second
+    // (piMovesCounter +1/packet, -1/sec, trip at >2 with a snap-back to the
+    // pre-stride square — the accept-jump/snap-back rubber band). Bursts from
+    // overlapping senders (mover + escape/flee/poke/manual) used to trip it
+    // every few seconds. Drop UserMoves within 1050ms of the last (5% under
+    // budget so the counter drains); movement is latest-wins, the next tick
+    // re-fires. Returns false when dropped (callers generally ignore it;
+    // the mover has its own cap so it can skip send bookkeeping too).
+    const nowMs = Date.now();
+    if (nowMs - (this._lastUserMoveAt ?? 0) < 1050) { this._droppedUserMoves = (this._droppedUserMoves ?? 0) + 1; return false; }
+    this._lastUserMoveAt = nowMs;
     this.send(BP.REQ_MOVE, u16b(y), u16b(x), u8b(speed), u32(objId(room || 0)));
     // OUR OWN TRAIL, AT THE RATE WE ACTUALLY WALK IT.
     //
