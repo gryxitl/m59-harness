@@ -37,12 +37,22 @@ import '../m59-navgeom.mjs';   // installs the height model + lenient fine path 
 // squares first) engages ONLY while stuck: applied every tick it turns
 // straight walks into a drunkard's dither. While the server advances,
 // walk straight at the goal; dead ends backtrack once static.
-export function orderCandidates(candidates, recentSteps, stuckTicks) {
+export function orderCandidates(candidates, recentSteps, stuckTicks, opts = {}) {
   const taboo = stuckTicks > 0 ? (recentSteps ?? []) : [];
+  let list = candidates;
+  // MONSTER RULE (monster.kod MoveInDirection): never step 180 degrees
+  // from the goal — wall-follow with the perpendiculars instead. Applies
+  // only while moving; a genuinely stuck character may backtrack anywhere.
+  const { meCol, meRow, goalCol, goalRow } = opts;
+  if (stuckTicks <= 0 && meCol != null && goalCol != null) {
+    const ox = meCol - Math.sign(goalCol - meCol);
+    const oy = meRow - Math.sign(goalRow - meRow);
+    list = list.filter(([cc, rr]) => !(cc === ox && rr === oy));
+  }
   return taboo.length
-    ? [...candidates.filter(([cc, rr]) => !taboo.includes(cc + ',' + rr)),
-       ...candidates.filter(([cc, rr]) => taboo.includes(cc + ',' + rr))]
-    : candidates;
+    ? [...list.filter(([cc, rr]) => !taboo.includes(cc + ',' + rr)),
+       ...list.filter(([cc, rr]) => taboo.includes(cc + ',' + rr))]
+    : list;
 }
 
 // 256 client units = 16 protocol units per 100ms tick (walking).
@@ -1229,7 +1239,8 @@ export class Mover {
       // applied every tick it turns straight walks into a drunkard's dither
       // (each step avoids the last, so open ground random-walks at ~0 net).
       // While the server position advances, walk straight at the goal.
-      const ordered0 = orderCandidates(candidates, this._recentSteps, this.stuckTicks);
+      const ordered0 = orderCandidates(candidates, this._recentSteps, this.stuckTicks,
+        { meCol: myCol, meRow: myRow, goalCol: destCol, goalRow: destRow });
       for (const [nc, nr] of ordered0) {
         const f = geo?.fineWalkable ? geo.fineWalkable(nr, nc) : undefined;
         const c = geo?.walkable ? geo.walkable(nr, nc) : undefined;
@@ -1338,7 +1349,8 @@ export class Mover {
     // (loop avoidance — see above); never exclude, dead ends backtrack.
     // Same stuck-gating as the waypoint branch: straight while moving.
     let stepCol = null, stepRow = null;
-    const ordered1 = orderCandidates(candidates, this._recentSteps, this.stuckTicks);
+    const ordered1 = orderCandidates(candidates, this._recentSteps, this.stuckTicks,
+      { meCol: myCol, meRow: myRow, goalCol: wpCol, goalRow: wpRow });
     for (const [nc, nr] of ordered1) {
       // The FINE grid is the authoritative collision model. When the two
       // grids disagree (fine says walkable, coarse says not), trust the

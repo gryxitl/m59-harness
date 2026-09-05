@@ -809,5 +809,18 @@ console.log('\norderCandidates: straight while moving, taboo only when stuck');
   ok('stuck, empty taboo: unchanged', o.length === 3 && o[0][0] === 2, JSON.stringify(o));
 }
 
+console.log('\norderCandidates: monster rule (never step directly away)');
+{
+  const { orderCandidates } = await import('./tick/m59-mover.mjs');
+  // me (5,5), goal east (8,5): the 8-neighborhood minus directly-west.
+  const cands = [[6,5],[5,4],[5,6],[4,5],[6,4],[6,6],[4,4],[4,6]];
+  const goal = { meCol: 5, meRow: 5, goalCol: 8, goalRow: 5 };
+  let o = orderCandidates(cands, [], 0, goal);
+  ok('moving: opposite square excluded', !o.some(([c, r]) => c === 4 && r === 5) && o.length === 7, JSON.stringify(o));
+  ok('moving: goal-ward still first', o[0][0] === 6 && o[0][1] === 5, JSON.stringify(o[0]));
+  o = orderCandidates(cands, [], 4, goal);
+  ok('stuck: backtrack allowed (nothing excluded)', o.length === 8, JSON.stringify(o.length));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
