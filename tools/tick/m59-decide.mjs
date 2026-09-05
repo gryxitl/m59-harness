@@ -38,6 +38,7 @@ import { pickWeapon } from '../m59-act/equip.mjs';
 import { pickFood } from '../m59-act/eat.mjs';
 import { knownSpells } from '../m59-act/cast.mjs';
 import { affordances } from '../m59-parse.mjs';
+import { knownLevel } from './m59-levels.mjs';
 import '../m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
 
 // BROKEN-WEAPON TRACKING (the fix for the shattered-mace loop).
@@ -149,6 +150,17 @@ export function mobNameKey(s) {
   return spaced.toLowerCase().split(/[^a-z]+/).filter(Boolean).sort().join(' ');
 }
 
+// PROHIBITED KINDS: never HUNT these unless specialized. Spiders (most
+// badly outclass an unspecialized character; baby spiders exempt — good
+// eating) and centipedes (venomous, nasty at-level). Prohibited is about
+// hunting, not presence: danger-close still flees them in melee.
+export function prohibitedKind(name, policy) {
+  const key = mobNameKey(name);
+  if (key.split(' ').includes('spider') && key !== 'baby spider'
+      && policy?.huntSpiders !== true) return true;
+  if (key.split(' ').includes('centipede') && policy?.huntCentipedes !== true) return true;
+  return false;
+}
 // Spiders are excluded from targeting unless the character is explicitly
 // specialized (policy.huntSpiders === true): most spiders badly outclass an
 // unspecialized character. Baby spiders are exempt (good eating).
@@ -182,7 +194,7 @@ export function fightEnvelopeOk({ traveling, targetD2, rangeSq = 64 }) {
 // null: nearest hostile in melee range that is EITHER a prohibited spider
 // (never fightable, but very much able to eat us) or known over the threat
 // ceiling. Unknown non-spiders default open (consistent with target_in_band).
-export function findDangerClose({ meCol, meRow, objects, ceiling, allowSpiders, mobNames, nameOf }) {
+export function findDangerClose({ meCol, meRow, objects, ceiling, allowSpiders, allowCentipedes, mobNames, nameOf }) {
   const meleeD2 = 5;
   let best = null, bestD2 = Infinity;
   for (const o of (objects?.values?.() ?? [])) {
@@ -193,9 +205,10 @@ export function findDangerClose({ meCol, meRow, objects, ceiling, allowSpiders, 
     if (!isMob) continue;
     const d2 = (o.col - meCol) ** 2 + (o.row - meRow) ** 2;
     if (d2 > meleeD2) continue;
-    const aLevel = o.max_health ?? o.health ?? null;
+    const aLevel = knownLevel(nameOf ? nameOf(o) : (o.name ?? ''), mobNameKey) ?? o.max_health ?? o.health ?? null;
     const spider = objName.split(' ').includes('spider') && objName !== 'baby spider' && !allowSpiders;
-    if (!spider && (aLevel == null || aLevel <= ceiling)) continue;
+    const pede = objName.split(' ').includes('centipede') && !allowCentipedes;
+    if (!spider && !pede && (aLevel == null || aLevel <= ceiling)) continue;
     if (d2 < bestD2) { bestD2 = d2; best = o; }
   }
   return best;
@@ -937,7 +950,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
         // picker below looks for anything else. Baby spiders are exempt.
         if (target) {
           const tName = client.rsc?.get?.(target.nameRsc) ?? target.name ?? '';
-          if (spiderProhibited(tName, session?.policy ?? policy)) {
+          if (prohibitedKind(tName, session?.policy ?? policy)) {
             _lastTargetId = null;
             target = null;
           }
@@ -968,7 +981,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           try {
             const spawns = loadSpawns(SPAWNS_FILE);
             if (spawns?.byMonster) for (const name of Object.keys(spawns.byMonster)) {
-              if (!spiderProhibited(name, session?.policy ?? policy)) cNames.add(mobNameKey(name));
+              if (!prohibitedKind(name, session?.policy ?? policy)) cNames.add(mobNameKey(name));
             }
           } catch { /* compendium unavailable */ }
           const attacker = findAttackerSwitch({
@@ -1010,7 +1023,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             const spawns = loadSpawns(SPAWNS_FILE);
             if (spawns?.byMonster) {
               for (const name of Object.keys(spawns.byMonster)) {
-                if (!spiderProhibited(name, session?.policy ?? policy)) creatureNames.add(mobNameKey(name));
+                if (!prohibitedKind(name, session?.policy ?? policy)) creatureNames.add(mobNameKey(name));
               }
             }
           } catch { /* compendium unavailable */ }
@@ -1177,9 +1190,9 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             const fullBand = policy?.threatBand ?? Math.floor(level / 2);
             const band = isArmed ? fullBand : Math.floor(fullBand / 2);
             ws._threatCeiling = level + band;
-            // Level: from the object's max_health, or the
-            // compendium (spawns data) for this room+creature.
-            let targetLevel = best.max_health ?? best.health ?? null;
+            // Level: TRUE kod level first, HP proxy only as fallback.
+            let targetLevel = knownLevel(client.rsc?.get?.(best.nameRsc) ?? best.name ?? '', mobNameKey)
+              ?? best.max_health ?? best.health ?? null;
             if (targetLevel == null) {
               try {
                 const spawns = loadSpawns(SPAWNS_FILE);
@@ -1218,7 +1231,8 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           ws.in_reach = d2 <= 4;
           ws._targetD2 = d2;
           ws.has_target = true;
-          const tLevel = target.max_health ?? target.health ?? null;
+          const tLevel = knownLevel(client.rsc?.get?.(target.nameRsc) ?? target.name ?? '', mobNameKey)
+            ?? target.max_health ?? target.health ?? null;
           ws.target_in_band = tLevel == null ? true : tLevel <= (ws._threatCeiling ?? Infinity);
         }
       }
@@ -1247,6 +1261,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
         const danger = findDangerClose({
           meCol: dMe.col, meRow: dMe.row, objects: dObjs, ceiling,
           allowSpiders: (session?.policy ?? policy)?.huntSpiders === true,
+          allowCentipedes: (session?.policy ?? policy)?.huntCentipedes === true,
           mobNames: allNames,
           nameOf: (o) => client.rsc?.get?.(o.nameRsc) ?? o.name ?? '',
         });

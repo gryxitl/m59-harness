@@ -223,7 +223,7 @@ console.log('\ndanger-close: spiders and over-ceiling mobs in melee raise the al
 {
   const { findDangerClose, mobNameKey, spiderProhibited, fightEnvelopeOk } = await import('./tick/m59-decide.mjs');
   const mkObjs = (list) => { const m = new Map(); list.forEach((o, i) => m.set(o.id ?? 100 + i, o)); return m; };
-  const mobNames = new Set(['giant rat', 'spider', 'mummy'].map(mobNameKey));
+  const mobNames = new Set(['giant rat', 'spider', 'mummy', 'orc'].map(mobNameKey));
   const base = { meCol: 10, meRow: 10, ceiling: 30, allowSpiders: false, mobNames, nameOf: (o) => o.name ?? '' };
   // Prohibited spider in melee -> danger (even though unselectable as a target).
   let r = findDangerClose({ ...base, objects: mkObjs([{ id: 1, col: 11, row: 10, name: 'spider' }]) });
@@ -231,8 +231,8 @@ console.log('\ndanger-close: spiders and over-ceiling mobs in melee raise the al
   // Baby spider in melee -> not danger (fightable).
   r = findDangerClose({ ...base, objects: mkObjs([{ id: 2, col: 11, row: 10, name: 'baby spider', max_health: 25 }]) });
   ok('baby spider is not danger', r === null, JSON.stringify(r?.id));
-  // Known over-ceiling mob in melee -> danger.
-  r = findDangerClose({ ...base, objects: mkObjs([{ id: 3, col: 10, row: 11, name: 'giant rat', max_health: 200 }]) });
+  // Known over-ceiling mob in melee -> danger (true kod level, not HP).
+  r = findDangerClose({ ...base, objects: mkObjs([{ id: 3, col: 10, row: 11, name: 'orc', max_health: 200 }]) });
   ok('over-ceiling mob in melee raises danger', r && r.id === 3, JSON.stringify(r?.id));
   // In-band mob in melee -> not danger (fight it normally).
   r = findDangerClose({ ...base, objects: mkObjs([{ id: 4, col: 10, row: 11, name: 'giant rat', max_health: 30 }]) });
@@ -246,7 +246,7 @@ console.log('\nanyMobNear: hostile presence regardless of target selection');
 {
   const { anyMobNear, mobNameKey } = await import('./tick/m59-decide.mjs');
   const mkObjs = (list) => { const m = new Map(); list.forEach((o, i) => m.set(o.id ?? 100 + i, o)); return m; };
-  const mobNames = new Set(['giant rat', 'spider'].map(mobNameKey));
+  const mobNames = new Set(['giant rat', 'spider', 'orc'].map(mobNameKey));
   const base = { meCol: 10, meRow: 10, maxD2: 10, mobNames, nameOf: (o) => o.name ?? '' };
   let r = anyMobNear({ ...base, objects: mkObjs([{ id: 1, col: 12, row: 10, name: 'giant rat' }]) });
   ok('rat nearby is presence', r && r.id === 1, JSON.stringify(r?.id));
@@ -265,6 +265,26 @@ console.log('\nfightEnvelopeOk: no cross-room chases while traveling');
   ok('traveling: near target engaged', fightEnvelopeOk({ traveling: true, targetD2: 25 }) === true, 'near+travel');
   ok('traveling: far target dropped (exit instead)', fightEnvelopeOk({ traveling: true, targetD2: 1600 }) === false, 'far+travel');
   ok('traveling: unknown range dropped', fightEnvelopeOk({ traveling: true, targetD2: null }) === false, 'null+travel');
+}
+
+console.log('\nprohibitedKind + knownLevel: pedes unhunted, true levels band');
+{
+  const { prohibitedKind, findDangerClose, mobNameKey } = await import('./tick/m59-decide.mjs');
+  const { knownLevel, MONSTER_LEVELS } = await import('./tick/m59-levels.mjs');
+  ok('table has 72 true levels', Object.keys(MONSTER_LEVELS).length === 72, String(Object.keys(MONSTER_LEVELS).length));
+  ok('centipede known 30', knownLevel('centipede', mobNameKey) === 30, String(knownLevel('centipede', mobNameKey)));
+  ok('centipede prohibited by default', prohibitedKind('centipede', {}) === true, 'pede');
+  ok('centipede allowed when specialized', prohibitedKind('centipede', { huntCentipedes: true }) === false, 'pede+policy');
+  ok('spider still prohibited', prohibitedKind('spider', {}) === true, 'spider');
+  ok('baby spider still exempt', prohibitedKind('baby spider', {}) === false, 'baby');
+  ok('giant rat untouched', prohibitedKind('giant rat', {}) === false, 'rat');
+  const mkObjs = (list) => { const m = new Map(); list.forEach((o, i) => m.set(o.id ?? 100 + i, o)); return m; };
+  const mobNames = new Set(['centipede'].map(mobNameKey));
+  const base = { meCol: 10, meRow: 10, ceiling: 30, mobNames, nameOf: (o) => o.name ?? '' };
+  let r = findDangerClose({ ...base, objects: mkObjs([{ id: 7, col: 11, row: 10, name: 'centipede' }]) });
+  ok('pede in melee is danger (flee, not fight)', r && r.id === 7, JSON.stringify(r?.id));
+  r = findDangerClose({ ...base, allowCentipedes: true, objects: mkObjs([{ id: 7, col: 11, row: 10, name: 'centipede', max_health: 20 }]) });
+  ok('specialized + weak pede is not danger', r === null, JSON.stringify(r?.id));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

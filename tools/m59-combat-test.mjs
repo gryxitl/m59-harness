@@ -17,7 +17,7 @@ function rig({ meCol = 5, meRow = 5, targetCol = 8, targetRow = 5, targetId = 10
   const geo = { fineWalkable: (r, c) => isWalkable(r, c), standable: (r, c) => isWalkable(r, c) };
   const objects = new Map();
   if (targetId != null) {
-    objects.set(targetId, { id: targetId, col: targetCol, row: targetRow, name: 'centipede', flags: targetFlags });
+    objects.set(targetId, { id: targetId, col: targetCol, row: targetRow, name: 'giant rat', flags: targetFlags });
   }
   const session = {
     name: 'test', live: true,
@@ -25,7 +25,7 @@ function rig({ meCol = 5, meRow = 5, targetCol = 8, targetRow = 5, targetId = 10
       state: 'game',
       self: { col: meCol, row: meRow, x: meCol * 64 + 32, y: meRow * 64 + 32 },
       room: { objects },
-      rsc: { get: () => 'centipede' },
+      rsc: { get: () => 'giant rat' },
       moveTo: (x, y) => sent.push({ x, y }),
       moveSpeed: () => 1,
       vitals: () => ({ health: { value: hpPct, max: 100, pct: hpPct } }),
@@ -69,7 +69,7 @@ console.log('\nfights from range: one swing per SWING_MS');
 {
   const { controller, act, sent, frame } = rig({ meCol: 1, meRow: 1, targetCol: 2, targetRow: 1 });
   controller.phase = 'fight';
-  controller.targetId = 100; controller.targetName = 'centipede';
+  controller.targetId = 100; controller.targetName = 'giant rat';
   controller.lastSwing = 0;
   const r1 = controller.tick(frame(), act);
   ok('first tick swings', r1.kind === 'swing', r1.kind);
@@ -92,7 +92,7 @@ console.log('\nre-engages when HP recovers');
 {
   const { controller, act, sent, frame } = rig({ meCol: 1, meRow: 1, targetCol: 6, targetRow: 1 });
   controller.phase = 'retreat';
-  controller.targetId = 100; controller.targetName = 'centipede';
+  controller.targetId = 100; controller.targetName = 'giant rat';
   controller._retreatStart = Date.now();
   // HP is full (100), so retreat should give up and re-engage.
   const r = controller.tick(frame(), act);
@@ -103,7 +103,7 @@ console.log('\nretreat timeout: re-engages after 60s even if still low');
 {
   const { controller, act, sent, frame } = rig({ meCol: 1, meRow: 1, targetCol: 6, targetRow: 1, hpPct: 40 });
   controller.phase = 'retreat';
-  controller.targetId = 100; controller.targetName = 'centipede';
+  controller.targetId = 100; controller.targetName = 'giant rat';
   controller._retreatStart = Date.now() - 61000; // 61s ago
   const r = controller.tick(frame(), act);
   ok('phase back to close (timeout)', controller.phase === 'close', controller.phase);
@@ -205,14 +205,14 @@ console.log('\npath distance counts squares, not nodes');
     finePathProtocol: (fx, fy, tx, ty) => ({ found: true, waypoints: [{ x: tx, y: ty }], expanded: 1 }),
   };
   const objects = new Map();
-  objects.set(100, { id: 100, col: 8, row: 5, name: 'centipede', flags: 0 });
+  objects.set(100, { id: 100, col: 8, row: 5, name: 'giant rat', flags: 0 });
   const session = {
     name: 'test', live: true,
     client: {
       state: 'game',
       self: { col: 5, row: 5, x: 5 * 64 + 32, y: 5 * 64 + 32 },
       room: { objects },
-      rsc: { get: () => 'centipede' },
+      rsc: { get: () => 'giant rat' },
       moveTo: (x, y) => sent.push({ x, y }),
       moveSpeed: () => 1,
       vitals: () => ({ health: { value: 100, max: 100, pct: 100 } }),
@@ -225,6 +225,18 @@ console.log('\npath distance counts squares, not nodes');
   const controller = new CombatController(session);
   const r = controller.tick(frame(), act);
   ok('3 squares out walks instead of swinging at air', r.kind === 'walk', r.kind + ' ' + (r.what ?? ''));
+}
+
+console.log('\nprohibited kinds are not grabbed by the fallback scan');
+{
+  const t = rig({ meCol: 5, meRow: 5, targetCol: 6, targetRow: 5 });
+  t.controller.targetId = null;
+  t.session.client.rsc = { get: () => 'centipede' };
+  const objs = t.frame().objects;
+  objs.clear();
+  objs.set(100, { id: 100, col: 6, row: 5, name: 'centipede', flags: 0 });
+  const r = t.controller.tick(t.frame(), t.act, { has_target: true });
+  ok('fallback scan refuses the pede', r.kind === 'idle', r.kind);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -254,14 +254,16 @@ export class CombatController {
           // Only consider objects that look like mobs (have a name
           // that's not an item/exit). The world state already
           // filtered for hostiles; we just need to find the object.
-          // Never grab spiders unless specialized (policy): token-set key,
+          // Never grab spiders or centipedes unless specialized (policy): token-set key,
           // duplicated here to avoid a decide import cycle (canonical rule
-          // lives in m59-decide spiderProhibited). Baby spiders exempt.
+          // lives in m59-decide prohibitedKind). Baby spiders exempt.
           const oNm = String(c.rsc?.get?.(o.nameRsc) ?? o.name ?? '')
             .replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()
             .split(/[^a-z]+/).filter(Boolean).sort().join(' ');
+          const pol = (this.session?.policy ?? {});
           if (oNm.split(' ').includes('spider') && oNm !== 'baby spider'
-              && (session?.policy ?? {})?.huntSpiders !== true) continue;
+              && pol?.huntSpiders !== true) continue;
+          if (oNm.split(' ').includes('centipede') && pol?.huntCentipedes !== true) continue;
           if (o.col != null && o.row != null) {
             target = o;
             this.targetId = o.id;
