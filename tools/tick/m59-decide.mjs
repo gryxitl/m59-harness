@@ -264,6 +264,7 @@ export function findAttackerSwitch({ meCol, meRow, objects, currentId, blacklist
   return attacker;
 }
 import { loadMap, findPath, hazardReason } from '../m59-map.mjs';
+import { tickEdgeExits } from './m59-exits.mjs';
 import { loadoutFor } from '../m59-loadout.mjs';
 import { resolveRoomNum, routeIntent } from './m59-route.mjs';
 import { isGrounded, nearestGrounded } from './m59-ground.mjs';
@@ -1495,7 +1496,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
         // forwards exits sooner (the 556 spider gauntlet proved this: flee
         // south = 50 squares chased, flee north = 20 to the door).
         try {
-          const exits = session.world?.exits?.() ?? [];
+          const exits = fleeExits(session, ws);
           // Never flee into a never-enter room (acid-gas shrine et al).
           // Prefer the route's next hop when traveling (flee forward).
           const hop = router?.leg?.next ?? null;
@@ -1521,13 +1522,39 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       return;
     }
 
+// FLEE EXITS (merged): live world.exits() drops real doors (watched: 382
+// north, 557 north), which stranded flee-forward on the fallback. Gap-fill
+// with the tick edge provider (map topology + baked approaches + witnessed
+// crossings), deduped by destination. Pure-ish (reads session/world).
+function fleeExits(session, ws) {
+  let live = [];
+  try { live = session?.world?.exits?.() ?? []; } catch {}
+  let extra = [];
+  try {
+    extra = tickEdgeExits({
+      map: session?._router?.map ?? loadMap(),
+      roomNum: ws?._roomNum ?? session?.world?.room?.num ?? null,
+      geo: session?.world?.geometry ?? null,
+    }) ?? [];
+  } catch {}
+  if (!extra.length) return live;
+  const seen = new Set(live.map(e => Number(e.to)));
+  const out = [...live];
+  for (const x of extra) {
+    const to = Number(x.to);
+    if (!Number.isFinite(to) || seen.has(to)) continue;
+    seen.add(to);
+    out.push({ to, direction: x.direction ?? x.leaveName ?? '?', stand_on: x.stand_on ?? null });
+  }
+  return out;
+}
     // 2b2. FLEE HURT: hurt with a target in the room. Same
     // behavior as flee_danger: run for the nearest exit (route hop first).
     if (active?.goal === 'flee_hurt') {
       const router = session._router;
       if (router) {
         try {
-          const exits = session.world?.exits?.() ?? [];
+          const exits = fleeExits(session, ws);
           const hop = router?.leg?.next ?? null;
           const exit = (hop != null ? exits.find(e => e.to === hop && !hazardReason(e.to)) : null)
             ?? exits.find(e => !hazardReason(e.to)) ?? null;
