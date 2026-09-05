@@ -865,5 +865,18 @@ console.log('\ncasting hold: no sends while a cast is charging');
   ok('movement resumes after', r2.state !== 'casting', r2.state);
 }
 
+console.log('\nrest hold: a sent rest stills the mover for trance');
+{
+  const { mover, sent, session } = rig({});
+  mover.to(8, 2);
+  session._restHold = true;
+  const r = mover.tick();
+  ok('mover holds while resting', r.state === 'resting' && r.hold === true, r.state);
+  ok('nothing sent while holding', sent.length === 0, JSON.stringify(sent));
+  session._restHold = false;
+  const r2 = mover.tick();
+  ok('movement resumes after', r2.state !== 'resting', r2.state);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

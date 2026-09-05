@@ -1379,6 +1379,12 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     }
     _wasResting = _resting;
 
+    // REST HOLD (default off): a rest that sends holds the mover (stillness)
+    // so micro-steps stop breaking trance — vigor needs 2.5s of continuous
+    // rest per point and never recovers while arrival-dithers land. Rest
+    // handlers opt back in below when their rest actually sends.
+    try { session._restHold = false; } catch {}
+
     // 2a1. HEALTHY (rest to recover HP) — but HP REGEN IS GATED BEHIND THE
     // FIRST-MOVE FLAG. The server's HealthTimer only gains a point when
     // (piFlags & PFLAG_MOVED_SINCE_ENTRY) is set (player.kod:2645), and that
@@ -1439,6 +1445,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       // Already poked (flag should be set): just rest. The server regens on its own.
       const r = intend('rest', frame, act, { client, session, ws });
       note(active.goal, r.sent);
+      if (r.sent === true) { try { session._restHold = true; } catch {} }
       onDecision?.({ ticks, goal: 'healthy', action: 'rest',
         sent: r.sent, what: r.what ?? null, why: r.why ?? null });
       return;
@@ -1468,6 +1475,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       }
       const r = intend('rest', frame, act, { client, session, ws });
       note(active.goal, r.sent);
+      if (r.sent === true) { try { session._restHold = true; } catch {} }
       onDecision?.({ ticks, goal: 'vigor_low', action: 'rest',
         sent: r.sent, what: r.what ?? null, why: r.why ?? null });
       return;

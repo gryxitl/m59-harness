@@ -404,6 +404,9 @@ export class Mover {
     // session._castingUntil; the mover holds (no sends) until it lapses.
     // Same family as the blink-pending hold below.
     if (Date.now() < (this.session?._castingUntil ?? 0)) return { state: 'casting', hold: true };
+    // REST HOLD: a sent rest holds the mover (stillness for trance). Set by
+    // the decider when healthy/vigor_low rests; cleared every tick otherwise.
+    if (this.session?._restHold === true) return { state: 'resting', hold: true };
     // HEARTBEAT (permanent, 60s): the mover is otherwise silent when gated
     // or holding, which made multi-minute stalls undiagnosable. One line.
     if (Date.now() - (this._hbAt ?? 0) > 60000) {
