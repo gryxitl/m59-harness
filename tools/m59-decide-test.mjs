@@ -287,5 +287,14 @@ console.log('\nprohibitedKind + knownLevel: pedes unhunted, true levels band');
   ok('specialized + weak pede is not danger', r === null, JSON.stringify(r?.id));
 }
 
+console.log('\nTOWN_SMITH: buy routes to the town smith shop');
+{
+  const { TOWN_SMITH } = await import('./tick/m59-decide.mjs');
+  ok('Marion -> Colhorr (201)', TOWN_SMITH[200] === 201, String(TOWN_SMITH[200]));
+  ok('Limping Toad -> Colhorr (201)', TOWN_SMITH[202] === 201, String(TOWN_SMITH[202]));
+  ok('Tos -> Quintor (374)', TOWN_SMITH[50] === 374, String(TOWN_SMITH[50]));
+  ok('Raza inn/field -> 1013', TOWN_SMITH[1011] === 1013 && TOWN_SMITH[1012] === 1013, 'raza');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

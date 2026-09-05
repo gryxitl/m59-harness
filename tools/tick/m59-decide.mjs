@@ -397,6 +397,11 @@ export const INTENTS = {
     }
     // A merchant is present. But neither the Raza Inn (1011, innkeeper Marcus, no
     // weapons) nor the Raza field (1012, no merchant) has a weapon for sale. If we're
+// TOWN -> SMITH SHOP. Buy routes here when the current room has no weapon
+// seller (pure — unit tested via TOWN_SMITH). Marion's Colhorr is in 201
+// (Ye Olde Slasher Salesman), reached by the go-door at (43,31) — the
+// buy-affordance object at (37,80) in Marion opens no shop list.
+export const TOWN_SMITH = { 200: 201, 202: 201, 50: 374, 1011: 1013, 1012: 1013 };
     // in either, route to the Raza Blacksmith (1013) where the smith sells weapons.
     // Same if a cached list has no weapon.
     const roomNum = c.room?.num ?? s?.world?.room?.num;
@@ -404,10 +409,14 @@ export const INTENTS = {
     const listHasWeapon = buyList?.items?.length
       ? buyList.items.some(i => /mace|sword|axe|club|hammer|dagger|staff|spear|blade|knife/i.test(String(c.rsc?.get?.(i.nameRsc) ?? i.name ?? '')))
       : null;  // null = list not cached yet
-    if (roomNum === 1011 || roomNum === 1012 || listHasWeapon === false) {
+    // Route to the town smith when the current room sells no weapons: known
+    // towns (unless already at the smith shop), or anywhere whose cached
+    // list has no weapon. Destination falls back to Raza off the map towns.
+    const smithHere = TOWN_SMITH[roomNum];
+    if ((smithHere != null && roomNum !== smithHere && listHasWeapon !== true) || listHasWeapon === false) {
       // Inn or field (no weapons here) or a cached list with no weapon: go to the smith.
       if (s?._router) {
-        const dest = 1013;  // Raza Blacksmith
+        const dest = TOWN_SMITH[roomNum] ?? 1013;  // town smith shop (Raza fallback)
         if (s) s._buyingRoute = dest;
         const curDest = s._router.dest;
         if (curDest == null) {
