@@ -31,7 +31,7 @@
 // the fine model says "wall" but the server says "floor".
 
 import { protocolToClient, clientToProtocol, KOD_FINENESS, PLAYER_RADIUS } from '../m59-roo.mjs';
-import { isGrounded, isEmbedded, segHeightOk } from './m59-ground.mjs';
+import { isGrounded, isEmbedded, nearestGrounded, segHeightOk } from './m59-ground.mjs';
 import '../m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
 // CANDIDATE ORDERING (pure, unit tested). Loop avoidance (unvisited
 // squares first) engages ONLY while stuck: applied every tick it turns
@@ -792,9 +792,18 @@ export class Mover {
       const angle = FAN[idx % FAN.length];
       // Direction to the AIM (waypoint if path exists, target if not) for
       // the base angle, from the server point. The fan slides along the wall
-      // toward the aim.
-      const dx = aimX - srvX;
-      const dy = aimY - srvY;
+      // toward the aim. GROUND-SEEKING ESCAPE: starting on void, aim at the
+      // nearest grounded square instead of the travel aim — wandering void
+      // is how characters get lost and die; walk out to solid ground first.
+      let fanAimX = aimX, fanAimY = aimY;
+      if (startIsVoid) {
+        try {
+          const ng = nearestGrounded(this.session?.world?.geometry, curCol, curRow, { maxRadius: 40 });
+          if (ng) { fanAimX = ng.col * KOD_FINENESS + HALF; fanAimY = ng.row * KOD_FINENESS + HALF; }
+        } catch { /* keep the travel aim */ }
+      }
+      const dx = fanAimX - srvX;
+      const dy = fanAimY - srvY;
       const dist = Math.hypot(dx, dy);
       const baseAngle = Math.atan2(dy, dx);
       const finalAngle = baseAngle + angle;
