@@ -56,14 +56,16 @@ export function orderCandidates(candidates, recentSteps, stuckTicks, opts = {}) 
 }
 // DITHER VERDICT (pure — unit tested). The progress window holds
 // {t,col,row,sends} samples (server squares); full when it spans winMs.
-// Dithering = full window + net displacement under a square + sends flowed.
+// Dithering = full window + net displacement of at most a square + sends
+// flowed (a 1-square N-S jitter moves the server every tick, defeating
+// stuck-counting, while going nowhere). Stillness without sends is rest.
 export function dithered(window, nowMs, winMs) {
   if (!window?.length) return false;
   const first = window[0];
   if (nowMs - first.t < winMs) return false;
   const last = window[window.length - 1];
   const net = Math.max(Math.abs(last.col - first.col), Math.abs(last.row - first.row));
-  return net < 1 && (last.sends ?? 0) > (first.sends ?? 0);
+  return net <= 1 && (last.sends ?? 0) > (first.sends ?? 0);
 }
 
 // 256 client units = 16 protocol units per 100ms tick (walking).

@@ -846,6 +846,8 @@ console.log('\ndithered: sends with no net progress over a full window');
      dithered(win(now - 16000, [[2,2],[2,2],[2,3],[2,2]], 5), now, 15000) === true, 'dither');
   ok('real progress is not dither',
      dithered(win(now - 16000, [[2,2],[5,5]], 5), now, 15000) === false, 'progress');
+  ok('1-square jitter with sends flowing is dither',
+     dithered(win(now - 16000, [[22,81],[22,80],[22,81]], 5), now, 15000) === true, 'jitter');
   ok('stillness without sends is rest, not dither',
      dithered(win(now - 16000, [[2,2],[2,2]], 5).map(s => ({ ...s, sends: 5 })), now, 15000) === false, 'rest');
 }
