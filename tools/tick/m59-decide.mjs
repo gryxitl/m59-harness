@@ -174,6 +174,10 @@ export function anyMobNear({ meCol, meRow, objects, maxD2 = 10, mobNames, nameOf
   }
   return null;
 }
+export function fightEnvelopeOk({ traveling, targetD2, rangeSq = 64 }) {
+  if (traveling !== true) return true;
+  return (targetD2 ?? 99) <= rangeSq;
+}
 // DANGER-CLOSE DECISION (pure — unit tested). Returns the threatening mob or
 // null: nearest hostile in melee range that is EITHER a prohibited spider
 // (never fightable, but very much able to eat us) or known over the threat
@@ -1199,6 +1203,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             ws._targetLevel = targetLevel;
             // Re-derive the target-dependent symbols.
             ws.has_target = true;
+            ws._targetD2 = bestD2;
             ws.in_reach = bestD2 <= 4; // MELEE_REACH = 2, squared = 4
             // If the level is unknown, treat as in-band (the
             // GOAP keeper's default: a ceiling that defaults
@@ -1211,6 +1216,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           // Target still in room: re-derive in_reach.
           const d2 = (target.col - me.col) ** 2 + (target.row - me.row) ** 2;
           ws.in_reach = d2 <= 4;
+          ws._targetD2 = d2;
           ws.has_target = true;
           const tLevel = target.max_health ?? target.health ?? null;
           ws.target_in_band = tLevel == null ? true : tLevel <= (ws._threatCeiling ?? Infinity);
@@ -1271,6 +1277,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       }
     }
 
+    ws._traveling = (session._router?.dest ?? null) != null;
     // 1b. POSITION CONFIRMATION. The server does not push our position.
     // Fire a confirm at a fixed cadence (the mover rate-limits internally).
     // This is fire-and-forget: the tick continues with dead reckoning
@@ -1943,7 +1950,8 @@ export const DEFAULT_GOALS = [
                                  && (ws.hurt === true || ws.vigor_floor !== false)
                                  // Don't fight if the target is on a
                                  // different elevation (unreachable).
-                                 && ws._targetElevated !== true },
+                                 && ws._targetElevated !== true
+                                 && fightEnvelopeOk({ traveling: ws._traveling, targetD2: ws._targetD2 }) },
   { goal: 'armed',    when: ws => ws.armed === false && ws.is_caster !== true },
   // HUNT before eating: the character should go find work (a mob to fight)
   // rather than sitting in town eating. Vigor management matters during

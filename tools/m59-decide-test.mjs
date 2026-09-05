@@ -221,7 +221,7 @@ console.log('\nequip condemns silent-broken weapons after 3 gated attempts');
 
 console.log('\ndanger-close: spiders and over-ceiling mobs in melee raise the alarm');
 {
-  const { findDangerClose, mobNameKey, spiderProhibited } = await import('./tick/m59-decide.mjs');
+  const { findDangerClose, mobNameKey, spiderProhibited, fightEnvelopeOk } = await import('./tick/m59-decide.mjs');
   const mkObjs = (list) => { const m = new Map(); list.forEach((o, i) => m.set(o.id ?? 100 + i, o)); return m; };
   const mobNames = new Set(['giant rat', 'spider', 'mummy'].map(mobNameKey));
   const base = { meCol: 10, meRow: 10, ceiling: 30, allowSpiders: false, mobNames, nameOf: (o) => o.name ?? '' };
@@ -256,6 +256,14 @@ console.log('\nanyMobNear: hostile presence regardless of target selection');
   ok('far rat is not presence', r === null, JSON.stringify(r?.id));
   r = anyMobNear({ ...base, objects: mkObjs([{ id: 4, col: 11, row: 10, name: 'mushroom' }]) });
   ok('items are not presence', r === null, JSON.stringify(r?.id));
+}
+
+console.log('\nfightEnvelopeOk: no cross-room chases while traveling');
+{
+  ok('not traveling: far target still chased (in-room hunt)', fightEnvelopeOk({ traveling: false, targetD2: 1600 }) === true, 'far+notravel');
+  ok('traveling: near target engaged', fightEnvelopeOk({ traveling: true, targetD2: 25 }) === true, 'near+travel');
+  ok('traveling: far target dropped (exit instead)', fightEnvelopeOk({ traveling: true, targetD2: 1600 }) === false, 'far+travel');
+  ok('traveling: unknown range dropped', fightEnvelopeOk({ traveling: true, targetD2: null }) === false, 'null+travel');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
