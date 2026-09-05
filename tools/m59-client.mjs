@@ -1289,6 +1289,13 @@ export class M59Client {
       case BP.PLAYER: {
         const p = parsePlayer(body);
         this.selfId = p.id;
+        // selfId just landed (possibly after the contents): sweep identity
+        // flags so the self object is marked even if contents came first.
+        try {
+          for (const o of this.room?.objects?.values?.() ?? []) {
+            o.is_self = (o.id != null && o.id === this.selfId);
+          }
+        } catch {}
         this.room.id = p.roomId;
         this.room.security = p.security;
         this.room.flags = p.roomFlags;
@@ -1318,6 +1325,13 @@ export class M59Client {
         this.room.id = res.roomId;
         this.room.objects = new Map(res.objects.map(o => {
           o.appearanceRevision = ++this.appearanceRevision;
+          // Identity flags at the source: every downstream is_self/is_player
+          // filter (tick target selection, combat fallback) reads these raw
+          // objects. Without them the character can target itself (watched:
+          // "swing at Lee" by Lee) or misread players as mobs.
+          o.is_self = (o.id != null && o.id === this.selfId);
+          o.is_player = !!(o.flags & 0x0004);
+          o.can_attack = !!(o.flags & 0x0008);
           return [o.id, o];
         }));
         // SELF-HEAL A STALE selfId. selfId is set only by the BP.PLAYER packet (one per
@@ -1348,6 +1362,9 @@ export class M59Client {
         const res = parseCreate(body);
         if (!this.check('CREATE', res)) break;
         res.object.appearanceRevision = ++this.appearanceRevision;
+        res.object.is_self = (res.object.id != null && res.object.id === this.selfId);
+        res.object.is_player = !!(res.object.flags & 0x0004);
+        res.object.can_attack = !!(res.object.flags & 0x0008);
         this.room.objects.set(res.object.id, res.object);
         this.emit('appeared', { id: res.object.id, what: describeObject(res.object, this.lookup) });
         break;
