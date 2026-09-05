@@ -53,6 +53,13 @@ export async function buy(client, session, { itemId, waitMs = 1200, name: wantNa
   // pass, which is a re-read of the world between every phase rather than a plan made
   // once and executed blind.
   let buyList = c.buyList;
+  // STALE LIST: the cache is per-room (a Raza weapon list must not suppress
+  // the Marion smith trip or offer Raza prices in Marion). Drop it when the
+  // room changed since it was cached.
+  try {
+    const rn = session?.world?.room?.num ?? client?.room?.num ?? null;
+    if (buyList?.room != null && rn != null && buyList.room !== rn) { buyList = null; c.buyList = null; }
+  } catch { /* keep the list on lookup failure */ }
   let answered = null;  // hoisted: the purchase phase (outside the open-shop block) needs the seller
 
   if (!buyList?.items?.length) {
@@ -146,6 +153,7 @@ export async function buy(client, session, { itemId, waitMs = 1200, name: wantNa
       return { sent: true, bought: false, reason: 'no merchant in this room opened a shop list' };
     }
     buyList = { items: answered.items };
+    try { buyList.room = session?.world?.room?.num ?? client?.room?.num ?? null; } catch {}
     c.buyList = buyList;  // cache so later passes skip the re-open
   }
 

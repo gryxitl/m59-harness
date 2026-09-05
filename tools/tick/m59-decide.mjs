@@ -405,7 +405,8 @@ export const INTENTS = {
     // in either, route to the town smith where the smith sells weapons.
     // Same if a cached list has no weapon.
     const roomNum = c.room?.num ?? s?.world?.room?.num;
-    const buyList = c.buyList;
+    // Ignore a shop list cached in another room (see buy.mjs stale-list guard).
+    const buyList = (c.buyList?.room == null || c.buyList.room === roomNum) ? c.buyList : null;
     const listHasWeapon = buyList?.items?.length
       ? buyList.items.some(i => /mace|sword|axe|club|hammer|dagger|staff|spear|blade|knife/i.test(String(c.rsc?.get?.(i.nameRsc) ?? i.name ?? '')))
       : null;  // null = list not cached yet
