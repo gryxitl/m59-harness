@@ -852,5 +852,18 @@ console.log('\ndithered: sends with no net progress over a full window');
      dithered(win(now - 16000, [[2,2],[2,2]], 5).map(s => ({ ...s, sends: 5 })), now, 15000) === false, 'rest');
 }
 
+console.log('\ncasting hold: no sends while a cast is charging');
+{
+  const { mover, sent, session } = rig({});
+  mover.to(8, 2);
+  session._castingUntil = Date.now() + 5000;
+  const r = mover.tick();
+  ok('mover holds during the cast', r.state === 'casting' && r.hold === true, r.state);
+  ok('nothing sent while holding', sent.length === 0, JSON.stringify(sent));
+  session._castingUntil = Date.now() - 1;
+  const r2 = mover.tick();
+  ok('movement resumes after', r2.state !== 'casting', r2.state);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -398,6 +398,12 @@ export class Mover {
    */
   tick(posOverride) {
     if (!this.active) return { state: 'idle' };
+    // CASTING HOLD: movement breaks concentration (server-side cast time),
+    // so a cast never completes while strides go out every second — mana
+    // stays full and the intent re-fires forever. Any cast stamps
+    // session._castingUntil; the mover holds (no sends) until it lapses.
+    // Same family as the blink-pending hold below.
+    if (Date.now() < (this.session?._castingUntil ?? 0)) return { state: 'casting', hold: true };
     // HEARTBEAT (permanent, 60s): the mover is otherwise silent when gated
     // or holding, which made multi-minute stalls undiagnosable. One line.
     if (Date.now() - (this._hbAt ?? 0) > 60000) {

@@ -591,6 +591,9 @@ function castIntent(name, f, act, ctx) {
   const spell = knownSpells(ctx.client).find(sp => String(sp.name).toLowerCase() === want);
   if (!spell) return { sent: false, why: `does not know ${want}` };
   act.cast(spell.id, []);
+  // Stillness for the cast-time: movement breaks concentration (see the
+  // mover's casting hold). 5s covers ordinary cast times.
+  try { if (ctx?.session) ctx.session._castingUntil = Date.now() + 5000; } catch {}
   return { sent: true, what: name };
 }
 
