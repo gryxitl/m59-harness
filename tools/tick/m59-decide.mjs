@@ -158,6 +158,22 @@ export function spiderProhibited(name, policy) {
   return key.split(' ').includes('spider') && key !== 'baby spider';
 }
 
+// NEARBY-HOSTILE SCAN (pure — unit tested). Any hostile-ish object within
+// maxD2 (squared) of the character: recognized mobs of any kind (spiders
+// included — this is about WHO IS HERE, not what we chose to fight), plus
+// attack-flagged players. Used to refuse sitting down mid-mauling.
+export function anyMobNear({ meCol, meRow, objects, maxD2 = 10, mobNames, nameOf }) {
+  for (const o of (objects?.values?.() ?? [])) {
+    if (o.is_self) continue;
+    if (o.col == null || o.row == null) continue;
+    const objName = mobNameKey(nameOf ? nameOf(o) : (o.name ?? ''));
+    const isMob = (o.is_player && o.can_attack) || (mobNames?.size > 0 && mobNames.has(objName));
+    if (!isMob) continue;
+    const d2 = (o.col - meCol) ** 2 + (o.row - meRow) ** 2;
+    if (d2 <= maxD2) return o;
+  }
+  return null;
+}
 // DANGER-CLOSE DECISION (pure — unit tested). Returns the threatening mob or
 // null: nearest hostile in melee range that is EITHER a prohibited spider
 // (never fightable, but very much able to eat us) or known over the threat
@@ -1232,6 +1248,29 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       } catch { ws._dangerClose = null; }
     }
 
+    // MOB-NEAR (unfiltered): any hostile-ish within melee+1, for the
+    // stand-under-fire rule below. Unlike target selection this includes
+    // spiders and ignores band — it answers WHO IS HERE, not whom to fight.
+    ws._mobNear = null;
+    {
+      const dObjs = client?.room?.objects;
+      const dMe = session._pose?.current?.() ?? client?.self;
+      if (dObjs instanceof Map && dMe?.col != null) {
+        try {
+          let allNames = new Set();
+          try {
+            const spawns = loadSpawns(SPAWNS_FILE);
+            if (spawns?.byMonster) for (const name of Object.keys(spawns.byMonster)) allNames.add(mobNameKey(name));
+          } catch { /* compendium unavailable */ }
+          ws._mobNear = anyMobNear({
+            meCol: dMe.col, meRow: dMe.row, objects: dObjs, maxD2: 10,
+            mobNames: allNames,
+            nameOf: (o) => client.rsc?.get?.(o.nameRsc) ?? o.name ?? '',
+          });
+        } catch { ws._mobNear = null; }
+      }
+    }
+
     // 1b. POSITION CONFIRMATION. The server does not push our position.
     // Fire a confirm at a fixed cadence (the mover rate-limits internally).
     // This is fire-and-forget: the tick continues with dead reckoning
@@ -1283,6 +1322,15 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // set the flag. After that the server regens on its own and we just rest.
     // Throttled to 30s so a botched poke (blocked step) retries without spamming.
     if (active?.goal === 'healthy' && ws.hurt === true) {
+      // STAND UNDER FIRE: never sit down while taking damage with a hostile
+      // near — sitting through a mauling is how characters rest to death.
+      // Stand (fight/flee engage on following ticks); sit only when safe.
+      if (ws._justDamaged && ws._mobNear) {
+        act.stand?.();
+        onDecision?.({ ticks, goal: 'healthy', action: 'stand',
+          sent: true, what: 'taking damage with a hostile near — standing, not sitting' });
+        return;
+      }
       const hp = client.vitals?.()?.health?.value ?? 0;
       const maxHp = client.vitals?.()?.health?.max ?? 20;
       const now2 = now();
@@ -1341,6 +1389,13 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // can't fight effectively below vigor 20. Resting
     // recovers vigor over time (faster at an inn).
     if (active?.goal === 'vigor_low') {
+      // STAND UNDER FIRE (same rule as healthy above).
+      if (ws._justDamaged && ws._mobNear) {
+        act.stand?.();
+        onDecision?.({ ticks, goal: 'vigor_low', action: 'stand',
+          sent: true, what: 'taking damage with a hostile near — standing, not sitting' });
+        return;
+      }
       const r = intend('rest', frame, act, { client, session, ws });
       note(active.goal, r.sent);
       onDecision?.({ ticks, goal: 'vigor_low', action: 'rest',

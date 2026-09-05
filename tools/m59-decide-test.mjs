@@ -221,7 +221,7 @@ console.log('\nequip condemns silent-broken weapons after 3 gated attempts');
 
 console.log('\ndanger-close: spiders and over-ceiling mobs in melee raise the alarm');
 {
-  const { findDangerClose, mobNameKey } = await import('./tick/m59-decide.mjs');
+  const { findDangerClose, mobNameKey, spiderProhibited } = await import('./tick/m59-decide.mjs');
   const mkObjs = (list) => { const m = new Map(); list.forEach((o, i) => m.set(o.id ?? 100 + i, o)); return m; };
   const mobNames = new Set(['giant rat', 'spider', 'mummy'].map(mobNameKey));
   const base = { meCol: 10, meRow: 10, ceiling: 30, allowSpiders: false, mobNames, nameOf: (o) => o.name ?? '' };
@@ -240,6 +240,22 @@ console.log('\ndanger-close: spiders and over-ceiling mobs in melee raise the al
   // Spider far away -> not danger.
   r = findDangerClose({ ...base, objects: mkObjs([{ id: 5, col: 20, row: 20, name: 'spider' }]) });
   ok('distant spider is not danger', r === null, JSON.stringify(r?.id));
+}
+
+console.log('\nanyMobNear: hostile presence regardless of target selection');
+{
+  const { anyMobNear, mobNameKey } = await import('./tick/m59-decide.mjs');
+  const mkObjs = (list) => { const m = new Map(); list.forEach((o, i) => m.set(o.id ?? 100 + i, o)); return m; };
+  const mobNames = new Set(['giant rat', 'spider'].map(mobNameKey));
+  const base = { meCol: 10, meRow: 10, maxD2: 10, mobNames, nameOf: (o) => o.name ?? '' };
+  let r = anyMobNear({ ...base, objects: mkObjs([{ id: 1, col: 12, row: 10, name: 'giant rat' }]) });
+  ok('rat nearby is presence', r && r.id === 1, JSON.stringify(r?.id));
+  r = anyMobNear({ ...base, objects: mkObjs([{ id: 2, col: 11, row: 10, name: 'spider' }]) });
+  ok('spider nearby counts (unselectable but present)', r && r.id === 2, JSON.stringify(r?.id));
+  r = anyMobNear({ ...base, objects: mkObjs([{ id: 3, col: 20, row: 20, name: 'giant rat' }]) });
+  ok('far rat is not presence', r === null, JSON.stringify(r?.id));
+  r = anyMobNear({ ...base, objects: mkObjs([{ id: 4, col: 11, row: 10, name: 'mushroom' }]) });
+  ok('items are not presence', r === null, JSON.stringify(r?.id));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
