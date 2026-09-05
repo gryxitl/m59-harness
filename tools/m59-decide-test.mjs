@@ -260,6 +260,7 @@ console.log('\nanyMobNear: hostile presence regardless of target selection');
 
 console.log('\nfightEnvelopeOk: no cross-room chases while traveling');
 {
+  const { fightEnvelopeOk } = await import('./tick/m59-decide.mjs');
   ok('not traveling: far target still chased (in-room hunt)', fightEnvelopeOk({ traveling: false, targetD2: 1600 }) === true, 'far+notravel');
   ok('traveling: near target engaged', fightEnvelopeOk({ traveling: true, targetD2: 25 }) === true, 'near+travel');
   ok('traveling: far target dropped (exit instead)', fightEnvelopeOk({ traveling: true, targetD2: 1600 }) === false, 'far+travel');
