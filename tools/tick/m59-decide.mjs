@@ -621,6 +621,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
   let _lastTargetId = null;      // previous tick's target (for stuck-detection, which runs before evaluate)
   let retargetCheckAt = 0;       // wall-clock ms of last re-target check (throttle)
   let _hpPokeAt = 0;             // wall-clock ms of last first-move poke (HP-regen unlock)
+  let _uwDbgAt = 0;               // wall-clock ms of last underworld-identity diagnostic
   let lastSeenHp = null;         // last HP value (to detect "we just took damage")
   let lastDamagedAt = 0;         // wall-clock ms when we last dropped HP
   let _currentTargetId = null;   // the decider's current target (for 3D debug)
@@ -851,6 +852,14 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // NUMBER 1 is The Underworld and is the stable identity: authoritative
     // both ways.
     if (ws._roomNum != null) ws.in_underworld = ws._roomNum === 1;
+    // DIAG (permanent, rate-limited): the in_underworld flap cost hours.
+    // Log the room identity inputs whenever the symbol is true.
+    if (ws.in_underworld === true && Date.now() - (_uwDbgAt ?? 0) > 30000) {
+      _uwDbgAt = Date.now();
+      try {
+        console.error(`[uwdbg] in_underworld=true roomNum=${ws._roomNum} worldRoom=${session?.world?.room?.num ?? 'null'} clientRoomNum=${client?.room?.num ?? 'null'} clientRoomId=${client?.room?.id ?? 'null'} nameRsc=${client?.roomNameRsc ?? 'null'}`);
+      } catch {}
+    }
     ws._maxHp = client?.vitals?.()?.health?.max ?? null;
     // Expose whether the character is moving (the router has a destination).
     // The vigor_low goal yields when the character is moving — resting would
