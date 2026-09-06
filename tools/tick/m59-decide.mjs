@@ -1837,6 +1837,17 @@ function fleeExits(session, ws) {
                 what: `yielding to travel (dest=${router.dest}, not routing to hunt room ${hunt.room})`, sent: false });
               return;
             }
+            // MANUAL LOCK: an operator travel order beats hunt-routing.
+            // Reassert a fresh manual dest instead of grabbing the router.
+            try {
+              const man = session?._manualDest;
+              if (man != null && Date.now() - (man.at ?? 0) < 900000) {
+                router.to(Number(man.dest));
+                onDecision?.({ ticks, goal: 'hunt', action: 'travel',
+                  what: `holding manual dest ${man.dest} (not routing to hunt room ${hunt.room})`, sent: true });
+                return;
+              }
+            } catch { /* fall through to hunt routing */ }
             router.to(hunt.room);
             onDecision?.({ ticks, goal: 'hunt', action: 'travel',
               what: `hunt ${hunt.creature} lv${hunt.level} in room ${hunt.room} (hops=${hunt.hops})`,
