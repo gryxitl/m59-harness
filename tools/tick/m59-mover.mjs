@@ -34,17 +34,19 @@ import { protocolToClient, clientToProtocol, KOD_FINENESS, PLAYER_RADIUS } from 
 import { isGrounded, isEmbedded, nearestGrounded, segHeightOk, transitBanned } from './m59-ground.mjs';
 import '../m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
 // CANDIDATE ORDERING (pure, unit tested). Loop avoidance (unvisited
-// squares first) engages ONLY while stuck: applied every tick it turns
-// straight walks into a drunkard's dither. While the server advances,
-// walk straight at the goal; dead ends backtrack once static.
+// squares first) engages ONLY while genuinely stuck (stuckTicks >= 3,
+// the fan threshold — the echo lags ~1s, so 1-2 static ticks are healthy
+// movement, not stuck): applied any earlier it turns straight walks into
+// a drunkard's dither. While the server advances, walk straight at the
+// goal; dead ends backtrack once static.
 export function orderCandidates(candidates, recentSteps, stuckTicks, opts = {}) {
-  const taboo = stuckTicks > 0 ? (recentSteps ?? []) : [];
+  const taboo = stuckTicks >= 3 ? (recentSteps ?? []) : [];
   let list = candidates;
   // MONSTER RULE (monster.kod MoveInDirection): never step 180 degrees
   // from the goal — wall-follow with the perpendiculars instead. Applies
   // only while moving; a genuinely stuck character may backtrack anywhere.
   const { meCol, meRow, goalCol, goalRow } = opts;
-  if (stuckTicks <= 0 && meCol != null && goalCol != null) {
+  if (stuckTicks < 3 && meCol != null && goalCol != null) {
     const ox = meCol - Math.sign(goalCol - meCol);
     const oy = meRow - Math.sign(goalRow - meRow);
     list = list.filter(([cc, rr]) => !(cc === ox && rr === oy));
