@@ -163,6 +163,7 @@ export class Router {
     if (this.dest !== n) {
       this.dest = n; this.leg = null; this.mark = null; this.subWp = null; this._subWpReplans = 0;
       this._progress = []; this._oscillations = 0; this._badStandOn.clear();
+      this.lastState = 'idle';  // a new destination is never mid-crossing
     }
     return true;
   }
@@ -182,6 +183,8 @@ export class Router {
   _planLeg(here) {
     // A new room: the reachability cache (keyed by room) is for the old room now.
     this._reachCache = null;
+    this.lastState = 'idle';  // a fresh leg is never mid-crossing (stale
+    // 'crossing' poisons vigor_low/travel yields downstream forever).
     const world = this.session?.world;
     if (!world) return { why: 'no world' };
     let hops = null;
@@ -815,7 +818,7 @@ export class Router {
     return this._say(at ? 'crossing' : 'moving', { to: aim, next: this.leg.next });
   }
 
-  _say(state, extra = {}) { this.lastState = state; return { state, ...extra }; }
+  _say(state, extra = {}) { this.lastState = state; try { this._stateAt = this.now(); } catch {} return { state, ...extra }; }
 }
 
 // A route intent for m59-decide.mjs. The router is held by the caller, because a route

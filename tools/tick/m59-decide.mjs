@@ -890,8 +890,11 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     ws._moving = session?._router?.dest != null;
     // Expose whether the character is at a boundary (the router is in the
     // crossing state). The vigor_low goal yields when the character is at a
-    // boundary — resting would prevent the crossing.
-    ws._crossing = session?._router?.lastState === 'crossing';
+    // boundary — resting would prevent the crossing. Freshness-gated (5s):
+    // idle ticks don't run the router, so a fossilized 'crossing' from an
+    // old leg would otherwise yield rest forever.
+    ws._crossing = session?._router?.lastState === 'crossing'
+      && (Date.now() - (session?._router?._stateAt ?? 0) < 5000);
 
     // CASTER GATE (decorated here, NOT in worldstate: the loadout is a file read and
     // worldstate producers are pure by contract — see its header). A caster is a
