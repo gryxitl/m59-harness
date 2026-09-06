@@ -1567,7 +1567,7 @@ export class Mover {
       // branch — the step is fine-model-validated, send it raw.
       if (this._claimMoveSlot()) Promise.resolve(s.client.moveTo(enrProtoX, enrProtoY, 18, s.client.room?.id ?? 0))
         .then(() => { if (process.env.M59_MOVE_DEBUG !== '0')
-          console.error(`[movedbg] t3 gateOK step=(${stepCol},${stepRow}) me=(${me.col},${me.row}) moveTo sent`); })
+          console.error(`[movedbg] t3 gateOK step=(${stepCol},${stepRow}) me=(${me.col},${me.row}) wp=(${wpCol},${wpRow}) idx=${this.pathIdx}/${this.path ? this.path.length : 'null'} stuck=${this.stuckTicks} srv=(${curCol},${curRow}) moveTo sent`); })
         .catch(e => { if (process.env.M59_MOVE_DEBUG !== '0')
           console.error(`[movedbg] t3 gateOK step=(${stepCol},${stepRow}) ERR ${e.message}`); });
       this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
