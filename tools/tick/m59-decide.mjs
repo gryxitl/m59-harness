@@ -706,9 +706,9 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             // Resting: not stuck, just not moving.
           } else if (session?._criticalRest === true) {
             // Critically exhausted (<30, recovering to 60): intentional
-            // stillness. Walking it dry here starts the drain spiral the
-            // hysteresis exists to prevent — and the escape would steal a
-            // manual destination for a hunt room.
+            // stillness. Suppress detection (reset the timer) and do NOT
+            // walk — walking it dry starts the drain spiral, and the escape
+            // would steal a manual destination for a hunt room.
             _lastPosAt = now();
           } else if ((_fighting && !targetOutOfReach) || (mobNearby && !targetOutOfReach)) {
             // Genuinely engaged: fighting a target in reach, or a hostile mob
