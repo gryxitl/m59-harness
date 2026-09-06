@@ -2100,6 +2100,14 @@ export const DEFAULT_GOALS = [
   // in reach even at 40 vigor.
   { goal: 'vigor_low', when: ws => {
       const v = ws._vigor;
+      // CRITICAL HYSTERESIS: once exhaustion (<30) forces rest, hold it
+      // until 60 — otherwise rest exits at 30, moving resumes, drains to
+      // 29, and the character flaps at the boundary forever (watched).
+      try {
+        if (v != null && v < 30 && session) session._criticalRest = true;
+        else if (v != null && v >= 60 && session) session._criticalRest = false;
+      } catch {}
+      const crit = session?._criticalRest === true;
       // YIELD when the character is moving (the router has a destination).
       // Resting would stop the movement. The character can rest when he
       // arrives (the router clears the destination). EXCEPT below the
@@ -2107,7 +2115,7 @@ export const DEFAULT_GOALS = [
       // recovers (rest starves) and crawls forever — rest preempts travel by
       // ladder order (vigor_low sits above hunt). Crossing/in-reach yields
       // stay even when critical (never sit in a doorway or under an attacker).
-      if (ws._moving && (v == null || v >= 30)) return false;
+      if (ws._moving && !crit && (v == null || v >= 30)) return false;
       // YIELD when the character is at a boundary (the router is in the
       // crossing state). Resting would prevent the crossing.
       if (ws._crossing) return false;
