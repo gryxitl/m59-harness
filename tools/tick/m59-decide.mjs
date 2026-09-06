@@ -2039,8 +2039,12 @@ export const DEFAULT_GOALS = [
       const v = ws._vigor;
       // YIELD when the character is moving (the router has a destination).
       // Resting would stop the movement. The character can rest when he
-      // arrives (the router clears the destination).
-      if (ws._moving) return false;
+      // arrives (the router clears the destination). EXCEPT below the
+      // critical floor (30): an exhausted character that keeps walking never
+      // recovers (rest starves) and crawls forever — rest preempts travel by
+      // ladder order (vigor_low sits above hunt). Crossing/in-reach yields
+      // stay even when critical (never sit in a doorway or under an attacker).
+      if (ws._moving && (v == null || v >= 30)) return false;
       // YIELD when the character is at a boundary (the router is in the
       // crossing state). Resting would prevent the crossing.
       if (ws._crossing) return false;
