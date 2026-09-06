@@ -724,7 +724,12 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             // so fall through and let the stuck-detector blink/walk out.
           } else {
             const held = now() - _lastPosAt;
-            if (held > STUCK_MS) {
+            // Critical rest covers micro-walks AND travel-escapes: an
+            // exhausted character neither walks dry nor gets shipped to a
+            // hunt room. It rests to 60 first (then escapes normally if
+            // still stuck).
+            if (session?._criticalRest === true) { _lastPosAt = now(); }
+            else if (held > STUCK_MS) {
             const c = client;
             // Track how many times we've been stuck in THIS room. If we've
             // tried to escape several times and are still stuck, the room
