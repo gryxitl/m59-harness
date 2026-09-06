@@ -243,7 +243,7 @@ export function findDangerClose({ meCol, meRow, objects, ceiling, allowSpiders, 
 // One focused fight is safer than collecting 2-3. Never abandon a joined
 // fight (targetDist2 <= 4), never switch while hurt, never collect out-of-band.
 export function findAttackerSwitch({ meCol, meRow, objects, currentId, blacklist,
-                                     ceiling, hpPct, targetDist2, mobNames, nameOf }) {  if (targetDist2 <= 4) return null;   // already joined: finish it
+                                     ceiling, hpPct, targetDist2, mobNames, nameOf, allowPlayers = false }) {  if (targetDist2 <= 4) return null;   // already joined: finish it
   if (hpPct < 50) return null;         // too hurt to collect a second fight
   const meleeD2 = 5;                   // MELEE_REACH=2, squared=4, small margin
   let attacker = null, attackerD2 = Infinity;
@@ -253,7 +253,9 @@ export function findAttackerSwitch({ meCol, meRow, objects, currentId, blacklist
     const oId = o.id ?? o.obj_id;
     if (oId != null && (oId === currentId || blacklist?.has(oId))) continue;
     const objName = mobNameKey(nameOf ? nameOf(o) : (o.name ?? ''));
-    const isMob = (o.is_player && o.can_attack) || (mobNames?.size > 0 && mobNames.has(objName));
+    // Players only when explicitly allowed (defendAgainstPlayers policy).
+    // Presence/danger still see them (stand/flee), but we never TARGET them.
+    const isMob = (allowPlayers && o.is_player && o.can_attack) || (mobNames?.size > 0 && mobNames.has(objName));
     if (!isMob) continue;
     const d2 = (o.col - meCol) ** 2 + (o.row - meRow) ** 2;
     if (d2 > meleeD2) continue;
@@ -1090,6 +1092,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             meCol: me.col, meRow: me.row, objects,
             currentId: _lastTargetId, blacklist: _blacklist, ceiling,
             hpPct, targetDist2: tD2, mobNames: cNames,
+            allowPlayers: (session?.policy ?? policy)?.defendAgainstPlayers === true,
             nameOf: (o) => client.rsc?.get?.(o.nameRsc) ?? o.name ?? '',
           });
           if (attacker) {
@@ -1169,10 +1172,11 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             // Resolve the name from nameRsc (token-set key: 'baby spider' == 'SpiderBaby').
             const objName = mobNameKey(client.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
             // A mob is either: flagged as a player with
-            // can_attack (enriched object), OR its name
+            // can_attack (enriched object, only when defendAgainstPlayers
+            // policy allows targeting players), OR its name
             // exactly matches a compendium creature.
             // Exact match only: "baby spider" != "spider".
-            const isMob = (o.is_player && o.can_attack)
+            const isMob = ((session?.policy ?? policy)?.defendAgainstPlayers === true && o.is_player && o.can_attack)
               || (creatureNames.size > 0 && creatureNames.has(objName));
             if (!isMob) continue;
             const d2 = (o.col - me.col) ** 2 + (o.row - me.row) ** 2;

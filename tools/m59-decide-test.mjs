@@ -194,6 +194,19 @@ console.log('\nattacker-switch: hold unless traveling, healthy, and the attacker
   ok('holds with no mob in melee', r === null, JSON.stringify(r?.id));
 }
 
+console.log('\nfindAttackerSwitch: players targeted only when allowed');
+{
+  const { findAttackerSwitch, mobNameKey } = await import('./tick/m59-decide.mjs');
+  const mkObjs = (list) => { const m = new Map(); list.forEach((o, i) => m.set(o.id ?? 100 + i, o)); return m; };
+  const base = { meCol: 10, meRow: 10, currentId: 1, ceiling: 100, hpPct: 100, targetDist2: 100,
+    mobNames: new Set(), nameOf: (o) => o.name ?? '' };
+  const player = mkObjs([{ id: 9, col: 11, row: 10, name: 'Izzio', is_player: true, can_attack: true }]);
+  let r = findAttackerSwitch({ ...base, objects: player });
+  ok('attack-flagged player not collected by default', r === null, JSON.stringify(r?.id));
+  r = findAttackerSwitch({ ...base, objects: player, allowPlayers: true });
+  ok('collected when defendAgainstPlayers', r && r.id === 9, JSON.stringify(r?.id));
+}
+
 console.log('\nequip condemns silent-broken weapons after 3 gated attempts');
 {
   const used = [];
