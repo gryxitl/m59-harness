@@ -950,6 +950,10 @@ const server = createServer(async (req, res) => {
             const router = session._router;
             if (router) {
               const ok = router.to(Number(dest));
+              // MANUAL-DEST PROTECTION: hunt and stuck-escape must not steal
+              // an operator-ordered destination (they did, every minute).
+              // Stamped here, honored in the hunt goal and stuck-escape.
+              if (ok) { try { session._manualDest = { dest: Number(dest), at: Date.now() }; } catch {} }
               result = ok ? { sent: true, what: `travel to room ${dest} (router set, tick-driven)` }
                           : { sent: false, what: `travel refused: ${router._refusedHazard?.why ?? 'invalid destination'}` };
             } else {

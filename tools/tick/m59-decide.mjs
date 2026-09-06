@@ -736,7 +736,14 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
                   const band = isArmed ? fullBand : Math.floor(fullBand / 2);
                   const ceiling = maxHp + band;
                   const hunt = nearestHuntRoom(resolved, ceiling);
-                  if (hunt && hunt.room !== resolved) {
+                  // Don't steal an operator-ordered destination (travel
+                  // command): it was set on purpose within the last 5 min.
+                  // An actually-stuck manual dest expires out of this guard
+                  // and escapes normally below.
+                  const man = session?._manualDest;
+                  const manualFresh = man != null && Number(man.dest) === Number(router?.dest)
+                    && Date.now() - (man.at ?? 0) < 300000;
+                  if (hunt && hunt.room !== resolved && !manualFresh) {
                     router.to(hunt.room);
                     onDecision?.({ ticks, goal: 'unstuck', action: 'travel',
                       what: `stuck ${_stuckEscapes}x in room ${roomNum}; leaving for hunt room ${hunt.room}`, sent: true });
