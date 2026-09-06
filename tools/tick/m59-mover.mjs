@@ -785,6 +785,13 @@ export class Mover {
 
     // PLAN: if no path yet, or we're stuck, plan a new one.
     // ALWAYS RUN — the A* path gives the character the route.
+    // NOTE: replanning NEVER resets stuckTicks. Drawing a new line is not
+    // movement — the server didn't move because we re-planned. The old
+    // reset wiped the static signal on every replan, and single-waypoint
+    // stub paths (consumed by one sim-advance) re-planned every tick:
+    // stuck could never accumulate, the fan/escalation never fired, and
+    // the character pseudo-progressed forever. _noteServerStatic resets on
+    // real server movement; nothing else may zero it.
     const needPlan = this.path == null
       || this.pathIdx >= this.path.length
       || this.stuckTicks > 10;
@@ -793,7 +800,6 @@ export class Mover {
       if (result.found) {
         this.path = result.waypoints;
         this.pathIdx = 0;
-        this.stuckTicks = 0;
       } else {
         // No fine path, or search exhausted. The server is
         // CLIENT-AUTHORITATIVE: it does not check geometry, it
@@ -805,7 +811,6 @@ export class Mover {
         this.path = null;
         this.pathIdx = 0;
       }
-      this.stuckTicks = 0;
     }
 
     // (No hold gate: the server never carries, so holding freezes. The 1/s
