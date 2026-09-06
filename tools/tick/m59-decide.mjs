@@ -742,7 +742,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
                   // and escapes normally below.
                   const man = session?._manualDest;
                   const manualFresh = man != null && Number(man.dest) === Number(router?.dest)
-                    && Date.now() - (man.at ?? 0) < 300000;
+                    && Date.now() - (man.at ?? 0) < 900000;
                   if (hunt && hunt.room !== resolved && !manualFresh) {
                     router.to(hunt.room);
                     onDecision?.({ ticks, goal: 'unstuck', action: 'travel',
