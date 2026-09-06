@@ -1524,7 +1524,19 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
         // backwards out of a gauntlet room means re-entering it; fleeing
         // forwards exits sooner (the 556 spider gauntlet proved this: flee
         // south = 50 squares chased, flee north = 20 to the door).
+        // MANUAL LOCK: under an operator travel order, never retarget —
+        // drive the manual route through (retargeting locks onto itself:
+        // hop follows the flee, re-flees, loop). The mob may chew while
+        // passing; direction holds regardless.
         try {
+          const man = session?._manualDest;
+          if (man != null && Number(man.dest) === Number(router?.dest)
+              && Date.now() - (man.at ?? 0) < 900000) {
+            const r = routeIntent(router)(frame, act);
+            onDecision?.({ ticks, goal: 'flee_danger', action: 'travel',
+              what: `flee along manual route -> ${man.dest} (${r.what ?? r.why})`, sent: r.sent });
+            return;
+          }
           const exits = fleeExits(session, ws);
           // Never flee into a never-enter room (acid-gas shrine et al).
           // Prefer the route's next hop when traveling (flee forward).
@@ -1582,6 +1594,17 @@ function fleeExits(session, ws) {
     if (active?.goal === 'flee_hurt') {
       const router = session._router;
       if (router) {
+        // MANUAL LOCK (same as flee_danger above): drive through.
+        try {
+          const man = session?._manualDest;
+          if (man != null && Number(man.dest) === Number(router?.dest)
+              && Date.now() - (man.at ?? 0) < 900000) {
+            const r = routeIntent(router)(frame, act);
+            onDecision?.({ ticks, goal: 'flee_hurt', action: 'travel',
+              what: `flee (hurt) along manual route -> ${man.dest} (${r.what ?? r.why})`, sent: r.sent });
+            return;
+          }
+        } catch { /* fall through to exit flee */ }
         try {
           const exits = fleeExits(session, ws);
           const hop = router?.leg?.next ?? null;
