@@ -663,10 +663,19 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     if (!client) return;
     // CRITICAL HYSTERESIS (top of tick, before stuck detection: stuck
     // escapes return early and would otherwise starve the setter below).
+    // SCALED TO MAX VIGOR: the old absolute floors (set <30, clear >=60)
+    // are unreachable for a low-stamina character — max vigor 25 (JayB)
+    // can never clear 60, so criticalRest latched on at creation and
+    // vigor_low preempted travel for the character's entire life (the
+    // rest/stand/one-step dither in 556). 30% sets, 60% clears; a 100-max
+    // character keeps the exact old behavior.
     try {
       const vv = client?.vitals?.()?.vigor?.value ?? null;
-      if (vv != null && vv < 30) session._criticalRest = true;
-      else if (vv != null && vv >= 60) session._criticalRest = false;
+      const vm = client?.vitals?.()?.vigor?.max ?? null;
+      const critAt = vm != null ? vm * 0.3 : 30;
+      const clearAt = vm != null ? vm * 0.6 : 60;
+      if (vv != null && vv < critAt) session._criticalRest = true;
+      else if (vv != null && vv >= clearAt) session._criticalRest = false;
     } catch {}
 
     // 0. STUCK DETECTION. If the character hasn't moved in
@@ -909,12 +918,19 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     const ws = evaluate({ client, session, policy, agent: session.name });
     // Expose the raw vigor value for the vigor_low goal.
     ws._vigor = client?.vitals?.()?.vigor?.value ?? null;
+    // Max vigor too: the goal's rest threshold is RELATIVE (60% of max).
+    // The old absolute 60 was always-true for a 25-max character — the
+    // permanent vigor_low rest dither.
+    ws._vigorMax = client?.vitals?.()?.vigor?.max ?? null;
     // CRITICAL HYSTERESIS (maintained here so every consumer — stuck
     // detector, goals — sees it even when a higher goal preempts rest).
     // Mirrored to ws: the module-scope goal lambdas can't see `session`.
+    // Scaled to max vigor (see the tick-top setter for the rationale).
     try {
-      if (ws._vigor != null && ws._vigor < 30) session._criticalRest = true;
-      else if (ws._vigor != null && ws._vigor >= 60) session._criticalRest = false;
+      const critAt = ws._vigorMax != null ? ws._vigorMax * 0.3 : 30;
+      const clearAt = ws._vigorMax != null ? ws._vigorMax * 0.6 : 60;
+      if (ws._vigor != null && ws._vigor < critAt) session._criticalRest = true;
+      else if (ws._vigor != null && ws._vigor >= clearAt) session._criticalRest = false;
       ws._criticalRest = session._criticalRest === true;
     } catch {}
     // Expose room number and max HP for the hunt goal's Raza check.
@@ -1579,8 +1595,16 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
         // passing; direction holds regardless.
         try {
           const man = session?._manualDest;
-          if (man != null && Number(man.dest) === Number(router?.dest)
-              && Date.now() - (man.at ?? 0) < 900000) {
+          if (man != null && Date.now() - (man.at ?? 0) < 900000) {
+            // HONOR THE MANUAL DEST EVEN IF THE FLEE RE-ROUTED IT. The old
+            // check (man.dest === router.dest) only locked when they matched,
+            // but the flee re-routes the router to the nearest exit (557) the
+            // instant it fires, so the match never held and the manual order
+            // (545) was silently abandoned. Re-route back to the manual dest
+            // and drive it through; the mob may chew while passing.
+            if (Number(router?.dest) !== Number(man.dest)) {
+              router.to(Number(man.dest));
+            }
             const r = routeIntent(router)(frame, act);
             onDecision?.({ ticks, goal: 'flee_danger', action: 'travel',
               what: `flee along manual route -> ${man.dest} (${r.what ?? r.why})`, sent: r.sent });
@@ -1646,8 +1670,10 @@ function fleeExits(session, ws) {
         // MANUAL LOCK (same as flee_danger above): drive through.
         try {
           const man = session?._manualDest;
-          if (man != null && Number(man.dest) === Number(router?.dest)
-              && Date.now() - (man.at ?? 0) < 900000) {
+          if (man != null && Date.now() - (man.at ?? 0) < 900000) {
+            if (Number(router?.dest) !== Number(man.dest)) {
+              router.to(Number(man.dest));
+            }
             const r = routeIntent(router)(frame, act);
             onDecision?.({ ticks, goal: 'flee_hurt', action: 'travel',
               what: `flee (hurt) along manual route -> ${man.dest} (${r.what ?? r.why})`, sent: r.sent });
@@ -2149,9 +2175,18 @@ export const DEFAULT_GOALS = [
   // in reach even at 40 vigor.
   { goal: 'vigor_low', when: ws => {
       const v = ws._vigor;
-      // CRITICAL HYSTERESIS: once exhaustion (<30) forces rest, hold it
-      // until 60 — otherwise rest exits at 30, moving resumes, drains to
-      // 29, and the character flaps at the boundary forever (watched).
+      // SCALED TO MAX VIGOR: rest below 60% of max. The old absolute 60
+      // was always-true for a low-stamina character (max 25): vigor_low
+      // preempted travel every tick of the character's life, and the
+      // stand-before-moving/one-step/rest dither was the result (JayB,
+      // 556, watched for an hour). With no max reported, keep 60 (the old
+      // behavior for the 100-max casters).
+      const vm = ws?._vigorMax ?? null;
+      const restAt = vm != null ? vm * 0.6 : 60;
+      const critAt = vm != null ? vm * 0.3 : 30;
+      // CRITICAL HYSTERESIS: once exhaustion (<30%) forces rest, hold it
+      // until 60% — otherwise rest exits at the floor, moving resumes,
+      // drains, and the character flaps at the boundary forever (watched).
       // NOTE: this lambda runs at module scope (DEFAULT_GOALS) — `session`
       // is NOT visible here (ReferenceError kills the whole tick). The
       // flag is maintained on session in section 1 and mirrored to ws.
@@ -2159,15 +2194,16 @@ export const DEFAULT_GOALS = [
       // YIELD when the character is moving (the router has a destination).
       // Resting would stop the movement. The character can rest when he
       // arrives (the router clears the destination). EXCEPT below the
-      // critical floor (30): an exhausted character that keeps walking never
-      // recovers (rest starves) and crawls forever — rest preempts travel by
-      // ladder order (vigor_low sits above hunt). Crossing/in-reach yields
-      // stay even when critical (never sit in a doorway or under an attacker).
-      if (ws._moving && !crit && (v == null || v >= 30)) return false;
+      // critical floor (30% of max): an exhausted character that keeps
+      // walking never recovers (rest starves) and crawls forever — rest
+      // preempts travel by ladder order (vigor_low sits above hunt).
+      // Crossing/in-reach yields stay even when critical (never sit in a
+      // doorway or under an attacker).
+      if (ws._moving && !crit && (v == null || v >= critAt)) return false;
       // YIELD when the character is at a boundary (the router is in the
       // crossing state). Resting would prevent the crossing.
       if (ws._crossing) return false;
-      return v != null && v < 60 && ws.in_reach !== true;
+      return v != null && v < restAt && ws.in_reach !== true;
     } },
   // LEAVE RAZA: in the newbie zone at level >= 25, route to the Grand
   // Museum (1018) where the portal out is. This takes priority over
