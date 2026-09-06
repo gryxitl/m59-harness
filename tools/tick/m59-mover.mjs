@@ -1284,8 +1284,13 @@ export class Mover {
         this.clear();
         return { state: 'arrived', position: { col: effMe.col, row: effMe.row } };
       }
-      const myCol = srvCol;
-      const myRow = srvRow;
+      // CANDIDATE ORIGIN IS THE SIM (the live position). The server is
+      // client-authoritative so the sim is where the character is; the echo
+      // lags ~1s. Ordering candidates from the stale echo re-aims from
+      // behind on every tick and ping-pongs the character (watched live:
+      // steps alternating N/S with zero net progress while gated at 1/s).
+      const myCol = Math.floor(myProtoX / KOD_FINENESS);
+      const myRow = Math.floor(myProtoY / KOD_FINENESS);
       const destCol = Math.floor(this.destProto.x / KOD_FINENESS);
       const destRow = Math.floor(this.destProto.y / KOD_FINENESS);
       const geo = this.session?.world?.geometry;
@@ -1430,8 +1435,11 @@ export class Mover {
     // the next adjacent square. This prevents the
     // pacing-back-and-forth between valid and invalid. Candidate origin on
     // SERVER truth (see the tick-top note).
-    const myCol = srvCol;
-    const myRow = srvRow;
+    // EN ROUTE TO WAYPOINT: candidate origin is the SIM (the live position),
+    // not the stale server echo — same ping-pong fix as the no-path branch
+    // above. Commitment (arrival, gate) stays on server truth.
+    const myCol = Math.floor(myProtoX / KOD_FINENESS);
+    const myRow = Math.floor(myProtoY / KOD_FINENESS);
     const geo = this.session?.world?.geometry;
     // Candidate squares: the 8 neighbors, ordered by
     // preference (WAYPOINT direction first, then cardinal,
