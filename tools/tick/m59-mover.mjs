@@ -1196,6 +1196,8 @@ export class Mover {
       const bisect = process.env.M59_BISECT_SEND === '1';
       if (bisect || gateOk) {
         this._submitMove(s, c, () => c.moveTo(Math.round(aimX), Math.round(aimY), speed, c.room?.id ?? 0));
+        if (process.env.M59_MOVE_DEBUG !== '0')
+          console.error(`[movedbg] t3 gateOK vel aim=(${Math.round(aimX)},${Math.round(aimY)}) sq=(${Math.floor(aimX / KOD_FINENESS)},${Math.floor(aimY / KOD_FINENESS)}) me=(${me.col},${me.row}) idx=${this.pathIdx}/${this.path ? this.path.length : 'null'} stuck=${this.stuckTicks} srv=(${curCol},${curRow}) speed=${speed} moveTo sent`);
         this._recordSend(aimX, aimY, myProtoX, myProtoY);
         this._recordReport(aimX, aimY);
       }
