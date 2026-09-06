@@ -797,6 +797,10 @@ export class Mover {
       || this.stuckTicks > 10;
     if (needPlan) {
       const result = this._plan(myProtoX, myProtoY);
+      // PLAN OUTCOME TRACE: velocity never engages because path is null at
+      // its block — is _plan failing, or is the path dropped after?
+      if (process.env.M59_MOVE_DEBUG !== '0')
+        try { console.error(`[movedbg] t3 plan from=(${Math.floor(myProtoX / KOD_FINENESS)},${Math.floor(myProtoY / KOD_FINENESS)}) dest=${this.dest ? this.dest.col + ',' + this.dest.row : 'null'} found=${result.found} wp=${result.found ? result.waypoints.length : 0} reason=${result.found ? '-' : (result.reason ?? '?')}`); } catch {}
       if (result.found) {
         this.path = result.waypoints;
         this.pathIdx = 0;
