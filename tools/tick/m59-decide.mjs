@@ -909,9 +909,11 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     ws._vigor = client?.vitals?.()?.vigor?.value ?? null;
     // CRITICAL HYSTERESIS (maintained here so every consumer — stuck
     // detector, goals — sees it even when a higher goal preempts rest).
+    // Mirrored to ws: the module-scope goal lambdas can't see `session`.
     try {
       if (ws._vigor != null && ws._vigor < 30) session._criticalRest = true;
       else if (ws._vigor != null && ws._vigor >= 60) session._criticalRest = false;
+      ws._criticalRest = session._criticalRest === true;
     } catch {}
     // Expose room number and max HP for the hunt goal's Raza check.
     ws._roomNum = session?.world?.room?.num ?? client?.room?.num
@@ -2137,11 +2139,10 @@ export const DEFAULT_GOALS = [
       // CRITICAL HYSTERESIS: once exhaustion (<30) forces rest, hold it
       // until 60 — otherwise rest exits at 30, moving resumes, drains to
       // 29, and the character flaps at the boundary forever (watched).
-      try {
-        if (v != null && v < 30 && session) session._criticalRest = true;
-        else if (v != null && v >= 60 && session) session._criticalRest = false;
-      } catch {}
-      const crit = session?._criticalRest === true;
+      // NOTE: this lambda runs at module scope (DEFAULT_GOALS) — `session`
+      // is NOT visible here (ReferenceError kills the whole tick). The
+      // flag is maintained on session in section 1 and mirrored to ws.
+      const crit = ws?._criticalRest === true;
       // YIELD when the character is moving (the router has a destination).
       // Resting would stop the movement. The character can rest when he
       // arrives (the router clears the destination). EXCEPT below the
