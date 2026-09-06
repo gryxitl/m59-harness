@@ -243,6 +243,11 @@ export class Mover {
       // packets/sec averaged over time): a churning destination would send
       // every tick. A fresh route's first send waits at most 1s. Path, fan
       // and stuck state still reset below.
+      // NOTE 2: the sim/pose is deliberately NOT reset here either. A new
+      // aim does not move our feet — only the server (room change, blink,
+      // teleport) does that. Resetting on re-aim drops planning back to a
+      // stale echo while the server runs ahead, and the next aims pull
+      // backwards (the ping-pong). Feet persist; plans change.
       this._lastReportX = null;
       this._lastReportY = null;
       this._recentSteps = null;  // loop-avoidance memory is per-destination
@@ -255,11 +260,11 @@ export class Mover {
       this._blinkPending = false;
       this._blinkFrom = null;
       this._blinkAt = null;
-      this._simX = null;
-      this._simY = null;
-      this._simAt = 0;
+      this._simX = null;   // (legacy mirror; the Pose owns the track now —
+      this._simY = null;   // left null here so nothing reads stale feet.
+      this._simAt = 0;     // See NOTE 2 above: never seed from a re-aim.)
       this._lastWpKey = null;
-      try { this.session?._pose?.reset(); } catch {}
+      // (No pose.reset() here — see NOTE 2 above.)
       // Corroboration base for arrival honesty (see tick-top note): the server
       // square as of this destination. Arrival commits only if the server is
       // at/near the destination or visibly moved since here.
