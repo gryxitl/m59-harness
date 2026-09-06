@@ -1361,6 +1361,7 @@ export class Mover {
         if (this._claimMoveSlot()) Promise.resolve(s.client.moveTo(stepProtoX, stepProtoY, 18, s.client.room?.id ?? 0)).catch(() => {});
         this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
         this._recordReport(stepProtoX, stepProtoY);
+        this._noteServerStatic(curCol, curRow);
       }
       return { state: 'moving', to: { col: stepCol, row: stepRow } };
     }
@@ -1523,6 +1524,7 @@ export class Mover {
           console.error(`[movedbg] t3 gateOK step=(${stepCol},${stepRow}) ERR ${e.message}`); });
       this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
       this._recordReport(enrProtoX, enrProtoY);
+      this._noteServerStatic(curCol, curRow);
     } else {
       if (process.env.M59_MOVE_DEBUG !== '0')
         console.error(`[movedbg-gate] t3 gateCLOSED step=(${stepCol},${stepRow}) me=(${me.col},${me.row}) server=(${myProtoX},${myProtoY}) lastReport=(${this._lastReportX},${this._lastReportY}) interval=${Date.now()-this._lastReportAt}ms`);
@@ -1652,6 +1654,16 @@ export class Mover {
     if (t - (this._lastMoveSubmitAt ?? 0) < (this._moveCapMs ?? 1050)) return false;
     this._lastMoveSubmitAt = t;
     return true;
+  }
+
+  // SERVER-STATIC TRACKING (shared): the raw direct-send sites bypassed
+  // _sendStep/_sendWaypoint, so stuckTicks froze at 0 while sends flowed
+  // and the server never moved — fan, diagnostics, and stand logic blind.
+  _noteServerStatic(col, row) {
+    if (col == null || row == null) return;
+    if (this.lastPos && this.lastPos.col === col && this.lastPos.row === row) this.stuckTicks++;
+    else this.stuckTicks = 0;
+    this.lastPos = { col, row };
   }
 
   // Returns true if a position packet was actually sent this tick.

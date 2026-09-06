@@ -1437,7 +1437,16 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // firing every tick with `use` at 10/s but equipment stuck at [] because he was
     // still sitting from the rest. `armed` is in the list so the stand goes out before
     // the plan/intend path tries to equip.
-    if (_wasResting && !_resting && active && (active.goal === 'hunt' || active.goal === 'flee_danger' || active.goal === 'flee_hurt' || active.goal === 'travel' || active.goal === '_fight' || active.goal === 'armed' || active.goal === '!in_underworld' || active.goal === 'unstuck' || active.goal === 'leave_raza')) {
+    // STUCK-STAND: sends flowing with a static server usually means seated
+    // server-side while the mover believes standing (no goal transition to
+    // trigger the stand above) — stand so the next steps land.
+    // STUCK-STAND gating: at most every 5s (stands are posture packets, but
+    // 10Hz spam helps nothing and can break other flows).
+    const stuckStale = (session?._mover?.stuckTicks ?? 0) > 5
+      && Date.now() - (session?._lastStuckStandAt ?? 0) > 5000;
+    if ((_wasResting && !_resting && active && (active.goal === 'hunt' || active.goal === 'flee_danger' || active.goal === 'flee_hurt' || active.goal === 'travel' || active.goal === '_fight' || active.goal === 'armed' || active.goal === '!in_underworld' || active.goal === 'unstuck' || active.goal === 'leave_raza'))
+        || (stuckStale && active && (active.goal === 'hunt' || active.goal === 'travel' || active.goal === 'flee_danger' || active.goal === 'flee_hurt' || active.goal === '_fight'))) {
+      if (stuckStale && !(_wasResting && !_resting)) { try { session._lastStuckStandAt = Date.now(); } catch {} }
       try { act.stand?.(); } catch { /* best effort */ }
       onDecision?.({ ticks, goal: active.goal, action: 'stand', sent: true, what: 'stand before ' + (active.goal === 'armed' ? 'equipping' : 'moving') });
       _wasResting = false;
