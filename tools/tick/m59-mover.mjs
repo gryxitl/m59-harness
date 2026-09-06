@@ -783,6 +783,29 @@ export class Mover {
     const standOnNear = !!this._destIsStandOn && this.destProto != null &&
       Math.hypot(this.destProto.x - myProtoX, this.destProto.y - myProtoY) < KOD_FINENESS * 4;
 
+    // WALL-AIM REFUSAL (motion-only honesty): if the destination square
+    // itself is fine-blocked and not a stand_on exit, no plan or step can
+    // ever reach it — aiming there jitters around the wall forever (watched:
+    // router sub-aim (27,33) in 557, fine=False, an hour of 1-sq jitter +
+    // fan exhausts + oscillation drops + reasserts). Hold and name it
+    // instead of sending; the router's oscillation breaker condemns the
+    // leg. Stand_on exits are exempt (the door-push owns the final gap).
+    // Only explicit fine-false refuses (no geometry readings = no verdict).
+    if (this._destIsStandOn !== true && this.destProto != null) {
+      const _dgeo = this.session?.world?.geometry;
+      const _dsqC = Math.floor(this.destProto.x / KOD_FINENESS);
+      const _dsqR = Math.floor(this.destProto.y / KOD_FINENESS);
+      let _df;
+      try { _df = _dgeo?.fineWalkable ? _dgeo.fineWalkable(_dsqR, _dsqC) : undefined; } catch { _df = undefined; }
+      if (_df === false) {
+        if (process.env.M59_MOVE_DEBUG !== '0' && Date.now() - (this._wallAimLogAt ?? 0) > 10000) {
+          this._wallAimLogAt = Date.now();
+          console.error(`[movestuck] t3 wall aim: dest=(${_dsqC},${_dsqR}) fine-blocked (not stand_on) — holding`);
+        }
+        return { state: 'stuck', why: `dest square (${_dsqC},${_dsqR}) blocked` };
+      }
+    }
+
     // PLAN: if no path yet, or we're stuck, plan a new one.
     // ALWAYS RUN — the A* path gives the character the route.
     // NOTE: replanning NEVER resets stuckTicks. Drawing a new line is not
