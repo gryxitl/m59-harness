@@ -40,12 +40,14 @@ export class Pose {
     this.sim = null;      // { x, y } — dead-reckoned feet (never expires)
     this.simAt = 0;       // wall-clock ms of the last advance()
     this.updatedAt = 0;   // wall-clock ms of the last updateServer()
+    this.divergenceResets = 0; // count of divergence-guard adoptions (mover re-plans)
   }
 
   // Called by the Sensor each frame with the room-objects self entry (or null).
   // The server echo supersedes the sim's `predicted` flag: a real read clears it.
   updateServer(obj) {
     if (obj && Number.isFinite(obj.col) && Number.isFinite(obj.row)) {
+      const prevUpd = this.updatedAt;
       this.server = {
         col: obj.col, row: obj.row,
         // KOD protocol units (64 per square), matching advance().
@@ -54,6 +56,33 @@ export class Pose {
         predicted: obj.predicted === true,
       };
       this.updatedAt = Date.now();
+      // ADOPT: if our track is strictly older than the previous echo (no sends
+      // since) and the new echo is on a different square, the server moved
+      // without us — legacy walks, slides, knockbacks move the body without
+      // advancing the sim. Adopt the echo (it is newer information, not a
+      // correction of our intent). When our sends are outstanding (sim newer),
+      // keep tracking. (Strictly-less: a same-millisecond advance is a send,
+      // not a no-send gap — the divergence guard owns the drifted-sim case.)
+      if (this.sim != null && this.simAt < prevUpd) {
+        const scol = Math.floor(this.sim.x / KOD_FINENESS);
+        const srow = Math.floor(this.sim.y / KOD_FINENESS);
+        if (scol !== this.server.col || srow !== this.server.row) {
+          this.sim = { x: this.server.x, y: this.server.y };
+          this.simAt = Date.now();
+        }
+      }
+      // DIVERGENCE GUARD: the sim is never-expiring and only resets on a room
+      // change, so a stale plan (or sends that aren't landing) drifts it in
+      // the wrong direction and it never self-corrects. The echo lag is up to
+      // one stride (160 walk / 320 run); a gap beyond 6 squares (384) is not
+      // "ahead", it's lost. Adopt the echo (the last confirmed position) so
+      // the next plan re-anchors on where we actually are.
+      const div = this.divergence();
+      if (div != null && div > 384) {
+        this.sim = { x: this.server.x, y: this.server.y };
+        this.simAt = Date.now();
+        this.divergenceResets++;
+      }
     }
   }
 

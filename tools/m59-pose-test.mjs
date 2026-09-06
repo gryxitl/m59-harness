@@ -96,5 +96,24 @@ function ok(cond, msg) {
   ok(p.divergence() === 256, 'split track reads the gap in proto units');
 }
 
+// 9. divergence guard: a sim 6+ squares off the echo is adopted (reset) and counted.
+{
+  const p = new Pose();
+  p.updateServer({ col: 10, row: 20, x: 10 * 64 + 32, y: 20 * 64 + 32 });
+  p.advance(10 * 64 + 32, 20 * 64 + 32);
+  // Drift the sim 8 squares (512 proto units) off the echo — beyond the guard.
+  p.advance(18 * 64 + 32, 20 * 64 + 32);
+  ok(p.divergence() === 512, 'drifted sim reads the gap before the guard');
+  p.updateServer({ col: 10, row: 20, x: 10 * 64 + 32, y: 20 * 64 + 32 });
+  ok(p.divergenceResets === 1, 'drifted sim is adopted (counted)');
+  ok(p.sim.x === 10 * 64 + 32, 'adopted sim is the echo');
+  ok(p.divergence() === 0, 'adopted sim agrees with the echo');
+  // A small gap (one stride, 320) is echo lag, not drift — not adopted.
+  p.advance(15 * 64 + 32, 20 * 64 + 32);
+  ok(p.divergence() === 320, 'one-stride gap reads the gap');
+  p.updateServer({ col: 10, row: 20, x: 10 * 64 + 32, y: 20 * 64 + 32 });
+  ok(p.divergenceResets === 1, 'one-stride gap is not adopted (echo lag)');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

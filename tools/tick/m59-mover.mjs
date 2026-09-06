@@ -565,6 +565,19 @@ export class Mover {
     const simFresh = this._simX != null && this._simY != null && (Date.now() - (this._simAt ?? 0)) < 2000;
     let myProtoX = usePoseSim ? poseSim.x : (simFresh ? this._simX : myProtoX0);
     let myProtoY = usePoseSim ? poseSim.y : (simFresh ? this._simY : myProtoY0);
+    // DIVERGENCE RE-ANCHOR: the Pose's divergence guard adopted the server
+    // echo (the sim drifted 6+ squares off it — a stale plan moving the wrong
+    // way). The path was planned from the drifted sim; re-plan from the
+    // re-anchored position so the waypoints point the right way again.
+    const divResets = s?._pose?.divergenceResets ?? 0;
+    if (divResets !== (this._lastDivResets ?? 0)) {
+      this._lastDivResets = divResets;
+      this.path = null;
+      this.pathIdx = 0;
+      this._fanIndex = null;
+      this._fanTarget = null;
+      this._fanFrom = null;
+    }
     // COMMITMENT POINT (arrival honesty): our tracked position (the sim),
     // but ONLY with server corroboration — the server is already at/near the
     // destination, or it visibly moved since this destination was set. A sim
