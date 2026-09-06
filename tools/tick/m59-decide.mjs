@@ -737,13 +737,20 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
                   const ceiling = maxHp + band;
                   const hunt = nearestHuntRoom(resolved, ceiling);
                   // Don't steal an operator-ordered destination (travel
-                  // command): it was set on purpose within the last 5 min.
-                  // An actually-stuck manual dest expires out of this guard
-                  // and escapes normally below.
+                  // command): it was set on purpose within the last 15 min.
+                  // If the router dropped it (oscillation/arrival), REASSERT
+                  // it instead of wandering to a hunt room.
                   const man = session?._manualDest;
-                  const manualFresh = man != null && Number(man.dest) === Number(router?.dest)
-                    && Date.now() - (man.at ?? 0) < 900000;
-                  if (hunt && hunt.room !== resolved && !manualFresh) {
+                  const manualFresh = man != null && Date.now() - (man.at ?? 0) < 900000;
+                  if (manualFresh && Number(man.dest) !== Number(router?.dest)) {
+                    router.to(Number(man.dest));
+                    onDecision?.({ ticks, goal: 'unstuck', action: 'travel',
+                      what: `stuck ${_stuckEscapes}x; reasserting manual dest ${man.dest}`, sent: true });
+                    _lastPosAt = now();
+                    return;
+                  }
+                  if (manualFresh) { _lastPosAt = now(); return; }
+                  if (hunt && hunt.room !== resolved) {
                     router.to(hunt.room);
                     onDecision?.({ ticks, goal: 'unstuck', action: 'travel',
                       what: `stuck ${_stuckEscapes}x in room ${roomNum}; leaving for hunt room ${hunt.room}`, sent: true });
