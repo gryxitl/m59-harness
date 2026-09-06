@@ -1830,10 +1830,20 @@ export class Mover {
     this._fanFrom = null;
     this._fanIndex = null;
     this.stuckTicks++;
-    const blinked = this._tryBlink();
-    if (blinked) {
-      this._blinkFrom = { x: curX, y: curY };
-      return { state: 'blink', why: 'all 8 raw moves refused, casting blink' };
+    // TRAVEL MODE (motion-only proving): no blink — a random teleport
+    // destroys the run. The pocket is reported as stuck (a named blocker)
+    // instead of scattered out of. The void-blink path above is untouched
+    // (already floorless = survival, not a crossing run).
+    const _man = this.session?._manualDest;
+    const _travelMode = _man != null && Date.now() - (_man.at ?? 0) < 900000;
+    if (!_travelMode) {
+      const blinked = this._tryBlink();
+      if (blinked) {
+        this._blinkFrom = { x: curX, y: curY };
+        return { state: 'blink', why: 'all 8 raw moves refused, casting blink' };
+      }
+    } else if (process.env.M59_MOVE_DEBUG !== '0') {
+      console.error(`[movestuck] t3 travel-mode pocket: all 8 raw moves refused at srv=(${this.lastPos?.col},${this.lastPos?.row}) — blink parked, holding`);
     }
     return { state: 'stuck', why: 'server refused all 8 raw move directions' };
   }

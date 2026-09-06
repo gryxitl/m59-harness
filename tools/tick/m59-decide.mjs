@@ -833,7 +833,20 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
               _lastPosAt = now(); // reset timer
               return;
             }
-            // No open neighbor: blink as last resort.
+            // No open neighbor: blink as last resort — unless travel mode
+            // (motion-only proving): a random teleport destroys the run.
+            // Name the pocket and hold for the operator instead. (ws does
+            // not exist yet here — stuck detection runs before evaluate —
+            // so read the manual dest directly from session.)
+            try {
+              const _man0 = session?._manualDest;
+              if (_man0 != null && Date.now() - (_man0.at ?? 0) < 900000) {
+                onDecision?.({ ticks, goal: 'unstuck', action: 'hold',
+                  what: `travel-mode pocket at (${me.col},${me.row}): no open neighbor, blink parked — holding`, sent: false });
+                _lastPosAt = now();
+                return;
+              }
+            } catch {}
             const blink = (c.spells ?? []).find(sp => {
               const n = c.rsc?.get?.(sp.nameRsc) ?? sp.name ?? '';
               return n.toLowerCase() === 'blink';
@@ -927,6 +940,19 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       else if (ws._vigor != null && ws._vigor >= 60) session._criticalRest = false;
       ws._criticalRest = session._criticalRest === true;
     } catch {}
+    // TRAVEL MODE (motion-only proving): a fresh operator travel order
+    // (<15min) parks every non-motion goal — hurt-rest, vigor-rest, fight
+    // engagement, blink escapes — so a crossing run measures the mover, not
+    // the circus. Flee stays (survival, and it re-routes along the manual
+    // dest). The fan stays (server-confirmed probes). Blink goes (a random
+    // teleport destroys the run; a real wall becomes a named stuck instead
+    // of a scatter). Mirrored to ws: the module-scope goal lambdas can't
+    // see `session`. The mover reads session._manualDest itself (same
+    // source; skew on a 15-min flag is irrelevant).
+    try {
+      const _man = session?._manualDest;
+      ws._travelMode = _man != null && Date.now() - (_man.at ?? 0) < 900000;
+    } catch { ws._travelMode = false; }
     // Expose room number and max HP for the hunt goal's Raza check.
     ws._roomNum = session?.world?.room?.num ?? client?.room?.num
       ?? roomNumByRsc(client?.roomNameRsc) ?? roomNumByRsc(client?.roomRsc) ?? null;
@@ -2160,14 +2186,21 @@ export const DEFAULT_GOALS = [
   { goal: 'flee_hurt', when: ws => ws.below_flee === true && ws.has_target === true && ws.in_reach === true },
   // Rest when hurt, but only when there's no target in
   // the room. If a target is in reach, the flee_hurt or
-  // _fight goal handles it.
-  { goal: 'healthy',  when: ws => ws.hurt === true && ws.has_target !== true },
+  // _fight goal handles it. Parked in travel mode (motion-only: a
+  // hurt-rest stop mid-crossing is indistinguishable from a stall).
+  { goal: 'healthy',  when: ws => ws._travelMode === true ? false : (ws.hurt === true && ws.has_target !== true) },
   // Rest when vigor is low. Vigor IS health regeneration —
   // keeping it high keeps HP topping up. Rest below 60 to
   // maintain a buffer, but this is lower priority than
   // _fight so a character will still engage a target that's
   // in reach even at 40 vigor.
   { goal: 'vigor_low', when: ws => {
+      // TRAVEL MODE: never rest mid-crossing (motion-only). The mover
+      // walks at speed 18 below RUN_VIGOR_FLOOR, so travel continues at
+      // any vigor; rest happens on arrival. (Without this, the
+      // rest/stand/step flap both stalls the run AND trips the stuck
+      // detector into abandoning it.)
+      if (ws._travelMode === true) return false;
       const v = ws._vigor;
       // ABSOLUTE thresholds, deliberately: rest recovers only to ~80
       // regardless of max vigor (food carries it to the max — 200 for
@@ -2204,7 +2237,8 @@ export const DEFAULT_GOALS = [
       const maxHp = ws._maxHp;
       return maxHp != null && maxHp >= 25;
     } },
-  { goal: '_fight',   when: ws => ws.has_target === true && ws.target_in_band === true
+  { goal: '_fight',   when: ws => ws._travelMode !== true
+                                 && ws.has_target === true && ws.target_in_band === true
                                  && ws.critical !== true
                                  && (ws.hurt === true || ws.vigor_floor !== false)
                                  // Don't fight if the target is on a
