@@ -1235,6 +1235,7 @@ const server = createServer(async (req, res) => {
               sitting: mv?.sitting ?? null, stuck: mv?.stuckTicks ?? null,
               sends: mv?._sendCount ?? null,
               progWin: mv?._progWin?.length ?? null,
+              restGateAge: Date.now() - (session?._lastRestStep ?? 0),
               lastSent: mv ? { x: mv._lastReportX ?? null, y: mv._lastReportY ?? null } : null,
               lastRepAge: mv ? Date.now() - (mv._lastReportAt ?? 0) : null,
               reportIntervalMs: mv?.reportIntervalMs ?? null,
