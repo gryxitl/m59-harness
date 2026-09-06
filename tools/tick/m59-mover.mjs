@@ -1468,6 +1468,12 @@ export class Mover {
     let stepCol = null, stepRow = null;
     const ordered1 = orderCandidates(candidates, this._recentSteps, this.stuckTicks,
       { meCol: myCol, meRow: myRow, goalCol: wpCol, goalRow: wpRow });
+    // REFUSAL ACCOUNTING (motion-only diagnostics): when no candidate
+    // survives, the log must say WHICH check walled us in — otherwise
+    // "stuck" is a mystery and we can't tell a real wall from an
+    // over-strict validator. Counted by first-failing check, logged once
+    // below when stepCol stays null.
+    const rejects = { fine: 0, embedded: 0, edge: 0, void: 0 };
     for (const [nc, nr] of ordered1) {
       // The FINE grid is the authoritative collision model. When the two
       // grids disagree (fine says walkable, coarse says not), trust the
@@ -1483,10 +1489,10 @@ export class Mover {
       // everything, matching the old behavior.
       const f = geo?.fineWalkable ? geo.fineWalkable(nr, nc) : undefined;
       const s = geo?.standable ? geo.standable(nr, nc) : undefined;
-      if (f === false) continue;                      // fine says blocked
+      if (f === false) { rejects.fine++; continue; }       // fine says blocked
       // BODY CHECK (same rule as the no-path branch): never enter a crack.
       if (isEmbedded(geo, myProtoX, myProtoY) !== true
-          && isEmbedded(geo, nc * KOD_FINENESS + HALF, nr * KOD_FINENESS + HALF) === true) continue;
+          && isEmbedded(geo, nc * KOD_FINENESS + HALF, nr * KOD_FINENESS + HALF) === true) { rejects.embedded++; continue; }
       // THE EDGE, NOT JUST THE SQUARE. A neighbor can be fine-walkable as a
       // SQUARE while the EDGE from where we stand to it is walled (a wall
       // segment between the two squares' centres). Check with a radius-free
@@ -1505,7 +1511,7 @@ export class Mover {
         const px = -dy/len, py = dx/len;
         const tryT = (ox,oy) => geo.traceFineMoveClient(a.x+ox,a.y+oy,b.x+ox,b.y+oy,{slide:false,playerRadius:1}).arrived===true;
         if (!tryT(0,0) && !tryT(px*128,py*128) && !tryT(-px*128,-py*128)
-            && !tryT(px*256,py*256) && !tryT(-px*256,-py*256)) continue;
+            && !tryT(px*256,py*256) && !tryT(-px*256,-py*256)) { rejects.edge++; continue; }
       }
       // NEVER ENTER A VOID: from a grounded start, reject neighbors with no
       // BSP floor (the deliberate stand_on exit square itself is exempt). A
@@ -1514,13 +1520,16 @@ export class Mover {
         const destSqC0 = this.destProto ? Math.floor(this.destProto.x / KOD_FINENESS) : null;
         const destSqR0 = this.destProto ? Math.floor(this.destProto.y / KOD_FINENESS) : null;
         const isExitDest0 = this._destIsStandOn === true && nc === destSqC0 && nr === destSqR0;
-        if (!isExitDest0 && transitBanned(geo, nr, nc) === true) continue;
+        if (!isExitDest0 && transitBanned(geo, nr, nc) === true) { rejects.void++; continue; }
       }
       if (f === true) { stepCol = nc; stepRow = nr; break; }  // fine says ok
       if (f === undefined && s === false) continue;   // no fine data, coarse blocked
       stepCol = nc; stepRow = nr; break;              // fine ok, or no data
     }
     if (stepCol == null) {
+      // Name the wall: which check rejected all 8 neighbors.
+      if (process.env.M59_MOVE_DEBUG !== '0')
+        console.error(`[movestuck] t3 me=(${myCol},${myRow}) srv=(${curCol},${curRow}) wp=(${wpCol},${wpRow}) rejects=${JSON.stringify(rejects)}`);
       // No fine-reachable neighbor: the fine model has walled us in. The server is
       // CLIENT-AUTHORITATIVE (it does not check geometry), so a fine-wall here may be
       // a model mismatch, not a real wall (the Raza Blacksmith traps a character exactly
@@ -1566,12 +1575,27 @@ export class Mover {
       if (process.env.M59_MOVE_DEBUG !== '0')
         console.error(`[movedbg-gate] t3 gateCLOSED step=(${stepCol},${stepRow}) me=(${me.col},${me.row}) server=(${myProtoX},${myProtoY}) lastReport=(${this._lastReportX},${this._lastReportY}) interval=${Date.now()-this._lastReportAt}ms`);
     }
-    if (me && this.lastPos && this.lastPos.col === me.col && this.lastPos.row === me.row) {
-      this.stuckTicks++;
-    } else {
-      this.stuckTicks = 0;
+    // STUCK SIGNAL HONESTY: _noteServerStatic above (server squares) is the
+    // SOLE maintainer of stuckTicks/lastPos. The old me-based check compared
+    // against the sim — which advances on every SEND by construction — so it
+    // zeroed the static signal on every send tick and stuckTicks could never
+    // exceed 1 while sends flowed: fake 'moving' with a frozen server (the
+    // 556/382 walk-in-place, watched for hours; mover-hb stuck=0).
+    // SERVER-STATIC ESCALATION: the echo lags ~1s, so 1-2 static ticks are
+    // healthy. 5+ static sends means the server is refusing us while the sim
+    // runs ahead planning from phantom squares. Re-anchor planning to the
+    // server and report stuck — no fan, no blink (motion-only: recovery is
+    // parked; the failure must be visible, not papered over).
+    if (this.stuckTicks >= 5) {
+      if (process.env.M59_MOVE_DEBUG !== '0')
+        console.error(`[movestuck] t3 server static x${this.stuckTicks} sends at srv=(${curCol},${curRow}) sim=(${myCol},${myRow}) — re-anchoring sim to server`);
+      this._simX = null; this._simY = null; this._simAt = 0;
+      try { this.session?._pose?.reset(); } catch {}
+      this.path = null; this.pathIdx = 0;
+      this._lastWpKey = null;
+      this._fanIndex = null; this._fanTarget = null; this._fanFrom = null;
+      return { state: 'stuck', why: `server static across ${this.stuckTicks} sends — sim re-anchored to server` };
     }
-    if (me) this.lastPos = { col: me.col, row: me.row };
     return { state: 'moving', to: { col: stepCol, row: stepRow } };
   }
 
