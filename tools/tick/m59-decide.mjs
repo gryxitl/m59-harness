@@ -704,6 +704,12 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             });
           if (_resting) {
             // Resting: not stuck, just not moving.
+          } else if (session?._criticalRest === true) {
+            // Critically exhausted (<30, recovering to 60): intentional
+            // stillness. Walking it dry here starts the drain spiral the
+            // hysteresis exists to prevent — and the escape would steal a
+            // manual destination for a hunt room.
+            _lastPosAt = now();
           } else if ((_fighting && !targetOutOfReach) || (mobNearby && !targetOutOfReach)) {
             // Genuinely engaged: fighting a target in reach, or a hostile mob
             // is within 4 squares. Not stuck — just holding position. A "fight"
@@ -879,6 +885,12 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     const ws = evaluate({ client, session, policy, agent: session.name });
     // Expose the raw vigor value for the vigor_low goal.
     ws._vigor = client?.vitals?.()?.vigor?.value ?? null;
+    // CRITICAL HYSTERESIS (maintained here so every consumer — stuck
+    // detector, goals — sees it even when a higher goal preempts rest).
+    try {
+      if (ws._vigor != null && ws._vigor < 30) session._criticalRest = true;
+      else if (ws._vigor != null && ws._vigor >= 60) session._criticalRest = false;
+    } catch {}
     // Expose room number and max HP for the hunt goal's Raza check.
     ws._roomNum = session?.world?.room?.num ?? client?.room?.num
       ?? roomNumByRsc(client?.roomNameRsc) ?? roomNumByRsc(client?.roomRsc) ?? null;
