@@ -1120,6 +1120,11 @@ export class Mover {
     // stride: >18 with vigor < 10 gets rubber-banded as cheating (user.kod),
     // and runNow already requires RUN_VIGOR_FLOOR.
     if (ownPhysics) {
+      // ENTRY TRACE (throttled): why does the velocity declaration never send live?
+      if (Date.now() - (this._velDbgAt ?? 0) > 10000) {
+        this._velDbgAt = Date.now();
+        try { console.error(`[movedbg] t3 vel-tick path=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} dest=${this.dest ? this.dest.col + ',' + this.dest.row : 'null'} run=${runNow} stride=${strideNow} stuck=${this.stuckTicks} fan=${this._fanIndex}`); } catch {}
+      }
       // Advance past reached waypoints HERE: the shared advance block below
       // is unreachable past this return. Without this, pathIdx freezes on a
       // reached waypoint, aim == position, the send gate closes forever —
