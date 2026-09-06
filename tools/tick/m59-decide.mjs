@@ -826,6 +826,20 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
               }
             }
             if (escape) {
+              // The tick walk REFUSES while the router holds a destination
+              // (the mover owns stepping — walk() returns ok:false), and the
+              // raw moveToSquare fallback would bypass the 1/s move cap and
+              // trip speedhack detection. With a live dest there is nothing
+              // for the decider to step: hold for the mover instead of
+              // logging a walk that never sends (watched: 'walking to open
+              // square' every stuck tick, zero packets, timer reset each
+              // time so real escalation never progresses).
+              if (session?._router?.dest != null) {
+                onDecision?.({ ticks, goal: 'unstuck', action: 'hold',
+                  what: `stuck at (${me.col},${me.row}), mover owns stepping (router dest ${session._router.dest}) — holding`, sent: false });
+                _lastPosAt = now(); // reset timer
+                return;
+              }
               // Walk to the open neighbor.
               act.walk?.(escape.col, escape.row) ?? c.moveToSquare?.(escape.col, escape.row, 18);
               onDecision?.({ ticks, goal: 'unstuck', action: 'walk',
