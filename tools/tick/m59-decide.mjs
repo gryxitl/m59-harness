@@ -1347,6 +1347,18 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             mobNames: allNames,
             nameOf: (o) => client.rsc?.get?.(o.nameRsc) ?? o.name ?? '',
           });
+          // OUTNUMBERED COUNT: hostile-ish within melee+1 (same predicate).
+          // A pack is fled, not fought (the 545 rat nest proved it).
+          let n = 0;
+          try {
+            const nm = (o) => mobNameKey(client.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
+            for (const o of dObjs.values()) {
+              if (o.is_self || o.col == null || o.row == null) continue;
+              if (!((o.is_player && o.can_attack) || (allNames.size > 0 && allNames.has(nm(o))))) continue;
+              if ((o.col - dMe.col) ** 2 + (o.row - dMe.row) ** 2 <= 10) n++;
+            }
+          } catch {}
+          ws._mobCount = n;
         } catch { ws._mobNear = null; }
       }
     }
@@ -2031,7 +2043,7 @@ export const DEFAULT_GOALS = [
   // only flee when the out-of-band threat is in reach (actually a danger). An out-of-band
   // target that is NOT in reach is handled by the hunt goal (route to a better target or
   // approach it), not by fleeing.
-  { goal: 'flee_danger', when: ws => (ws.has_target === true && ws.target_in_band === false && ws.in_reach === true) || ws._dangerClose != null },
+  { goal: 'flee_danger', when: ws => (ws.has_target === true && ws.target_in_band === false && ws.in_reach === true) || ws._dangerClose != null || (ws._traveling === true && (ws._mobCount ?? 0) >= 3) },
   // FLEE when hurt AND a target is actively in reach
   // (attacking you). If the target is in the room but
   // not in reach, fight it instead of fleeing.
