@@ -644,6 +644,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
   let retargetCheckAt = 0;       // wall-clock ms of last re-target check (throttle)
   let _hpPokeAt = 0;             // wall-clock ms of last first-move poke (HP-regen unlock)
   let _uwDbgAt = 0;               // wall-clock ms of last underworld-identity diagnostic
+  let _stuckDbgAt = 0;            // wall-clock ms of last stuck-gate diagnostic
   let lastSeenHp = null;         // last HP value (to detect "we just took damage")
   let lastDamagedAt = 0;         // wall-clock ms when we last dropped HP
   let _currentTargetId = null;   // the decider's current target (for 3D debug)
@@ -724,6 +725,15 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             // so fall through and let the stuck-detector blink/walk out.
           } else {
             const held = now() - _lastPosAt;
+            // DIAG (permanent, rate-limited): critical-rest gating. (ws
+            // doesn't exist yet in section 0 — read vitals directly.)
+            if (Date.now() - (_stuckDbgAt ?? 0) > 30000) {
+              _stuckDbgAt = Date.now();
+              try {
+                const vv = client?.vitals?.()?.vigor?.value ?? null;
+                console.error(`[stuckdbg] vigor=${vv} crit=${session?._criticalRest ?? 'null'} resting=${_resting} held=${Math.round(held / 1000)}s`);
+              } catch {}
+            }
             // Critical rest covers micro-walks AND travel-escapes: an
             // exhausted character neither walks dry nor gets shipped to a
             // hunt room. It rests to 60 first (then escapes normally if
