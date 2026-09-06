@@ -575,9 +575,14 @@ export class Mover {
       && Math.hypot(this.destProto.x - srvX, this.destProto.y - srvY) < KOD_FINENESS;
     const srvMoved = this._arriveBase != null
       && (srvCol !== this._arriveBase.col || srvRow !== this._arriveBase.row);
-    const cmtSim = srvNearDest || srvMoved;
-    const cmtX = cmtSim ? myProtoX : srvX;
-    const cmtY = cmtSim ? myProtoY : srvY;
+    // The SERVER echo is the arrival truth. When the server is at the
+    // destination, commit on the SERVER (the sim can drift off the dest via
+    // single-square stepping and would never re-arrive). Only when the server
+    // has visibly moved (progress) but is not yet at the destination do we
+    // commit on the sim (ahead of the server). Never on the sim alone — a sim
+    // that "covers" a square while the server never budges is refused sends.
+    const cmtX = srvNearDest ? srvX : (srvMoved ? myProtoX : srvX);
+    const cmtY = srvNearDest ? srvY : (srvMoved ? myProtoY : srvY);
     // Keep DR in sync with current position for the fine model's collision checks.
     this.drX = protocolToClient(myProtoX);
     this.drY = protocolToClient(myProtoY);
@@ -741,15 +746,18 @@ export class Mover {
     const strideNow = runNow ? RUN_STRIDE_PROTO : WALK_STRIDE_PROTO;
     // Boundary checks (0c slide, raycast-ahead) skip only on the FINAL
     // APPROACH to an exit square. En route, a blocked direct path means a
-    // real wall even when the destination is a stand_on. Clamped from the
-    // server point: a drifted sim must not aim jumps past the server's
-    // confirmed position.
+    // real wall even when the destination is a stand_on.
+    // STRIDE ORIGIN IS THE SIM (the live position), NOT the server echo.
+    // The server is client-authoritative: it accepts our declared position, so
+    // the sim IS where the character is. The echo lags ~1s; clamping one
+    // stride ahead of a stale echo aimed BEHIND the character and pulled it
+    // backward every tick — the "not following the path" wedge.
     {
-      const adx = aimX - srvX, ady = aimY - srvY;
+      const adx = aimX - myProtoX, ady = aimY - myProtoY;
       const ad = Math.hypot(adx, ady);
       if (ad > strideNow) {
-        aimX = srvX + (adx / ad) * strideNow;
-        aimY = srvY + (ady / ad) * strideNow;
+        aimX = myProtoX + (adx / ad) * strideNow;
+        aimY = myProtoY + (ady / ad) * strideNow;
       }
     }
 
@@ -828,8 +836,9 @@ export class Mover {
     if (ownPhysics && !standOnNear) {
       const geo = this.session?.world?.geometry;
       if (geo?.traceFineMoveClient) {
-        // Trace origin is the server point (see stride clamps above).
-        const clientX = protocolToClient(srvX), clientY = protocolToClient(srvY);
+        // Trace origin is the SIM (the live position; the server is
+        // client-authoritative, so the sim is where we are — the echo lags).
+        const clientX = protocolToClient(myProtoX), clientY = protocolToClient(myProtoY);
         const aimClientX = protocolToClient(aimX), aimClientY = protocolToClient(aimY);
         const trace = geo.traceFineMoveClient(clientX, clientY, aimClientX, aimClientY, { slide: false, playerRadius: 32 });
         if (trace.blocked && !trace.arrived) {
@@ -874,8 +883,8 @@ export class Mover {
           if (ng) { fanAimX = ng.col * KOD_FINENESS + HALF; fanAimY = ng.row * KOD_FINENESS + HALF; }
         } catch { /* keep the travel aim */ }
       }
-      const dx = fanAimX - srvX;
-      const dy = fanAimY - srvY;
+      const dx = fanAimX - myProtoX;
+      const dy = fanAimY - myProtoY;
       const dist = Math.hypot(dx, dy);
       const baseAngle = Math.atan2(dy, dx);
       const finalAngle = baseAngle + angle;
@@ -892,12 +901,13 @@ export class Mover {
       let fanY = myProtoY + Math.sin(finalAngle) * MOVEUNITS_PROTO;
       const _fgeo = this.session?.world?.geometry;
       if (_fgeo?.traceFineMoveClient) {
-        // Stride origin is the server point (see the stride clamps above).
-        const _fx = srvX + Math.cos(finalAngle) * strideNow;
-        const _fy = srvY + Math.sin(finalAngle) * strideNow;
+        // Stride origin is the SIM (the live position; the server is
+        // client-authoritative, so the sim is where we are — the echo lags).
+        const _fx = myProtoX + Math.cos(finalAngle) * strideNow;
+        const _fy = myProtoY + Math.sin(finalAngle) * strideNow;
         try {
           const _tr = _fgeo.traceFineMoveClient(
-            protocolToClient(srvX), protocolToClient(srvY),
+            protocolToClient(myProtoX), protocolToClient(myProtoY),
             protocolToClient(_fx), protocolToClient(_fy),
             { slide: false, playerRadius: 32 });
           if (_tr && _tr.blocked !== true) { fanX = _fx; fanY = _fy; }
@@ -1060,11 +1070,12 @@ export class Mover {
     if (ownPhysics && !standOnNear) {
       const geo = this.session?.world?.geometry;
       // Compute the next position: one step ahead in the aim direction,
-      // from the server point.
-      const dx = aimX - srvX, dy = aimY - srvY;
+      // from the SIM (the live position; the server is client-authoritative,
+      // so the sim is where we are — the echo lags).
+      const dx = aimX - myProtoX, dy = aimY - myProtoY;
       const dist = Math.hypot(dx, dy) || 1;
-      const nextX = srvX + (dx / dist) * MOVEUNITS_PROTO;
-      const nextY = srvY + (dy / dist) * MOVEUNITS_PROTO;
+      const nextX = myProtoX + (dx / dist) * MOVEUNITS_PROTO;
+      const nextY = myProtoY + (dy / dist) * MOVEUNITS_PROTO;
       // Check if the next position is valid (not a wall, not out of bounds).
       // inBounds is 1-indexed (like the aimOOB check above): the floor() square
       // needs +1, or edge squares read out-of-bounds and the fan engages forever.
@@ -1107,7 +1118,7 @@ export class Mover {
           if (!geoLA || !geoLA.traceFineMoveClient) return true;
           try {
             const t = geoLA.traceFineMoveClient(
-              protocolToClient(srvX), protocolToClient(srvY),
+              protocolToClient(myProtoX), protocolToClient(myProtoY),
               protocolToClient(wx), protocolToClient(wy),
               { slide: false, playerRadius: 32 });
             return !(t && t.blocked && !t.arrived);
@@ -1134,13 +1145,13 @@ export class Mover {
         const w = cornerAim ?? this.path[this.pathIdx];
         aimX = w.x; aimY = w.y;
         // Re-clamp: the new aim may be farther than one stride. Clamped from
-        // the SERVER point, so a drifted sim can never aim a teleport-scale
-        // jump past it (the server would rubber-band the account).
-        const adx = aimX - srvX, ady = aimY - srvY;
+        // the SIM (the live position; the server is client-authoritative, so
+        // the sim is where we are — the echo lags and would pull backward).
+        const adx = aimX - myProtoX, ady = aimY - myProtoY;
         const ad = Math.hypot(adx, ady);
         if (ad > strideNow) {
-          aimX = srvX + (adx / ad) * strideNow;
-          aimY = srvY + (ady / ad) * strideNow;
+          aimX = myProtoX + (adx / ad) * strideNow;
+          aimY = myProtoY + (ady / ad) * strideNow;
         }
         const speed = runNow ? 36 : 18;
       // NEVER ENTER A VOID: from a grounded start, refuse to declare an aim
@@ -1271,12 +1282,12 @@ export class Mover {
       // even across open ground — the observed 0.15 sq/s regime. Falls through
       // to single-square stepping when the segment is blocked or floorless.
       {
-        const ndx = this.destProto.x - srvX, ndy = this.destProto.y - srvY;
+        const ndx = this.destProto.x - myProtoX, ndy = this.destProto.y - myProtoY;
         const nd = Math.hypot(ndx, ndy);
         if (nd > KOD_FINENESS) {
           const slen = Math.min(nd, strideNow);
-          const sx = Math.round(srvX + (ndx / nd) * slen);
-          const sy = Math.round(srvY + (ndy / nd) * slen);
+          const sx = Math.round(myProtoX + (ndx / nd) * slen);
+          const sy = Math.round(myProtoY + (ndy / nd) * slen);
           const sqC = Math.floor(sx / KOD_FINENESS), sqR = Math.floor(sy / KOD_FINENESS);
           const sqIsExit = this._destIsStandOn === true && sqC === destCol && sqR === destRow;
           const sqGroundOk = sqIsExit || transitBanned(geo, sqR, sqC) !== true;
@@ -1284,7 +1295,7 @@ export class Mover {
           if (sqGroundOk && geo?.traceFineMoveClient) {
             try {
               const tr = geo.traceFineMoveClient(
-                protocolToClient(srvX), protocolToClient(srvY),
+                protocolToClient(myProtoX), protocolToClient(myProtoY),
                 protocolToClient(sx), protocolToClient(sy),
                 { slide: false, playerRadius: 32 });
               segOk = !!(tr && tr.blocked !== true);
