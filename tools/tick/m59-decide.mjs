@@ -658,6 +658,13 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     ticks++;
     const client = session.client;
     if (!client) return;
+    // CRITICAL HYSTERESIS (top of tick, before stuck detection: stuck
+    // escapes return early and would otherwise starve the setter below).
+    try {
+      const vv = client?.vitals?.()?.vigor?.value ?? null;
+      if (vv != null && vv < 30) session._criticalRest = true;
+      else if (vv != null && vv >= 60) session._criticalRest = false;
+    } catch {}
 
     // 0. STUCK DETECTION. If the character hasn't moved in
     // STUCK_MS, escape the geometry pocket. Blink teleports
