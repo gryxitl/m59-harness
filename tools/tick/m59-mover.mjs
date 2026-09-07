@@ -1209,6 +1209,15 @@ export class Mover {
           const _nq = this.path[this.pathIdx];
           const _adx0 = _nq.x - myProtoX, _ady0 = _nq.y - myProtoY;
           const _ad0 = Math.hypot(_adx0, _ady0) || 1;
+          // CONSUME THE CURRENT WAYPOINT IF AT-IT: the path often starts at
+          // the character's current square (idx=0 is where we are). The old
+          // loop only consumed pathIdx-1, so idx=0 was never consumed and the
+          // aim was the character's own square (watched live: aim=(21,19)
+          // me=(21,19) for 2 minutes). If the current waypoint is within 1
+          // square, we're on it — advance to the next.
+          if (Math.hypot(_nq.x - myProtoX, _nq.y - myProtoY) < KOD_FINENESS) {
+            this.pathIdx++;
+          }
           let _guard = 0;
           while (this.pathIdx > 0 && _guard++ < 64) {
             const _p = this.path[this.pathIdx - 1];
