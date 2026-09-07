@@ -884,7 +884,12 @@ export class Mover {
         // client-authoritative, so the sim is where we are — the echo lags).
         const clientX = protocolToClient(myProtoX), clientY = protocolToClient(myProtoY);
         const aimClientX = protocolToClient(aimX), aimClientY = protocolToClient(aimY);
-        const trace = geo.traceFineMoveClient(clientX, clientY, aimClientX, aimClientY, { slide: false, playerRadius: 32 });
+        // RADIUS-FREE (parity with the stepmask): the full player radius (32)
+        // clips nearby walls and reads the direct path as blocked on open
+        // ground, firing the fan (which then "escapes" a pocket that doesn't
+        // exist). The server is client-authoritative (it slides us along walls),
+        // so the radius-free verdict is the right guide.
+        const trace = geo.traceFineMoveClient(clientX, clientY, aimClientX, aimClientY, { slide: false, playerRadius: 1 });
         if (trace.blocked && !trace.arrived) {
           // Direct path to the aim is blocked by a wall. Fire the fan
           // (slide) instead of the direct velocity. NO EARLY RETURN: the fan
@@ -950,10 +955,16 @@ export class Mover {
         const _fx = myProtoX + Math.cos(finalAngle) * strideNow;
         const _fy = myProtoY + Math.sin(finalAngle) * strideNow;
         try {
+          // RADIUS-FREE (parity with the stepmask): the full player radius
+          // (32) clips nearby walls and rejects open directions the stepmask
+          // (playerRadius: 1) accepts — the self-inflicted pocket on open
+          // ground. The server is client-authoritative (it slides us along
+          // walls), so the radius-free verdict is the right guide for the
+          // stride extension.
           const _tr = _fgeo.traceFineMoveClient(
             protocolToClient(myProtoX), protocolToClient(myProtoY),
             protocolToClient(_fx), protocolToClient(_fy),
-            { slide: false, playerRadius: 32 });
+            { slide: false, playerRadius: 1 });
           if (_tr && _tr.blocked !== true) { fanX = _fx; fanY = _fy; }
         } catch {}
       }
