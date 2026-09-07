@@ -444,5 +444,43 @@ console.log('\nRouter.to refuses never-enter rooms');
   ok('normal dest accepted', router.to(535) === true && router.dest === 535, 'dest=' + router.dest);
 }
 
+console.log('\nsub-leg chains never head into a wall square (557 pin: (27,33) fine-blocked)');
+{
+  // Geometry where (6,5) is a fine-blocked wall square, everything else open.
+  const wallGeo = {
+    collisionReady: true,
+    fineWalkable: (r, c) => !(r === 5 && c === 6),
+    standable: () => true,
+    traceFineMoveClient: () => ({ blocked: false, arrived: true }),
+    finePathProtocol: (fx, fy, tx, ty) => ({ found: true, waypoints: [{ x: tx, y: ty }] }),
+  };
+  const { router } = rig();
+  router.session.world.geometry = wallGeo;
+  // Build time: truncate to the standable prefix.
+  const s = router._sanitizeChain([{ col: 5, row: 5 }, { col: 6, row: 5 }, { col: 7, row: 5 }], wallGeo);
+  ok('chain truncates at the first blocked square', s.chain.length === 1 && s.chain[0].col === 5 && s.dropped === 2,
+     JSON.stringify(s));
+  const s2 = router._sanitizeChain([{ col: 5, row: 5 }, { col: 7, row: 5 }], wallGeo);
+  ok('all-standable chain passes through untouched', s2.chain.length === 2 && s2.dropped === 0,
+     JSON.stringify(s2));
+  ok('no geometry reads pass (fixtures without grids)',
+     router._chainSquareOk(null, 1, 1) === true, 'null geo');
+  // Runtime: a frozen wall head is dropped on tick so the aim falls through
+  // to the next square instead of pinning the mover forever.
+  router.to(20);
+  router.leg = { fromRoom: 10, next: 20, standOn: { col: 8, row: 5 }, edgeTarget: null,
+                 direction: 'east', kind: 'edge', startedAt: 1000 };
+  router.subWp = [{ col: 6, row: 5 }, { col: 7, row: 5 }];
+  const { act, frame } = rig();
+  // NOTE: fresh rig session for act/frame would desync the router's session;
+  // reuse this router's own session pieces instead.
+  const selfRef = router.session.client.self;
+  selfRef.col = 5; selfRef.row = 5; selfRef.x = 5 * 64 + 32; selfRef.y = 5 * 64 + 32;
+  router.tick({ room: { num: 10, name: 'A' },
+                position: { col: 5, row: 5, x: 5 * 64 + 32, y: 5 * 64 + 32 } }, act);
+  ok('blocked head dropped at runtime', router.subWp && router.subWp[0].col === 7 && router.subWp[0].row === 5,
+     JSON.stringify(router.subWp));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

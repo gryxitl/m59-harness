@@ -525,7 +525,34 @@ export class Router {
     return { chain: chain.slice(0, SUBLEG_MAX), complete: false };
   }
 
-  // Set up the sub-leg chain for a freshly planned leg. If the standOn is directly
+  // CHAIN-SQUARE VALIDITY (same verdict as the mover's step search): a chain
+  // square must be STANDABLE — edge-reachable is not enough. The sub-leg BFS
+  // admits squares via _fineStep (an edge test, lenient on the first edge out
+  // of a non-standable origin), so a fine-blocked square can head the chain
+  // (watched: (27,33) in 557, fine=False). Advancement requires standing ON
+  // each head, which is impossible in a wall — the chain freezes forever and
+  // the mover jitters around it. Accept = fine true, or no fine data with
+  // coarse not-false (mirrors the mover; no data = pass).
+  _chainSquareOk(geo, col, row) {
+    if (!geo) return true;
+    let f, s;
+    try { f = geo.fineWalkable ? geo.fineWalkable(row, col) : undefined; } catch { f = undefined; }
+    try { s = geo.standable ? geo.standable(row, col) : undefined; } catch { s = undefined; }
+    if (f === false) return false;
+    if (f === undefined && s === false) return false;
+    return true;
+  }
+  // Truncate a chain at the first non-standable square (keep the valid
+  // prefix). Returns { chain, dropped } — dropped counts removed heads.
+  _sanitizeChain(chain, geo) {
+    if (!chain || !chain.length) return { chain, dropped: 0 };
+    let cut = chain.length;
+    for (let i = 0; i < chain.length; i++) {
+      if (!this._chainSquareOk(geo, chain[i].col, chain[i].row)) { cut = i; break; }
+    }
+    if (cut === chain.length) return { chain, dropped: 0 };
+    return { chain: chain.slice(0, cut), dropped: chain.length - cut };
+  }
   // fine-reachable from `me`, there is nothing to decompose (subWp stays null and the
   // leg is a plain walk). Otherwise, plan a bounded chain from `me` toward the standOn;
   // the chain ends at the closest fine-reachable square (the approach point) when the
@@ -554,8 +581,13 @@ export class Router {
     } catch { /* fall through to decomposition */ }
     // The standOn is fine-unreachable: plan a bounded chain toward it. The chain ends at
     // the approach point (closest fine-reachable square); the Mover pushes the last gap.
+    // SANITIZE: drop any fine-blocked squares (the BFS edge test can admit one via
+    // the origin-trap leniency). A blocked head freezes the chain forever — advancement
+    // requires standing on it. Truncate to the standable prefix; empty = plain walk.
     const { chain } = this._planSubLegs(me, standOn);
-    if (chain.length) this.subWp = chain;
+    const clean = this._sanitizeChain(chain, geo);
+    if (clean.dropped > 0) console.error(`[route] sub-leg chain dropped ${clean.dropped} blocked square(s) (leg to ${this.leg?.next})`);
+    if (clean.chain.length) this.subWp = clean.chain;
   }
 
   // We reached the current sub-waypoint (subWp[0]). Advance the chain: drop it, and if
@@ -580,7 +612,9 @@ export class Router {
       const geo = this._geo();
       const target = this.subWp[this.subWp.length - 1];
       const chain = this._planSubLegs(me, target);
-      if (chain.chain.length) this.subWp = chain.chain;
+      const clean = this._sanitizeChain(chain.chain, geo);
+      if (clean.dropped > 0) console.error(`[route] sub-leg replan dropped ${clean.dropped} blocked square(s) (leg to ${this.leg?.next})`);
+      if (clean.chain.length) this.subWp = clean.chain;
     }
   }
 
@@ -761,6 +795,30 @@ export class Router {
     if ((!this.subWp || !this.subWp.length) && t - (this._subWpRecoverAt ?? 0) > 30000) {
       this._subWpRecoverAt = t;
       this._initSubLegs(me);
+    }
+    // DROP BLOCKED HEADS: a frozen chain head inside a wall never advances
+    // (advancement requires standing on it). Sanitize covers build time;
+    // this covers chains built before the fix and races. Keep the LAST
+    // square even if blocked when it is the standOn itself (the door-push
+    // target); drop a blocked last square that is NOT the standOn (a dead
+    // approach — fall back to aiming the standOn directly).
+    if (this.subWp && this.subWp.length) {
+      const _rgeo = this._geo();
+      const _so = this.leg?.standOn;
+      while (this.subWp.length > 1) {
+        const _h = this.subWp[0];
+        if (this._chainSquareOk(_rgeo, _h.col, _h.row)) break;
+        console.error(`[route] dropping blocked sub-waypoint (${_h.col},${_h.row}) (leg to ${this.leg?.next})`);
+        this.subWp.shift();
+      }
+      if (this.subWp.length === 1) {
+        const _h = this.subWp[0];
+        const _isStandOn = _so != null && _h.col === _so.col && _h.row === _so.row;
+        if (!_isStandOn && !this._chainSquareOk(_rgeo, _h.col, _h.row)) {
+          console.error(`[route] dropping blocked lone approach (${_h.col},${_h.row}) (leg to ${this.leg?.next})`);
+          this.subWp = null;
+        }
+      }
     }
     const sub = this.subWp && this.subWp.length ? this.subWp[0] : null;
     if (sub) {
