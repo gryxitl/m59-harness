@@ -119,19 +119,22 @@ function rig({ col = 2, row = 2, destCol = 8, destRow = 2, geo } = {}) {
     walkTo: (col, row) => { sent.push([col * 64 + 32, row * 64 + 32]); return Promise.resolve({ arrived: true }); },
     world: { geometry: geo ?? wallGeometry() },
   };
-  // Production always hands the mover a Pose (keeper-process wires it, tick-driver
-  // feeds updateServer). A rig without one silently exercises the legacy _simX
-  // fallback instead of the position truth the fleet actually uses.
-  session._pose = new Pose();
-  session._pose.updateServer({ col, row, x: col * 64 + 32, y: row * 64 + 32 });
+  // No Pose by default. Production always wires one, but a rig that hands the mover a
+  // Pose without a server behind it freezes the echo: Pose.server never moves, so
+  // _noteServerStatic is right to call the server static and the mover goes stuck after
+  // five honest sends. Tests that need a position truth build their own Pose and feed
+  // updateServer by hand (see the arrival tests); the multi-tick route test runs a fake
+  // server via fakeServer() below.
   const mover = new Mover(session, { reportIntervalMs: 0, moveCapMs: 0 });  // the rig ticks in microseconds; the 1s client gate is a LIVE constraint
   return { mover, sent, session, clock };
 }
 
-// Advance the fake position to match the last sent move, and feed the same position
-// to the Pose as the server echo. The mover reads its position from the Pose; a rig
-// that only moves client.self leaves the Pose frozen and the mover plans from a
-// square it left three sends ago.
+// Advance the fake position to match the last sent move. This is the CLIENT's own
+// view (client.self is what the client declares), NOT a server echo: the rig has no
+// server and must not fabricate one. Feeding the Pose's server echo from our own sends
+// makes every send look confirmed, which commits arrival after a single packet and
+// hides the exact stall the mover exists to detect. Tests that need a confirmation
+// call session._pose.updateServer(...) by hand, as the arrival tests above do.
 function advance(session, sent) {
   for (const s of sent) {
     if (Array.isArray(s) && s.length === 2) {
@@ -142,6 +145,17 @@ function advance(session, sent) {
     }
   }
   sent.length = 0;
+}
+
+// A fake server for the tests that walk a route over many ticks: gives the session a
+// Pose and returns the tick hook that echoes what the client declared, one tick late.
+// A real server confirms the position it accepted; without that confirmation no route
+// can ever be seen to arrive. Tests that want to study a STALL must not call this.
+function fakeServer(session) {
+  session._pose = new Pose();
+  const c = session.client.self;
+  session._pose.updateServer({ ...c });
+  return () => { session._pose.updateServer({ ...session.client.self }); };
 }
 
 console.log('one tick moves at most MOVEUNITS');
@@ -174,6 +188,7 @@ console.log('\nthe wall segment: route goes around it');
   // A straight line crosses the wall. finePathProtocol should
   // return a path that goes around (north, y > 4096).
   const { mover, sent, session } = rig();
+  const echo = fakeServer(session);
   mover.to(8, 2);
 
   let states = [];
@@ -182,6 +197,7 @@ console.log('\nthe wall segment: route goes around it');
 
   for (let i = 0; i < 200; i++) {
     clock(1600);   // one live tick per second: past the fan's 1.5s echo-patience
+    echo();
     const r = mover.tick({ col: session.client.self.col, row: session.client.self.row, x: session.client.self.x, y: session.client.self.y });
     states.push(r.state);
     if (r.state === 'arrived') break;
@@ -222,21 +238,33 @@ console.log('\nno wall: straight line works');
   ok('it reports moving or planning', r.state === 'moving' || r.state === 'planning', r.state);
 }
 
-console.log('\nsitting trap: stand, then move on the same tick');
+console.log('\nsitting trap: stand before move');
 {
-  // The stand() command is fire-and-forget and the velocity declaration fires on
-  // the same tick, so there is no separate 'standing' tick any more. That is the
-  // point: the old two-tick stand/sit handshake is what let the vigor_low goal
-  // trap the mover in a stand/move loop.
-  const { mover, sent, session } = rig({ geo: clearGeometry() });
+  // Step engine (ownPhysics off): standing is its own tick, and nothing moves until
+  // the character is on its feet.
+  const { mover, sent } = rig({ geo: clearGeometry() });
   mover.to(4, 2);
   mover.markSitting();
   const r = mover.tick();
-  ok('first tick stands and moves (no separate standing tick)',
-    r.state === 'moving' || r.state === 'planning', r.state);
+  ok('first tick stands', r.state === 'standing', r.state);
   ok('a stand was issued', sent.some(x => x && x.stand === true), JSON.stringify(sent).slice(0, 60));
+  ok('no move sent while sitting', !sent.some(x => Array.isArray(x)), JSON.stringify(sent).slice(0, 60));
   const r2 = mover.tick();
   ok('second tick moves or plans', r2.state === 'moving' || r2.state === 'planning', r2.state);
+}
+{
+  // Velocity engine (ownPhysics on): stand() is fire-and-forget and the velocity
+  // declaration fires on the same tick, so there is no separate standing tick. That is
+  // the point: the two-tick stand/move handshake is what let the vigor_low goal trap the
+  // mover in a stand/sit loop, because the goal re-sat the character between the ticks.
+  const { mover, sent } = rig({ geo: clearGeometry() });
+  mover.session.policy = { ownPhysics: true };
+  mover.to(4, 2);
+  mover.markSitting();
+  const r = mover.tick();
+  ok('velocity engine stands and moves on one tick',
+    r.state === 'moving' || r.state === 'planning', r.state);
+  ok('a stand was issued', sent.some(x => x && x.stand === true), JSON.stringify(sent).slice(0, 60));
 }
 
 console.log('\nclear stops the mover');

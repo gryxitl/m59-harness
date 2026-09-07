@@ -119,5 +119,51 @@ function ok(cond, msg) {
   ok(p.divergence() === 0, 'adopted sim agrees with the echo');
 }
 
+// 12. SEEDING IS NOT A JUMP TO THE AIM. advance(x, y) is called with what we are
+// DECLARING we head toward — a stride target up to 320 proto (5 squares) away —
+// not our feet. Seeding a null sim at the aim made current() report an aim as a
+// position, and the divergence guard could not see it: the worst possible bad
+// seed is one stride (320), which is under its 384 threshold, so the guard could
+// never catch its own cause. Live (keeper-t3.log): echo (23,18), a room change
+// reset the sim, one send seeded it from a run aim, and the mover then planned a
+// path for (23,23) and froze for 790 sends.
+{
+  const p = new Pose();
+  p.updateServer({ col: 23, row: 18, x: 23 * 64 + 32, y: 18 * 64 + 32 });
+  p.reset();                       // a room change wipes the sim
+  p.advance(1472, 1472);           // a run aim 320 proto away, as in the log
+  const c = p.current();
+  ok('seeding anchors on the echo, not the aim', c.col === 23 && c.row === 19,
+    `${c.col},${c.row} (the bug gave 23,23)`);
+  ok('the seed advances one server step toward the aim', p.divergence() === 64,
+    p.divergence());
+  ok('the seed is inside the guard threshold by construction, not by luck',
+    p.divergence() <= 64);
+}
+
+// 13. With no echo at all (a fresh join, before the first BP_MOVE) the aim is the
+// only information there is, so seeding still has to land somewhere.
+{
+  const p = new Pose();
+  p.advance(1472, 1472);
+  ok('no echo: seeding falls back to the aim rather than staying null',
+    p.sim != null && p.sim.x === 1472 && p.sim.y === 1472, JSON.stringify(p.sim));
+  ok('and current() reports it as predicted', p.current().predicted === true);
+}
+
+// 14. The invariant the frozen mover violated: the square current() reports must
+// be the square of the proto point the mover plans from, in the same call.
+{
+  const p = new Pose();
+  p.updateServer({ col: 23, row: 18, x: 23 * 64 + 32, y: 18 * 64 + 32 });
+  p.reset();
+  p.advance(1472, 1472);
+  const c = p.current();
+  ok('current().col is floor(sim.x / 64)', c.col === Math.floor(p.sim.x / 64));
+  ok('current().row is floor(sim.y / 64)', c.row === Math.floor(p.sim.y / 64));
+  ok('so a caller cannot see a position the sim does not have',
+    c.x === p.sim.x && c.y === p.sim.y);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -117,6 +117,7 @@ const NAV = {
     step = 8,
     margin = 12 * KOD_FINENESS,
     maxNodes = 20000,
+    coarse = false,
   } = {}) {
     if (!this.collisionReady || ![fromX, fromY, toX, toY].every(Number.isFinite))
       return { found: false, reason: 'collision_geometry_unavailable', waypoints: [] };
@@ -179,6 +180,30 @@ const NAV = {
       return t(0,0) || t(px*128,py*128) || t(-px*128,-py*128) || t(px*256,py*256) || t(-px*256,-py*256);
     };
     const edgeWalkable = (r1, c1, r2, c2) => {
+      // TWO-TIER: when `coarse`, the edge predicate is the COARSE grid (walkable +
+      // heightStepOk) — fast and forgiving, for room-scale path planning. The fine
+      // grid (moverStepLands) is only consulted by the mover for the immediate next
+      // step (the 9 tiles around the character). This avoids the fine A* getting
+      // stuck on strictness across the whole map (the 13-node pocket case).
+      if (coarse) {
+        // ORIGIN-TRAP ESCAPE (coarse): the character may sit on a square the coarse
+        // grid calls WALL (a respawn point, a ledge edge). Requiring walkable(origin)
+        // for the first edge would refuse every step out of it (the A* expands 1 node
+        // and gives up). For the first edge out of the origin, only require the
+        // NEIGHBOR to be walkable — the character is already on the origin; we only
+        // need to get OFF it. Every other edge requires both squares walkable.
+        const atOrigin = (r1 === originR && c1 === originC) || (r2 === originR && c2 === originC);
+        // FORGIVING: the coarse A* is room-scale path planning. It only uses
+        // `walkable` (the coarse grid), NOT `heightStepOk`. Height/cliff safety is
+        // the fine grid's job (the stepmask, the 9 tiles around the character).
+        // Adding heightStepOk here rejects valid paths on height-varied terrain
+        // (the 641-node case) — the coarse path just needs to get the character in
+        // the right general direction.
+        const ok = atOrigin
+          ? (this.walkable(r1, c1) || this.walkable(r2, c2))
+          : this.walkable(r1, c1) && this.walkable(r2, c2);
+        return ok;
+      }
       const ek = r1 < r2 || (r1 === r2 && c1 < c2)
         ? `${r1},${c1},${r2},${c2}` : `${r2},${c2},${r1},${c1}`;
       const hit = edgeOk.get(ek);
@@ -285,7 +310,10 @@ const NAV = {
         // segments on the edge without the false positives of full-radius standPoint
         // traces). Accepts corridors where the player radius clips a nearby wall
         // (the mover handles fine positioning via sliding); refuses real walls.
-        if (this.fineWalkable && this.fineWalkable(nr, nc) === false) continue;
+        // In coarse mode, skip the fineWalkable check — the coarse A* only uses
+        // `walkable` (the coarse grid, via edgeWalkable). The fine grid is the
+        // mover's job (the stepmask, the 9 tiles around the character).
+        if (!coarse && this.fineWalkable && this.fineWalkable(nr, nc) === false) continue;
         if (!edgeWalkable(cur.r, cur.c, nr, nc)) continue;
         const g = cur.g + m.cost;
         if (g >= (best.get(nk) ?? Infinity)) continue;
@@ -314,16 +342,43 @@ const NAV = {
     // edge validation and the mover's step validator disagree (a one-way step-height edge
     // that the search admitted but the mover refuses): rather than trust the search, the
     // path must prove itself edge-by-edge before it is called "found".
-    for (let i = 0; i < raw.length - 1; i++) {
-      const a = raw[i], b = raw[i + 1];
-      if (!this.moverStepLands(a.r, a.c, b.r, b.c))
-        return { found: false, reason: 'path edge not walkable', waypoints: [], expanded };
+    // SKIPPED when `coarse`: the coarse path is not guaranteed fine-walkable; the mover's
+    // step decision (the 9 tiles around the character) handles the local fine check.
+    if (!coarse) {
+      for (let i = 0; i < raw.length - 1; i++) {
+        const a = raw[i], b = raw[i + 1];
+        if (!this.moverStepLands(a.r, a.c, b.r, b.c))
+          return { found: false, reason: 'path edge not walkable', waypoints: [], expanded };
+      }
     }
 
-    // Convert square path to protocol waypoints (center of each square).
+    // Convert square path to protocol waypoints — THE SQUARE CENTRE, which is the
+    // point `standPoint` returns for an ordinary square and the point the mover
+    // aims at (mover.mjs:298, m59-client.mjs:935, Pose's echo fallback).
+    //
+    // This used to read `(c - 0.5) * KOD_FINENESS + KOD_FINENESS / 2`, which its
+    // comment called the centre. It is not: the two terms cancel, `(c - 0.5)*64 + 32
+    // = 64c`, so every waypoint landed on the LOW EDGE of its square, 32 protocol
+    // units short of the centre. `floor(64c / 64) == c`, so the waypoint still READ
+    // as the right square and no assertion ever flagged it — which is how it survived.
+    //
+    // What it cost, live (substrate/keeper-t3.log, 790 of 879 sends identical):
+    //
+    //   gateOK vel aim=(1472,1152) sq=(23,18) me=(23,18) idx=0/22 stuck=3 srv=(23,18)
+    //
+    // 1472,1152 is 64·23, 64·18 — the low-edge corner of the square the character was
+    // standing in. Declaring it asks the server to put us where we already are, so the
+    // echo never changes, the waypoint index never leaves 0, and stuckTicks freezes
+    // because the server genuinely is not moving. A fixed point, and not a one-off:
+    // the log's second frozen aim (448,448, 70 sends) is the same shape in a different
+    // room. Pinned by tools/m59-frame-test.mjs.
+    //
+    // The cell index here is the SAME index the rest of the repository uses, which
+    // `toKod` above already proves: toKod(col*64 + 32) === col. So the inverse is the
+    // identical centre formula, with no offset.
     const waypoints = raw.map(({ r, c }) => ({
-      x: (c - 0.5) * KOD_FINENESS + KOD_FINENESS / 2,  // kod col -> protocol x (center)
-      y: (r - 0.5) * KOD_FINENESS + KOD_FINENESS / 2,  // kod row -> protocol y (center)
+      x: c * KOD_FINENESS + KOD_FINENESS / 2,  // col -> protocol x (centre, == standPoint)
+      y: r * KOD_FINENESS + KOD_FINENESS / 2,  // row -> protocol y (centre, == standPoint)
     }));
     // Append the exact destination as the final waypoint.
     waypoints.push({ x: toX, y: toY });
@@ -337,9 +392,10 @@ const NAV = {
     step = 8,
     margin = 12 * KOD_FINENESS,
     maxNodes = 20000,
+    coarse = false,
   } = {}) {
     const _fpT0 = Date.now();
-    const _fpResult = this._finePathProtocolImpl(fromX, fromY, toX, toY, { step, margin, maxNodes });
+    const _fpResult = this._finePathProtocolImpl(fromX, fromY, toX, toY, { step, margin, maxNodes, coarse });
     const _fpMs = Date.now() - _fpT0;
     if (_fpMs > 1000) console.error(`[slow-finepath] room ${this.file}: finePathProtocol took ${_fpMs}ms (found=${_fpResult?.found})`);
     return _fpResult;

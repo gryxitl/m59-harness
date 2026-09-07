@@ -608,17 +608,26 @@ const server = createServer(async (req, res) => {
       const dr = parseInt(u.searchParams.get('r'), 10);
       if (!Number.isInteger(dc) || !Number.isInteger(dr)) return json({ error: 'need ?c=<col>&r=<row>' });
       const F = 64, H = 32;
+      const coarse = u.searchParams.get('coarse') === '1';
       const t0 = Date.now();
       const p = geo?.finePathProtocol
-        ? geo.finePathProtocol(me.col * F + H, me.row * F + H, dc * F + H, dr * F + H, { step: 8, margin: 12 * F, maxNodes: 20000 })
+        ? geo.finePathProtocol(me.col * F + H, me.row * F + H, dc * F + H, dr * F + H, { step: 8, margin: 12 * F, maxNodes: 20000, coarse })
         : { found: false, reason: 'no finePathProtocol' };
       return json({
         self: { col: me.col, row: me.row },
         to: { col: dc, row: dr },
+        coarse,
         targetFineWalkable: geo?.fineWalkable ? geo.fineWalkable(dr, dc) : undefined,
         found: p.found,
         reason: p.reason ?? null,
-        waypoints: (p.waypoints ?? []).map(w => ({ col: Math.round((w.x - H) / F) + 1, row: Math.round((w.y - H) / F) + 1 })),
+        // Waypoint protocol coords are SQUARE CENTRES (col*64 + 32), so the inverse
+        // is the plain `(x - 32) / 64` with no offset. This used to add +1, which
+        // compensated for navgeom emitting the square EDGE (64c); that made the
+        // reported column one higher than the square the waypoint is actually in.
+        // It was invisible because this endpoint is read by a human, and the
+        // sibling /path3d mapping below had the OPPOSITE offset — the two
+        // diagnostics disagreed by two squares about the same waypoint.
+        waypoints: (p.waypoints ?? []).map(w => ({ col: Math.round((w.x - H) / F), row: Math.round((w.y - H) / F) })),
         wpCount: p.waypoints?.length ?? 0,
         expanded: p.expanded ?? null,
         ms: Date.now() - t0,
@@ -663,13 +672,29 @@ const server = createServer(async (req, res) => {
       const F = 64, H = 32; // KOD_FINENESS, half
       const sx = me.col * F + H, sy = me.row * F + H;
       const tx = t.col * F + H, ty = t.row * F + H;
-      // The fine path (waypoints in protocol coords -> viewer col/row).
+      // THE PLANNED PATH IS THE MOVER'S OWN PATH (what it is stepping along,
+      // waypoint by waypoint). /findpath and /path3d used to re-plan with a
+      // 4000-node budget while the mover plans with 20000, so the viewer drew
+      // “no path” for routes the mover had found and was following — the
+      // budget, not the geometry, disagreed. Draw the mover's committed path
+      // when it has one; fall back to a fresh plan at the MOVER'S budget.
+      const mv = session._mover ?? session._tickDecide?.mover ?? null;
       let path = [];
-      if (geo?.finePathProtocol) {
+      const mpath = mv?.path;
+      if (mpath && mpath.length) {
+        path = mpath.slice(mv.pathIdx ?? 0).map(w => ({
+          x: Math.round((w.x - H) / F) - 1, z: Math.round((w.y - H) / F) - 1,
+        }));
+      } else if (geo?.finePathProtocol) {
         try {
-          const p = geo.finePathProtocol(sx, sy, tx, ty, { step: 8, margin: 12 * F, maxNodes: 4000 });
+          const p = geo.finePathProtocol(sx, sy, tx, ty, { step: 8, margin: 12 * F, maxNodes: 20000 });
           if (p.found) {
             path = (p.waypoints ?? []).map(w => ({
+              // Viewer space is 0-based (m59-room3d.mjs:26,32,38 draw col-1), and
+              // waypoints are square CENTRES, so `(x - 32)/64 - 1` is the correct
+              // centre -> viewer-x. Do not "fix" the -1: it is the 0-based viewer,
+              // not a frame patch. The mover's own path (above) uses the same
+              // mapping, which is the point — one frame for both.
               x: Math.round((w.x - H) / F) - 1, z: Math.round((w.y - H) / F) - 1,
             }));
           }
@@ -1246,6 +1271,10 @@ const server = createServer(async (req, res) => {
               gateProbe, me: me ? { col: me.col, row: me.row, x: me.x, y: me.y } : null,
               poseSrc: session?._pose?.current?.()?.source ?? null,
               poseSrv: (() => { try { const s = session?._pose?.server; return s ? { col: s.col, row: s.row } : null; } catch { return null; } })(),
+              poseSim: (() => { try { const s = session?._pose?.sim; return s ? { col: Math.floor(s.x / 64), row: Math.floor(s.y / 64) } : null; } catch { return null; } })(),
+              divResets: session?._pose?.divergenceResets ?? null,
+              divergence: (() => { try { return session?._pose?.divergence?.() ?? null; } catch { return null; } })(),
+              pathWp: mv?.path ? mv.path.slice(0, 6).map(w => [Math.round(w.x / 64), Math.round(w.y / 64)]) : null,
               routerDest: session?._router?.dest ?? null,
               routerLeg: session?._router?.leg ? { to: session._router.leg.next, standOn: session._router.leg.standOn, kind: session._router.leg.kind } : null,
               routerSub: session?._router?.subWp ?? null,

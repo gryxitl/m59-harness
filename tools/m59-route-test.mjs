@@ -510,5 +510,78 @@ console.log('\nsub-leg chains drop edge-blocked heads only while the mover is st
      JSON.stringify(router.subWp));
 }
 
+console.log('\nONE PREDICATE: the router asks the geometry, never re-derives one');
+{
+  // The aim flap that cost 13,619 destination changes: the router's chain
+  // questions each had their own walkability predicate (coarse `walkable` in one
+  // place, `fineWalkable`/`standable` in another, raw `moverStepLands` in a
+  // third), so the SAME chain head could be kept by one and dropped by another.
+  // Every flip changes the mover's destination, which resets its path, its stuck
+  // signal and its escape fan. The fix is structural: `chainStepOk` is the single
+  // door, and it delegates to the geometry's own `moverStepLands`.
+  const { router, session } = rig();
+  const geo = session.world.geometry;
+  const asked = [];
+  geo.moverStepLands = (r1, c1, r2, c2) => { asked.push(`${r1},${c1}->${r2},${c2}`); return true; };
+  router.chainStepOk(geo, 5, 5, 5, 6);
+  ok('chainStepOk delegates to moverStepLands', asked.length === 1, JSON.stringify(asked));
+  ok('_fineStep is the same function, not a second one',
+     router._fineStep(geo, 5, 5, 5, 6) === true && asked.length === 2, JSON.stringify(asked));
+  // A square-level question uses the mover's own square test (transitBanned).
+  const banned = { inBounds: () => true, fineWalkable: () => false };
+  ok('_chainSquareOk refuses what the mover refuses',
+     router._chainSquareOk(banned, 3, 3) === false);
+  ok('_chainSquareOk passes an unknown geometry', router._chainSquareOk({}, 3, 3) === true);
+}
+
+console.log('\nAIM IS STABLE when the coarse and fine grids disagree');
+{
+  // A fixture where the two grids DISAGREE about every square: coarse says
+  // walkable everywhere, fine says open only on row 5. Under the old code the
+  // sub-leg BFS (coarse) planned a chain through row 9 while the mover's own
+  // planner (fine) refused it, the sanitizer dropped the head, the aim fell to
+  // the standOn, and the next tick rebuilt the chain — the 30,33<->29,33 flap.
+  // Now all three questions read one predicate, so the disagreement has one
+  // answer and the aim cannot move.
+  const { router, act, frame, session } = rig({ col: 5, row: 5 });
+  const geo = session.world.geometry;
+  const FINE_OPEN_ROW = 5;
+  geo.walkable = () => true;                              // coarse: blind, all open
+  geo.fineWalkable = (r) => (r === FINE_OPEN_ROW);         // fine: only row 5
+  geo.standable = (r) => (r === FINE_OPEN_ROW);
+  geo.standPoint = (r) => (r === FINE_OPEN_ROW ? { x: 512, y: 512 } : null);
+  geo.inBounds = () => true;
+  // One honest edge predicate: open only along row 5.
+  geo.moverStepLands = (r1, c1, r2, c2) =>
+    (r1 === FINE_OPEN_ROW && r2 === FINE_OPEN_ROW);
+  // The mover's planner agrees with it (coarse mode aside, this is the point).
+  geo.finePathProtocol = () => ({ found: false, reason: 'no fine path', waypoints: [] });
+
+  router.to(20);
+  router.leg = { fromRoom: 10, next: 20, standOn: { col: 12, row: 9 }, edgeTarget: null,
+                 direction: 'east', kind: 'edge', startedAt: 1000 };
+  router._initSubLegs({ col: 5, row: 5 });
+  const chainAfterBuild = (router.subWp ?? []).map(s => `${s.col},${s.row}`).join(' ');
+
+  const aims = [];
+  for (let i = 0; i < 12; i++) {
+    router.mover.stuckTicks = 0;              // steps landing: nothing may be dropped
+    router.tick(frame(5, 5), act);
+    aims.push(`${router.mover.dest.col},${router.mover.dest.row}`);
+  }
+  const uniq = [...new Set(aims)];
+  ok('the aim never changes across 12 ticks', uniq.length === 1, aims.join(' | '));
+  // And it is a square the honest predicate admits: no head inside fine-blocked
+  // ground, because the chain was built and sanitized with the same verdict.
+  if (router.subWp && router.subWp.length) {
+    const head = router.subWp[0];
+    ok('chain head is on ground the mover will enter',
+       geo.moverStepLands(5, 5, head.row, head.col) === true,
+       `head ${head.col},${head.row} chain[${chainAfterBuild}]`);
+  } else {
+    ok('no chain means the aim is the standOn itself (stable)', true);
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

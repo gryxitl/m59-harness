@@ -98,12 +98,42 @@ export class Pose {
   // one server step (64 proto units = 1 square, the send interval is ~1s at
   // speed 18) toward (x, y) instead. The sim then tracks the server (1 square
   // ahead, within echo lag), the plan is drawn from the real position, and the
-  // guard rarely fires. If the sim is null (after a reset), seed it at the
-  // aim — a one-time jump, then it tracks.
+  // guard rarely fires.
+  //
+  // SEEDING IS NOT A JUMP TO THE AIM. `x, y` is what we are DECLARING we are
+  // heading toward — a stride target up to 320 protocol units (5 squares) away —
+  // not where our feet are. Seeding the sim there made the Pose report an aim as
+  // a position, and the error was uncatchable: the largest possible bad seed is
+  // one stride (320), which is UNDER the 384 divergence threshold, so the guard
+  // could never see its own cause. Live, keeper-t3.log, immediately after a room
+  // change with the echo at (23,18):
+  //
+  //   plan from=(23,23)   <- the Pose, seeded from a run aim 320 away
+  //   gateOK vel aim=(1472,1152) me=(23,18) srv=(23,18)   <- 790 identical sends
+  //
+  // The path was then planned for a square the character had never been to, its
+  // first waypoint was the low-edge corner of the square it actually stood in, and
+  // every declaration said "go to where you already are". Frozen for 790 sends.
+  //
+  // So seed from the last confirmed echo when we have one, and only fall back to
+  // the aim when there is no echo at all (a fresh join, before the first BP_MOVE).
+  // The 64-unit step then does its job from a position that is actually ours.
   advance(x, y, step = KOD_FINENESS) {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     if (this.sim == null) {
-      this.sim = { x, y };
+      const anchor = this.server != null
+        && Number.isFinite(this.server.x) && Number.isFinite(this.server.y)
+        ? { x: this.server.x, y: this.server.y }
+        : { x, y };
+      this.sim = anchor;
+      this.simAt = Date.now();
+      // Then take the step toward the aim from that anchor, so a send still
+      // advances the track by one server step rather than being discarded.
+      const dx = x - this.sim.x, dy = y - this.sim.y;
+      const dist = Math.hypot(dx, dy);
+      this.sim = dist > step
+        ? { x: this.sim.x + (dx / dist) * step, y: this.sim.y + (dy / dist) * step }
+        : { x, y };
       this.simAt = Date.now();
       return;
     }
