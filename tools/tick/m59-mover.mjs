@@ -32,6 +32,7 @@
 
 import { protocolToClient, clientToProtocol, KOD_FINENESS, PLAYER_RADIUS } from '../m59-roo.mjs';
 import { isGrounded, isEmbedded, nearestGrounded, segHeightOk, transitBanned } from './m59-ground.mjs';
+import { Pose } from './m59-pose.mjs';
 import '../m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
 
 // WHO MAY OWN THE DESTINATION. Setting a destination throws away the previous
@@ -318,9 +319,8 @@ export class Mover {
       // square as of this destination. Arrival commits only if the server is
       // at/near the destination or visibly moved since here.
       try {
-        const sp = this.session?._pose?.server ?? this.session?.client?.self;
-        this._arriveBase = (sp && Number.isFinite(sp.col) && Number.isFinite(sp.row))
-          ? { col: sp.col, row: sp.row } : null;
+        const sp = Pose.confirmed(this.session);
+        this._arriveBase = sp.source !== 'none' ? { col: sp.col, row: sp.row } : null;
       } catch { this._arriveBase = null; }
     }
     // A no-op to() (same destination, called every tick by the router) changes NOTHING.
@@ -524,11 +524,11 @@ export class Mover {
     // perpetual pseudo-progress loop with zero server movement. Server echoes
     // lag ~1s; arrival waits for proof. Planning may stay optimistic; only
     // commitment (arrival, gate reference, candidate origin) uses the echo.
-    const srvPos = (s?._pose?.server) ?? c.self;
-    const srvCol = (srvPos && Number.isFinite(srvPos.col)) ? srvPos.col : me.col;
-    const srvRow = (srvPos && Number.isFinite(srvPos.row)) ? srvPos.row : me.row;
-    const srvX = (srvPos && Number.isFinite(srvPos.x)) ? srvPos.x : (srvCol * KOD_FINENESS + HALF);
-    const srvY = (srvPos && Number.isFinite(srvPos.y)) ? srvPos.y : (srvRow * KOD_FINENESS + HALF);
+    const srvPos = Pose.confirmed(s);
+    const srvCol = srvPos.source !== 'none' ? srvPos.col : me.col;
+    const srvRow = srvPos.source !== 'none' ? srvPos.row : me.row;
+    const srvX = srvPos.source !== 'none' ? srvPos.x : (srvCol * KOD_FINENESS + HALF);
+    const srvY = srvPos.source !== 'none' ? srvPos.y : (srvRow * KOD_FINENESS + HALF);
 
     // THE SITTING TRAP: PFLAG_NO_MOVE refuses every move silently.
     // Stand first.
@@ -734,8 +734,8 @@ export class Mover {
       // the raw SERVER echo (the last BP_MOVE, not the dead-reckoned sim) —
       // the only thing that proves the character actually moved. _fanFrom is
       // the position at init, in the same unit system.
-      const srvX = this.session?._pose?.server?.x ?? this.session?.client?.self?.x;
-      const srvY = this.session?._pose?.server?.y ?? this.session?.client?.self?.y;
+      const _fanSrv = Pose.confirmed(this.session);
+      const srvX = _fanSrv.x, srvY = _fanSrv.y;
       const curX = protocolToClient(srvX ?? (me.col * KOD_FINENESS + HALF));
       const curY = protocolToClient(srvY ?? (me.row * KOD_FINENESS + HALF));
       if (Math.hypot(curX - this._fanFrom?.x ?? curX, curY - this._fanFrom?.y ?? curY) > 8) {
@@ -878,9 +878,9 @@ export class Mover {
       const winMs = this._progWinMs ?? 15000;
       const pw = (this._progWin ??= []);
       const sendsNow = this._sendCount ?? 0;
-      const sc = s?.client?.self;
-      const pc = (sc && Number.isFinite(sc.col)) ? sc.col : null;
-      const pr = (sc && Number.isFinite(sc.row)) ? sc.row : null;
+      const _pw = Pose.confirmed(s);
+      const pc = _pw.source !== 'none' ? _pw.col : null;
+      const pr = _pw.source !== 'none' ? _pw.row : null;
       if (pc != null) {
         pw.push({ t: Date.now(), col: pc, row: pr, sends: sendsNow });
         while (pw.length && Date.now() - pw[0].t > winMs) pw.shift();
@@ -989,8 +989,8 @@ export class Mover {
         // uses the raw server echo). Resetting it to the drifted sim would make
         // the progress check compare server-vs-sim (>8), firing the 'success'
         // branch on a walled-in pocket. Use the raw server echo.
-        const _fsrvX = this.session?._pose?.server?.x ?? this.session?.client?.self?.x;
-        const _fsrvY = this.session?._pose?.server?.y ?? this.session?.client?.self?.y;
+        const _fsrv = Pose.confirmed(this.session);
+        const _fsrvX = _fsrv.x, _fsrvY = _fsrv.y;
         this._fanFrom = { x: protocolToClient(_fsrvX ?? (curCol * KOD_FINENESS + HALF)), y: protocolToClient(_fsrvY ?? (curRow * KOD_FINENESS + HALF)) };
         this._fanIndex = idx;
       }
@@ -1643,18 +1643,13 @@ export class Mover {
     const serverY = me?.y ?? (me?.row != null ? me.row * KOD_FINENESS + HALF : undefined);
     const sent = this._maybeReportPosition(protoX, protoY, c, s, serverX, serverY);
     // Stuck tracking is independent of whether we sent a packet: the character is
-    // walking toward the waypoint regardless. Tracked on SERVER squares, not the
-    // sim: the sim advances on every send by construction, so sim-based tracking
-    // can never observe a stall (every refused send looks like progress).
-    const sc = s?.client?.self;
-    const kCol = (sc && Number.isFinite(sc.col)) ? sc.col : me?.col;
-    const kRow = (sc && Number.isFinite(sc.row)) ? sc.row : me?.row;
-    if (me && this.lastPos && this.lastPos.col === kCol && this.lastPos.row === kRow) {
-      this.stuckTicks++;
-    } else {
-      this.stuckTicks = 0;
-    }
-    if (me) this.lastPos = { col: kCol, row: kRow };
+    // walking toward the waypoint regardless. This used to re-implement the counter
+    // inline — a third copy of "has the server square stopped changing", and it had
+    // already drifted from the one in _noteServerStatic that every other send site
+    // calls. One stall mechanism now: Pose.confirmed for the position, _noteServerStatic
+    // for the counter.
+    const srv = Pose.confirmed(s);
+    if (srv.source !== 'none') this._noteServerStatic(srv.col, srv.row);
     return sent;
   }
 
@@ -1671,12 +1666,10 @@ export class Mover {
     this.drX = protocolToClient(px);
     this.drY = protocolToClient(py);
 
-    if (me && this.lastPos && this.lastPos.col === me.col && this.lastPos.row === me.row) {
-      this.stuckTicks++;
-    } else {
-      this.stuckTicks = 0;
-    }
-    if (me) this.lastPos = { col: me.col, row: me.row };
+    // No stall counting here. The caller _sendWaypoint counts it once, on the
+    // confirmed square. Counting it here as well made a stationary character's
+    // stuckTicks climb twice per send, so the escalation fired at roughly half
+    // the number of sends it is configured for.
     return { blocked: false };
   }
 

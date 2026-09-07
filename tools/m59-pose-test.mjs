@@ -165,5 +165,47 @@ function ok(cond, msg) {
     c.x === p.sim.x && c.y === p.sim.y);
 }
 
+console.log('\nPose.confirmed — the one commitment read');
+{
+  // The tick driver had three places asking "has the server square stopped changing",
+  // each hand-rolling its own fallback chain and each drifting: the mover preferred the
+  // echo, the router preferred the raw client object, and a caller could not tell from
+  // the call site which truth it was getting. Pose.confirmed is now the single answer.
+  const p = new Pose();
+  const session = { _pose: p, client: { self: { col: 9, row: 9, x: 9 * 64 + 32, y: 9 * 64 + 32 } } };
+
+  p.updateServer({ col: 3, row: 2, x: 224, y: 160 });
+  const c1 = Pose.confirmed(session);
+  ok('with an echo it reports the echo', c1.source === 'echo' && c1.col === 3 && c1.row === 2,
+    `${c1.source} ${c1.col},${c1.row}`);
+
+  // The whole point: the sim advances on every SEND, so a commitment read must ignore it.
+  p.advance(544, 160, 64);
+  const cur = p.current();
+  const c2 = Pose.confirmed(session);
+  ok('current() follows the sim after a send', cur.source === 'sim', cur.source);
+  ok('confirmed() ignores the sim and still reports the echo',
+    c2.source === 'echo' && c2.col === 3 && c2.row === 2, `${c2.source} ${c2.col},${c2.row}`);
+  ok('so a send cannot be mistaken for the server having moved us',
+    !(cur.col === c2.col && cur.row === c2.row), `current=${cur.col},${cur.row} confirmed=${c2.col},${c2.row}`);
+}
+{
+  // A session with no Pose wired at all: client.self is the designated last resort, and
+  // it is a real server source — BP_MOVE writes the room object, moveTo never does.
+  const session = { client: { self: { col: 7, row: 4, x: 7 * 64 + 32, y: 4 * 64 + 32 } } };
+  const c = Pose.confirmed(session);
+  ok('falls back to client.self when there is no Pose', c.source === 'client' && c.col === 7, `${c.source} ${c.col},${c.row}`);
+  ok('derives x/y in protocol units when the object carries only squares',
+    c.x === 7 * 64 + 32 && c.y === 4 * 64 + 32, `${c.x},${c.y}`);
+}
+{
+  const none = Pose.confirmed({});
+  ok('reports none rather than inventing a position', none.source === 'none' && none.col === null, none.source);
+  ok('and a caller can test one field instead of three Number.isFinite guards',
+    Object.keys(none).join(',') === 'col,row,x,y,source', Object.keys(none).join(','));
+  ok('Pose.confirmed survives a missing session entirely',
+    Pose.confirmed(undefined).source === 'none' && Pose.confirmed(null).source === 'none');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

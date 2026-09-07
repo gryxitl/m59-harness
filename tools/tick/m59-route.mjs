@@ -39,6 +39,8 @@ import { Mover } from './m59-mover.mjs';
 import { tickEdgeExits } from './m59-exits.mjs';
 import { recordCrossing } from '../m59-crossings.mjs';
 import { KOD_FINENESS } from '../m59-roo.mjs';
+import { transitBanned } from './m59-ground.mjs';
+import { Pose } from './m59-pose.mjs';
 
 // WHICH MAP ROOM ARE WE ACTUALLY IN.
 //
@@ -308,52 +310,49 @@ export class Router {
     } catch { return null; }
   }
 
-  // Is a single step from (c1,r1) to the adjacent (c2,r2) allowed by the FINE model?
-  // This is a CHEAP check (a single traceFineMoveClient, ~1ms) unlike finePathProtocol
-  // (a full A*, ~1.8s per blocked square). It is what the Mover effectively enforces
-  // step-by-step, so an approach point found with this oracle is one the Mover can
-  // actually stand on. Returns true/false, or null if the geometry can't answer.
-  _fineStep(geo, c1, r1, c2, r2) {
+  // Is a single step from (c1,r1) to the adjacent (c2,r2) allowed?
+  //
+  // ONE PREDICATE, ONE PLACE. `geo.moverStepLands` is the geometry's own answer
+  // to "will a step land here" — a baked step-mask lookup, the same function
+  // `finePathProtocol` uses for its edge test. The mover's step search asks a
+  // deliberately different, more conservative question (fine grid + edges +
+  // void + body-width), and that disagreement is FINE as long as only the
+  // mover holds it.
+  //
+  // It was not. Three sites in this file each carried their own walkability
+  // predicate — `_fineStep` (fine `moverStepLands`), `_chainSquareOk` (fine
+  // `fineWalkable`/`standable`), and the runtime edge-blocked drop (raw
+  // `moverStepLands` again) — and every one of them could drop or keep the SAME
+  // chain head on a different verdict. The result was the aim flip-flopping
+  // between the chain head and the standOn (watched: 30,33<->29,33 116 times, and
+  // 13,619 destination changes against 244,021 sends). Each flip is a new
+  // destination in the mover, which resets its path, its stuck signal and its
+  // escape fan — so nothing in the mover could ever finish anything.
+  //
+  // So: every chain question in this file asks `chainStepOk`, and `chainStepOk`
+  // is the one predicate the mover's own planner already uses. A chain built
+  // here and a plan drawn by the mover cannot disagree about an edge, because
+  // they read the same byte.
+  chainStepOk(geo, fromRow, fromCol, toRow, toCol) {
     if (!geo) return null;
-    if (c2 < 0 || r2 < 0) return false;
-    // THE SAME PREDICATE THE A* AND THE MOVER USE (Option A: one shared
-    // predicate). `moverStepLands` is the function the mover's step search and the
-    // A* edge test both consult, so a sub-leg chain built on it is guaranteed to use
-    // steps the mover will actually take. The old `_fineStep` used a radius-248/no-slide
-    // `traceFineMoveClient` directly, which disagreed with both the A* and the mover:
-    // it saw the direct approach (44,11) as blocked and routed a long detour to (42,8),
-    // while the A* (moverStepLands) said (44,11) was reachable. Now the sub-leg BFS,
-    // the A*, and the mover all ask the same question.
-    //
-    // ORIGIN-TRAP ESCAPE: the BFS starts from `me`, which may be a non-standable
-    // square (a respawn point, a ledge edge). `moverStepLands` refuses every first
-    // edge out of such a square (no stand point to start the trace from), which would
-    // strand the BFS at the start. For the FIRST step out of a non-standable origin,
-    // fall back to the lenient radius-248 trace so the BFS can leave the trap square;
-    // every subsequent step uses the strict `moverStepLands`.
-    if (geo.moverStepLands) {
-      const originStandable = geo.standable ? geo.standable(r1, c1) : true;
-      if (originStandable === false && (c1 === this._bfsOriginC && r1 === this._bfsOriginR)) {
-        // lenient fallback for the first edge out of the origin
-        const CF = 1024, H = 512;
-        try {
-          const a = geo.standPoint(r1, c1) ?? { x: c1 * CF + H, y: r1 * CF + H };
-          const b = geo.standPoint(r2, c2) ?? { x: c2 * CF + H, y: r2 * CF + H };
-          const t = geo.traceFineMoveClient(a.x, a.y, b.x, b.y, { slide: false, playerRadius: 248 });
-          return t?.arrived === true;
-        } catch { return false; }
-      }
-      return geo.moverStepLands(r1, c1, r2, c2);
-    }
-    // No moverStepLands on this geometry (test fixture): fall back to the old trace.
+    if (toCol < 0 || toRow < 0) return false;
+    if (geo.moverStepLands) return geo.moverStepLands(fromRow, fromCol, toRow, toCol);
+    // No step mask on this geometry (a bare test fixture): the closest honest
+    // answer is a single radius-free trace between the two squares.
     if (!geo.traceFineMoveClient) return null;
     const CF = 1024, H = 512;
-    const x1 = c1 * CF + H, y1 = r1 * CF + H;
-    const x2 = c2 * CF + H, y2 = r2 * CF + H;
     try {
-      const t = geo.traceFineMoveClient(x1, y1, x2, y2, { slide: false });
+      const t = geo.traceFineMoveClient(fromCol * CF + H, fromRow * CF + H,
+                                        toCol * CF + H, toRow * CF + H, { slide: false });
       return t?.arrived === true;
     } catch { return null; }
+  }
+
+  // Is a single step from (c1,r1) to the adjacent (c2,r2) allowed by the FINE model?
+  // DELEGATED: this is now `chainStepOk`. Kept as a name because the BFS callers
+  // read better with it; it adds no predicate of its own.
+  _fineStep(geo, c1, r1, c2, r2) {
+    return this.chainStepOk(geo, r1, c1, r2, c2);
   }
 
   // The set of squares fine-reachable from (fromCol,fromRow), found by a BOUNDED BFS
@@ -379,8 +378,6 @@ export class Router {
     if (!this._reachCache) this._reachCache = new Map();
     const hit = this._reachCache.get(cacheKey);
     if (hit) return hit.set;
-    this._bfsOriginC = fromCol;
-    this._bfsOriginR = fromRow;
     const seen = new Set();
     const queue = [[fromCol, fromRow]];
     seen.add(`${fromCol},${fromRow}`);
@@ -461,11 +458,11 @@ export class Router {
   _planSubLegs(me, target) {
     const geo = this._geo();
     if (!geo) return { chain: [{ col: target.col, row: target.row }], complete: true };
-    // Record the BFS origin so _fineStep can give the FIRST step out of a
-    // non-standable origin the lenient escape (see _fineStep). Reset each plan.
-    this._bfsOriginC = me.col;
-    this._bfsOriginR = me.row;
-    // BFS from `me` with parent tracking, using _fineStep as the edge test.
+    // BFS from `me` with parent tracking, using the ONE edge predicate
+    // (`chainStepOk` -> the geometry's `moverStepLands`). The origin-trap
+    // leniency that used to live here is the geometry's own job: `moverStepLands`
+    // already lets the first edge out of a non-standable origin through, so a
+    // second lenient trace here was a second opinion about the same edge.
     const startKey = `${me.col},${me.row}`;
     const parent = new Map([[startKey, null]]);  // key -> parent key
     const queue = [[me.col, me.row]];
@@ -525,22 +522,17 @@ export class Router {
     return { chain: chain.slice(0, SUBLEG_MAX), complete: false };
   }
 
-  // CHAIN-SQUARE VALIDITY (same verdict as the mover's step search): a chain
-  // square must be STANDABLE — edge-reachable is not enough. The sub-leg BFS
-  // admits squares via _fineStep (an edge test, lenient on the first edge out
-  // of a non-standable origin), so a fine-blocked square can head the chain
-  // (watched: (27,33) in 557, fine=False). Advancement requires standing ON
-  // each head, which is impossible in a wall — the chain freezes forever and
-  // the mover jitters around it. Accept = fine true, or no fine data with
-  // coarse not-false (mirrors the mover; no data = pass).
+  // CHAIN-SQUARE VALIDITY — the SQUARE half of the same single predicate.
+  // A chain square must be standable: edge-reachable is not enough, because
+  // advancement requires standing ON each head (a wall head freezes the chain
+  // forever — watched (27,33) in 557, fine=False). This is `transitBanned`
+  // inverted, which is exactly the square test the mover's own step search
+  // applies, so a chain head can never be a square the mover refuses to enter.
   _chainSquareOk(geo, col, row) {
     if (!geo) return true;
-    let f, s;
-    try { f = geo.fineWalkable ? geo.fineWalkable(row, col) : undefined; } catch { f = undefined; }
-    try { s = geo.standable ? geo.standable(row, col) : undefined; } catch { s = undefined; }
-    if (f === false) return false;
-    if (f === undefined && s === false) return false;
-    return true;
+    const banned = transitBanned(geo, row, col);
+    if (banned === undefined) return true;   // no data = pass (mirrors the mover)
+    return banned === false;
   }
   // Truncate a chain at the first non-standable square (keep the valid
   // prefix). Returns { chain, dropped } — dropped counts removed heads.
@@ -566,17 +558,17 @@ export class Router {
     const geo = this._geo();
     const standOn = this.leg?.standOn;
     if (!geo || !standOn) return;
-    // Fast path MUST use the mover's own planner (finePathProtocol), not the
-    // lenient BFS: _fineReachableSet's origin-trap leniency over-claims
-    // reachability (a wall pocket reads reachable), skipping decomposition —
-    // then the mover's strict A* fails and the character dithers at the
-    // standOn directly. Same function, same verdict, guaranteed.
+    // Fast path MUST use the mover's own planner with the mover's own arguments,
+    // so "the planner says reachable" and "the mover will walk it" are the same
+    // sentence by construction. The mover plans coarse (see Mover._plan); so do
+    // we, with the same step/margin/budget. Any divergence here re-opens the aim
+    // flap: this verdict decides whether a chain exists at all.
     try {
       const F = KOD_FINENESS, H = F >> 1;
       const direct = geo.finePathProtocol?.(
         me.col * F + H, me.row * F + H,
         standOn.col * F + H, standOn.row * F + H,
-        { step: 8, margin: 12 * F, maxNodes: 4000 });
+        { step: 8, margin: 12 * F, maxNodes: 4000, coarse: true });
       if (direct?.found) return; // plain walk
     } catch { /* fall through to decomposition */ }
     // The standOn is fine-unreachable: plan a bounded chain toward it. The chain ends at
@@ -633,9 +625,9 @@ export class Router {
     // SERVER TRUTH for commitment (see Mover.tick): frame.position may be
     // sim-led via the Pose; stuck/at/chain-advance decisions must use the raw
     // server echo, or chains advance on sends the server never confirmed.
-    const srvR = this.session?.client?.self ?? this.session?._pose?.server;
-    const srvCol = (srvR && Number.isFinite(srvR.col)) ? srvR.col : me.col;
-    const srvRow = (srvR && Number.isFinite(srvR.row)) ? srvR.row : me.row;
+    const srvR = Pose.confirmed(this.session);
+    const srvCol = srvR.source !== 'none' ? srvR.col : me.col;
+    const srvRow = srvR.source !== 'none' ? srvR.row : me.row;
 
     if (Number(here) === Number(this.dest)) { this.clear(); return this._say('arrived'); }
 
@@ -772,7 +764,7 @@ export class Router {
     // Use the SERVER position for the `at` check (see the tick-top note):
     // frame/pose may be sim-led; client.self is the echo. The frame stays as
     // a fallback so a slow echo never blocks a crossing the server took.
-    const selfPosAt = this.session?.client?.self ?? this.session?._pose?.server;
+    const selfPosAt = Pose.confirmed(this.session);
     const at = (selfPosAt && selfPosAt.col === this.leg.standOn.col && selfPosAt.row === this.leg.standOn.row)
       || (me.col === this.leg.standOn.col && me.row === this.leg.standOn.row);
 
@@ -821,42 +813,37 @@ export class Router {
       }
     }
     // DROP EDGE-BLOCKED HEADS: the head square may read open while the EDGE
-    // from the server position is fenced (fence segments run between squares —
+    // from where we stand is fenced (fence segments run between squares —
     // watched: (22,17)->(23,17) in 557, both open, edge walled). Advancement
     // needs entering; an unenterable head pins the chain like a wall square.
-    // GATED on the mover's honest stuck signal (server static 3+ sends):
-    // the step search has its own edge verdict and may disagree with
-    // moverStepLands on radius strictness, so never drop while steps land.
+    // Same `chainStepOk` the chain was BUILT with, so this is not a second
+    // opinion — it is the one opinion applied again against the current square.
+    // GATED on the mover's honest stuck signal (server static 3+ sends): a head
+    // the character can still be walked toward is left alone, and dropping a
+    // head changes the aim, which must not happen while steps are landing.
     // Keeps a lone standOn (door-push target); drops a lone non-standOn.
     if (this.subWp && this.subWp.length && (this.mover?.stuckTicks ?? 0) >= 3) {
       const _egeo = this._geo();
-      const _srv = this.session?.client?.self ?? this.session?._pose?.server;
+      const _srv = Pose.confirmed(this.session);
       const _so2 = this.leg?.standOn;
+      const headEnterable = () => {
+        const h = this.subWp[0];
+        if (!_srv || !Number.isFinite(_srv.col) || !Number.isFinite(_srv.row)) return true;
+        return this.chainStepOk(_egeo, _srv.row, _srv.col, h.row, h.col) !== false;
+      };
       let _guard = 0;
       while (this.subWp.length > 1 && _guard++ < 4) {
         const _h = this.subWp[0];
-        let _edgeOk = true;
-        try {
-          if (_egeo?.moverStepLands && _srv && Number.isFinite(_srv.col) && Number.isFinite(_srv.row))
-            _edgeOk = _egeo.moverStepLands(_srv.row, _srv.col, _h.row, _h.col) === true;
-        } catch { _edgeOk = true; }
-        if (_edgeOk) break;
+        if (headEnterable()) break;
         console.error(`[route] dropping edge-blocked sub-waypoint (${_h.col},${_h.row}) (leg to ${this.leg?.next})`);
         this.subWp.shift();
       }
       if (this.subWp.length === 1) {
         const _h = this.subWp[0];
         const _isStandOn = _so2 != null && _h.col === _so2.col && _h.row === _so2.row;
-        if (!_isStandOn) {
-          let _edgeOk = true;
-          try {
-            if (_egeo?.moverStepLands && _srv && Number.isFinite(_srv.col) && Number.isFinite(_srv.row))
-              _edgeOk = _egeo.moverStepLands(_srv.row, _srv.col, _h.row, _h.col) === true;
-          } catch { _edgeOk = true; }
-          if (!_edgeOk) {
-            console.error(`[route] dropping edge-blocked lone approach (${_h.col},${_h.row}) (leg to ${this.leg?.next})`);
-            this.subWp = null;
-          }
+        if (!_isStandOn && !headEnterable()) {
+          console.error(`[route] dropping edge-blocked lone approach (${_h.col},${_h.row}) (leg to ${this.leg?.next})`);
+          this.subWp = null;
         }
       }
     }
@@ -864,7 +851,7 @@ export class Router {
     if (sub) {
       // Server-first (see the tick-top note): advance the chain only on
       // squares the server confirmed, never on sim-led positions.
-      const selfPos = this.session?.client?.self ?? this.session?._pose?.server;
+      const selfPos = Pose.confirmed(this.session);
       const onSub = (selfPos && selfPos.col === sub.col && selfPos.row === sub.row)
         || (me.col === sub.col && me.row === sub.row);
       if (onSub) this._advanceSubLeg({ col: sub.col, row: sub.row });

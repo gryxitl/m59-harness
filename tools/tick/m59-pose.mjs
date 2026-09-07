@@ -183,6 +183,41 @@ export class Pose {
     return { col: null, row: null, x: null, y: null,
             predicted: true, source: 'none', stale: true };
   }
+
+  /**
+   * THE COMMITMENT READ — where the SERVER has confirmed we are, as opposed to where
+   * our own sends say we are heading. `current()` is sim-while-fresh, and the sim
+   * advances on every SEND, so judging arrival, a stall, or a chain advance on it fires
+   * on packets the server never accepted. Anything that COMMITS (arrives, gives up,
+   * re-plans) must use this instead.
+   *
+   * `session` is the fallback, and it is a real one: `client.self` is the room-objects
+   * self entry, written only by BP_MOVE (moveTo records what it asked for, it never
+   * mutates the object), so it is the same server truth this mirror holds — and on a
+   * session with no Pose wired it is the only copy. Reading it is not a rule violation;
+   * hand-rolling the fallback chain in six places is, because each copy drifted: the
+   * mover preferred the echo and the router preferred the raw object, and a reader
+   * cannot tell from the call site which of the two it is getting.
+   *
+   * Returns { col, row, x, y, source } with source 'echo' | 'client' | 'none'.
+   */
+  static confirmed(session) {
+    const pose = session?._pose;
+    const echo = pose?.server ?? null;
+    const src = (echo && Number.isFinite(echo.col) && Number.isFinite(echo.row))
+      ? echo
+      : (session?.client?.self ?? null);
+    if (!src || !Number.isFinite(src.col) || !Number.isFinite(src.row)) {
+      return { col: null, row: null, x: null, y: null, source: 'none' };
+    }
+    const half = KOD_FINENESS / 2;
+    return {
+      col: src.col, row: src.row,
+      x: Number.isFinite(src.x) ? src.x : src.col * KOD_FINENESS + half,
+      y: Number.isFinite(src.y) ? src.y : src.row * KOD_FINENESS + half,
+      source: echo && src === echo ? 'echo' : 'client',
+    };
+  }
 }
 
 export default Pose;
