@@ -272,7 +272,13 @@ build all of 0a-0e before turning it on?
 
 ---
 
-# Decided: there is one movement engine, and it is the step engine
+# RETRACTED: "there is one movement engine, and it is the step engine"
+
+*This section is kept in place, with its reasoning intact, because the mistake is
+worth more than the correction. It records the decision made in commit `2d44a48`
+and the argument that produced it. **That decision is wrong and has been reversed.**
+The retraction is at the end of this file; read that before acting on anything
+here. Nothing below this paragraph is a current statement of the design.*
 
 *Recorded while removing `policy.ownPhysics`. This supersedes the "Open question
 for you" above and the `policy.ownPhysics` opt-in in Phase 0.*
@@ -395,3 +401,168 @@ probes around the aim and the boundary check tests it).
 square per send, at most one send per second, escape fan and raw door push for the
 squares the fine model gets wrong) → the server. `policy.ownPhysics` is gone; a
 roster that still carries it is ignored, not honoured.
+
+---
+
+# Retraction of the section above
+
+*Recorded before any code, deliberately: the last engine decision was made on an
+argument, and the argument was the thing that was wrong. Fixing the argument first
+is the only part of this that could not be done afterwards.*
+
+**The decision in `2d44a48` — delete the velocity declaration, keep the step engine
+— is reversed.** The velocity engine is the engine, and it is being repaired rather
+than removed.
+
+## The reasoning error, named
+
+The section above argues from `clientd3d/move.c` that the reference client *moves
+itself and reports a nearby position*, and concludes that the step engine's shape
+is that model while the velocity engine *"invented a server-side integration that
+the reference client does not have."*
+
+The first half is correct. The conclusion does not follow, because **our velocity
+engine never did what the sentence objects to.** It did not declare a far target and
+wait for the server to integrate it. Read the send site as it was written
+(`git show 2d44a48^:tools/tick/m59-mover.mjs`, the re-clamp block):
+
+```js
+const adx = aimX - myProtoX, ady = aimY - myProtoY;
+const ad = Math.hypot(adx, ady);
+if (ad > strideNow) {
+  aimX = myProtoX + (adx / ad) * strideNow;   // clamped FROM THE SIM
+  aimY = myProtoY + (ady / ad) * strideNow;   // i.e. a locally integrated position
+}
+```
+
+`aimX` is a position **we** integrated from our own simulated position, capped at one
+stride, and then reported. That is precisely the shape the section above credits only
+the step engine with having. The argument distinguishes nothing, because it was
+directed at a velocity engine that does not exist in this repository.
+
+So the observation that carried the decision — *velocity never arrives, step arrives
+in 11 sends* — was real, and it was evidence about **a bug in our implementation**.
+It was read as evidence about **the model**. A broken implementation was mistaken for
+a wrong model, and the model was deleted instead of the bug.
+
+## What the reference client actually does
+
+All citations are `clientd3d/` in the Meridian 59 source tree.
+
+**There is no velocity on the wire.** `protocol.h:74`:
+
+```c
+#define RequestMove(y, x, speed, room) \
+ToServer(BP_REQ_MOVE, NULL, FinenessClientToKod(y) + KOD_FINENESS, \
+	 FinenessClientToKod(x) + KOD_FINENESS, speed, room)
+```
+
+`BP_REQ_MOVE` carries a position, a speed byte and a room. No velocity vector, no
+declared time, no target. "Velocity engine" and "step engine" were therefore never a
+choice of *what we send*; both send a position. They differ only in **how far the
+client integrated locally before reporting it** — one square, or one stride.
+
+**The client integrates locally in sub-steps and stops at the first blocked one.**
+`move.c:266` sets the resolution, `move.c:374-382` is the rule:
+
+```c
+num_steps = std::max(1, std::min(STEPS_PER_MOVE, NUM_STEPS_PER_SECOND * dt / 1000));
+...
+retval = MoveObjectAllowed(&current_room, last_x, last_y, &x, &y, z);
+
+if (retval == MOVE_BLOCKED)
+{
+   x = last_x;
+   y = last_y;
+   z = last_z;
+   bounce = false;
+   break;
+}
+```
+
+**This is the line the section above left out, and it is the whole retraction.** A
+real client walking into a wall emits a position *stopped at the wall*. It never
+declares a position past one. The identical `x = last_x; y = last_y; break;` appears
+again at `move.c:288-296` for a sub-step with no floor (`BSPFindLeafByPoint` returning
+NULL), so the stop-at-the-obstacle rule covers walls and voids alike.
+
+`bounce` is not a send flag — `move.c:424` gates only `BounceUser(dt)`, the head-bob.
+Nothing about being blocked changes what gets reported; being blocked changes only
+*where the integration stopped*, and therefore what there is to report.
+
+**Reporting is rate-limited, not event-driven.** `move.c:57` `MOVE_INTERVAL 1000`:
+at most one position packet per second, and `MOVE_THRESHOLD (FINENESS / 4)` — only
+report a move at least that large. Our `USER_MOVE_MIN_INTERVAL_MS = 1050` matches
+this; the 5% slack is so the server's speedhack counter drains.
+
+## The official rate, derived rather than assumed
+
+`draw3d.h:53` `MOVEUNITS (FINENESS >> 2)` = 32 client units, `move.c:49`
+`MOVE_DELAY 100` ms, `move.c:184/188` `move_distance = 2 * MOVEUNITS` for the `*FAST`
+actions and `MOVEUNITS` otherwise. Client `FINENESS` is 128 and a server square is 64
+protocol units, so one client unit is half a protocol unit:
+
+| | protocol units/s | server squares/s |
+|---|---|---|
+| official walk | 160 | 2.5 |
+| official run | 320 | 5.0 |
+| our `WALK_STRIDE_PROTO` / `RUN_STRIDE_PROTO` | **160 / 320** | 2.5 / 5.0 |
+| our step engine, 1 square per 1050 ms | 61.0 | 0.95 |
+
+**The stride constants already match the official rate exactly.** The step engine runs
+at **0.381 of official walk** and **0.190 of official run**. The ~40% figure quoted in
+the goal is therefore derivable from source, and is confirmed; the step engine is not
+slow by accident, it is slow by construction, because a send that may only name an
+adjacent square cannot cover more than a square per second no matter what the stride
+constants say.
+
+## Why the step engine was never the answer
+
+The section above is honest about the step engine's virtue and reads it as a design
+property: *"A send that can only name an adjacent square cannot land inside a hole
+two squares away, cannot skip over a cliff, and cannot cut a corner into a wall.
+Every one of those had a dedicated check in the velocity block."*
+
+That safety is not a design property. It is what you get by **refusing to integrate**.
+The checks were deleted along with the integration they were compensating for, and
+the price of that trade is two thirds of the character's speed, paid continuously, by
+every character, forever, to avoid a bug that had a specific cause and a specific fix.
+
+The trace in the section above says it plainly and was misread at the time:
+
+```
+3 raw-move  idx=1/3 fan=0   <- the next waypoint is 6 squares off; the direct
+4 raw-move  idx=1/3 fan=0      trace to it crosses the wall
+...                          <- forever: fan, one step, fan, one step
+```
+
+The fan fires forever because the aim is **inside the wall**. The reference client,
+in the same situation, reports the position where its sub-stepping stopped — at the
+wall. Our engine projected `myProto + stride * unit(aim)` past it, the fine model said
+blocked, and the fan had nothing to resolve because the aim never changed. That is a
+clamp that should have been a `last_x`, and it is fixable in the block that was deleted.
+
+## Corrected end state
+
+`Router` (ours) → `Mover` (ours, **one engine**: A* on the fine model, **one stride per
+send** — 160 walking, 320 running, which is the official rate — with the reported
+position clamped to the last legal sub-step exactly as `move.c:374-382` clamps it, at
+most one send per second, escape fan and raw door push for the squares the fine model
+gets wrong) → the server.
+
+Kept from the earlier work, because both were real fixes and neither is the thing
+that was being argued: the navgeom waypoint frame (square centre, not the `64c` edge)
+and the `Pose` seed anchored on the last confirmed server echo.
+
+They are not, however, *equivalent* under the two engines, and pretending otherwise
+would repeat the error above in miniature. The edge frame put every aim on a square
+boundary, which for the step engine is merely imprecise — it names a square and lets
+the integration sort out the rest. For the velocity engine it was fatal: an aim on the
+boundary of the square you are standing in *is* an aim at yourself, so the send gate
+closed and the character froze with `idx=0/22` and 790 identical packets. The frame bug
+was only ever visible in the engine that integrates.
+
+Which is the pattern this whole section should have taught. The velocity engine was not
+broken in the way the section above said it was, but it *was* broken, and two of the
+three real defects were only ever observable in it — because it is the engine that
+actually moves, and so the only one that can show you a movement bug.
