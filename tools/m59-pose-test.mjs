@@ -92,27 +92,31 @@ function ok(cond, msg) {
   ok(p.divergence() === null, 'no sim means null divergence');
   p.advance(10 * 64 + 32, 20 * 64 + 32);
   ok(p.divergence() === 0, 'agreed track reads zero');
-  p.advance(14 * 64 + 32, 20 * 64 + 32);
+  // Set the sim 4 squares off the echo (test divergence() directly, not advance()).
+  p.sim = { x: 14 * 64 + 32, y: 20 * 64 + 32 };
   ok(p.divergence() === 256, 'split track reads the gap in proto units');
 }
 
-// 9. divergence guard: a sim 6+ squares off the echo is adopted (reset) and counted.
+// 9. server-speed advance: the sim advances one square per call (the send
+// interval is ~1s at speed 18), not to the aim. The divergence guard still
+// fires when the sim drifts >6 squares (matches the client's auto-correction).
 {
   const p = new Pose();
   p.updateServer({ col: 10, row: 20, x: 10 * 64 + 32, y: 20 * 64 + 32 });
-  p.advance(10 * 64 + 32, 20 * 64 + 32);
-  // Drift the sim 8 squares (512 proto units) off the echo — beyond the guard.
+  p.advance(10 * 64 + 32, 20 * 64 + 32);  // sim null -> seed at (10, 20)
+  // Advance toward (18, 20): one square (64 proto units) per call, not to the aim.
   p.advance(18 * 64 + 32, 20 * 64 + 32);
-  ok(p.divergence() === 512, 'drifted sim reads the gap before the guard');
+  ok(p.sim.x === 11 * 64 + 32, 'sim advances one square toward the aim (server-speed)');
+  ok(p.divergence() === 64, 'gap is one square (within echo lag)');
+  p.updateServer({ col: 10, row: 20, x: 10 * 64 + 32, y: 20 * 64 + 32 });
+  ok(p.divergenceResets === 0, 'one-square gap is not adopted (echo lag)');
+  // Force a large drift (set the sim 8 squares off the echo) — the guard fires.
+  p.sim = { x: 18 * 64 + 32, y: 20 * 64 + 32 };
+  ok(p.divergence() === 512, 'drifted sim reads the gap');
   p.updateServer({ col: 10, row: 20, x: 10 * 64 + 32, y: 20 * 64 + 32 });
   ok(p.divergenceResets === 1, 'drifted sim is adopted (counted)');
   ok(p.sim.x === 10 * 64 + 32, 'adopted sim is the echo');
   ok(p.divergence() === 0, 'adopted sim agrees with the echo');
-  // A small gap (one stride, 320) is echo lag, not drift — not adopted.
-  p.advance(15 * 64 + 32, 20 * 64 + 32);
-  ok(p.divergence() === 320, 'one-stride gap reads the gap');
-  p.updateServer({ col: 10, row: 20, x: 10 * 64 + 32, y: 20 * 64 + 32 });
-  ok(p.divergenceResets === 1, 'one-stride gap is not adopted (echo lag)');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

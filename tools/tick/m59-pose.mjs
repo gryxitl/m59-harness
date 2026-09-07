@@ -76,9 +76,12 @@ export class Pose {
       // the wrong direction and it never self-corrects. The echo lag is up to
       // one stride (160 walk / 320 run); a gap beyond 6 squares (384) is not
       // "ahead", it's lost. Adopt the echo (the last confirmed position) so
-      // the next plan re-anchors on where we actually are.
+      // the next plan re-anchors on where we actually are. Matches the client
+      // (MoveObject2 overwrites player.x/y on every BP_MOVE — auto-correction).
       const div = this.divergence();
       if (div != null && div > 384) {
+        if (process.env.M59_POSE_DEBUG !== '0' && this.divergenceResets < 3)
+          console.error(`[posedbg] divergence guard: sim ${Math.round(this.sim.x)},${Math.round(this.sim.y)} -> echo ${this.server.col},${this.server.row} (div=${Math.round(div)})`);
         this.sim = { x: this.server.x, y: this.server.y };
         this.simAt = Date.now();
         this.divergenceResets++;
@@ -87,11 +90,31 @@ export class Pose {
   }
 
   // Called by the Mover on each accepted send. Advances our feet.
-  advance(x, y) {
-    if (Number.isFinite(x) && Number.isFinite(y)) {
+  // SERVER-SPEED ADVANCE (the dead-reckoning fix): the server moves the
+  // character at the declared speed (18 = 1 square/sec, 36 = 2 squares/sec)
+  // TOWARD the aim — it does not teleport to the aim. Advancing the sim to
+  // the aim (the full stride) ran it 2.5-5 squares ahead of the server, and
+  // the divergence guard yanked it back every echo (the dither). Advance by
+  // one server step (64 proto units = 1 square, the send interval is ~1s at
+  // speed 18) toward (x, y) instead. The sim then tracks the server (1 square
+  // ahead, within echo lag), the plan is drawn from the real position, and the
+  // guard rarely fires. If the sim is null (after a reset), seed it at the
+  // aim — a one-time jump, then it tracks.
+  advance(x, y, step = KOD_FINENESS) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    if (this.sim == null) {
       this.sim = { x, y };
       this.simAt = Date.now();
+      return;
     }
+    const dx = x - this.sim.x, dy = y - this.sim.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist <= step) {
+      this.sim = { x, y };  // aim is within one step — go to it
+    } else {
+      this.sim = { x: this.sim.x + (dx / dist) * step, y: this.sim.y + (dy / dist) * step };
+    }
+    this.simAt = Date.now();
   }
 
   // Called on teleport / blink / room change. Our feet are no longer valid.
