@@ -482,5 +482,33 @@ console.log('\nsub-leg chains never head into a wall square (557 pin: (27,33) fi
      JSON.stringify(router.subWp));
 }
 
+console.log('\nsub-leg chains drop edge-blocked heads only while the mover is stuck');
+{
+  // (22,17)->(23,17) in 557: both squares open, the edge between them fenced.
+  // The head must go when the mover is honestly stuck (server static 3+ sends)
+  // and stay while steps land (the step search may cross what moverStepLands
+  // refuses on radius strictness).
+  const { router, act } = rig({ col: 5, row: 5 });
+  router.session.world.geometry.moverStepLands = (r1, c1, r2, c2) =>
+    !((r1 === 5 && c1 === 5 && r2 === 5 && c2 === 6));  // only the (5,5)->(6,5) edge walled
+  router.to(20);
+  router.leg = { fromRoom: 10, next: 20, standOn: { col: 8, row: 5 }, edgeTarget: null,
+                 direction: 'east', kind: 'edge', startedAt: 1000 };
+  const frm = { room: { num: 10, name: 'A' },
+                position: { col: 5, row: 5, x: 5 * 64 + 32, y: 5 * 64 + 32 } };
+  // Steps landing: the head stays even though the strict edge test refuses it.
+  router.subWp = [{ col: 6, row: 5 }, { col: 7, row: 5 }];
+  router.mover.stuckTicks = 0;
+  router.tick(frm, act);
+  ok('head kept while steps land', router.subWp && router.subWp[0].col === 6,
+     JSON.stringify(router.subWp));
+  // Honestly stuck: the unenterable head goes, aim falls to the next square.
+  router.subWp = [{ col: 6, row: 5 }, { col: 7, row: 5 }];
+  router.mover.stuckTicks = 4;
+  router.tick(frm, act);
+  ok('edge-blocked head dropped while stuck', router.subWp && router.subWp[0].col === 7,
+     JSON.stringify(router.subWp));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

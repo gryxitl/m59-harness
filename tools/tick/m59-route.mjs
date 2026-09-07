@@ -820,6 +820,46 @@ export class Router {
         }
       }
     }
+    // DROP EDGE-BLOCKED HEADS: the head square may read open while the EDGE
+    // from the server position is fenced (fence segments run between squares —
+    // watched: (22,17)->(23,17) in 557, both open, edge walled). Advancement
+    // needs entering; an unenterable head pins the chain like a wall square.
+    // GATED on the mover's honest stuck signal (server static 3+ sends):
+    // the step search has its own edge verdict and may disagree with
+    // moverStepLands on radius strictness, so never drop while steps land.
+    // Keeps a lone standOn (door-push target); drops a lone non-standOn.
+    if (this.subWp && this.subWp.length && (this.mover?.stuckTicks ?? 0) >= 3) {
+      const _egeo = this._geo();
+      const _srv = this.session?.client?.self ?? this.session?._pose?.server;
+      const _so2 = this.leg?.standOn;
+      let _guard = 0;
+      while (this.subWp.length > 1 && _guard++ < 4) {
+        const _h = this.subWp[0];
+        let _edgeOk = true;
+        try {
+          if (_egeo?.moverStepLands && _srv && Number.isFinite(_srv.col) && Number.isFinite(_srv.row))
+            _edgeOk = _egeo.moverStepLands(_srv.row, _srv.col, _h.row, _h.col) === true;
+        } catch { _edgeOk = true; }
+        if (_edgeOk) break;
+        console.error(`[route] dropping edge-blocked sub-waypoint (${_h.col},${_h.row}) (leg to ${this.leg?.next})`);
+        this.subWp.shift();
+      }
+      if (this.subWp.length === 1) {
+        const _h = this.subWp[0];
+        const _isStandOn = _so2 != null && _h.col === _so2.col && _h.row === _so2.row;
+        if (!_isStandOn) {
+          let _edgeOk = true;
+          try {
+            if (_egeo?.moverStepLands && _srv && Number.isFinite(_srv.col) && Number.isFinite(_srv.row))
+              _edgeOk = _egeo.moverStepLands(_srv.row, _srv.col, _h.row, _h.col) === true;
+          } catch { _edgeOk = true; }
+          if (!_edgeOk) {
+            console.error(`[route] dropping edge-blocked lone approach (${_h.col},${_h.row}) (leg to ${this.leg?.next})`);
+            this.subWp = null;
+          }
+        }
+      }
+    }
     const sub = this.subWp && this.subWp.length ? this.subWp[0] : null;
     if (sub) {
       // Server-first (see the tick-top note): advance the chain only on
