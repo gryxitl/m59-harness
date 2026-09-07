@@ -1363,6 +1363,11 @@ export class Mover {
             this._submitMove(s, c, () => c.moveTo(sx, sy, npSpeed, c.room?.id ?? 0));
             this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
             this._recordReport(sx, sy);
+            // Honest stuck bookkeeping: the stride sends while the server
+            // echo sits still for ~1s. Without this the direct-send site
+            // froze stuckTicks at 0 while sends flowed (the fan and the
+            // pocket escalation stayed blind). Server squares only.
+            this._noteServerStatic(srvCol, srvRow);
             return { state: 'moving', to: { col: destCol, row: destRow }, stride: true };
           }
         }
