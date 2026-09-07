@@ -99,6 +99,14 @@ export const BP = {
 };
 export const BPNAME = Object.fromEntries(Object.entries(BP).map(([k, v]) => [v, k]));
 
+// The speedhack budget, named. user.kod gives the server ~1 UserMove/second
+// (piMovesCounter +1 per packet, -1 per second, trip above 2 with a snap-back to the
+// pre-stride square). 1050ms is 5% under budget so the counter drains; it was a bare
+// literal inside moveTo, which meant nothing else in the system could state the law a
+// dropped move is measured against. Exported so tools/m59-move-drops.mjs reports the
+// same number the client enforces rather than a copy that can drift.
+export const USER_MOVE_MIN_INTERVAL_MS = 1050;
+
 // BP_USERCOMMAND sub-opcodes, include/proto.h:222. A whole second command space
 // reached through one opcode, holding the things the real client's slash commands
 // do — resting, safety toggling, banking, guild administration.
@@ -904,8 +912,22 @@ export class M59Client {
     // re-fires. Returns false when dropped (callers generally ignore it;
     // the mover has its own cap so it can skip send bookkeeping too).
     const nowMs = Date.now();
-    if (nowMs - (this._lastUserMoveAt ?? 0) < 1050) { this._droppedUserMoves = (this._droppedUserMoves ?? 0) + 1; return false; }
+    if (nowMs - (this._lastUserMoveAt ?? 0) < USER_MOVE_MIN_INTERVAL_MS) {
+      this._droppedUserMoves = (this._droppedUserMoves ?? 0) + 1;
+      // Stamped as well as counted, because a bare total cannot be acted on. Ten drops
+      // accumulated over a week of a character sitting in a town square is nothing; ten
+      // in the last four seconds means something is re-firing movement at a character
+      // that cannot move, which is the failure this counter was added to catch and could
+      // not be caught with it. See tools/m59-move-drops.mjs.
+      this._droppedUserMovesAt = nowMs;
+      this._lastUserMoveDropAt = nowMs;
+      return false;
+    }
     this._lastUserMoveAt = nowMs;
+    // When this client first tried to move. The drop RATE needs a window, and the
+    // only honest window is the life of the thing doing the moving — a rate measured
+    // from process start would count time before the character was even in the game.
+    if (this._firstUserMoveAt == null) this._firstUserMoveAt = nowMs;
     this.send(BP.REQ_MOVE, u16b(y), u16b(x), u8b(speed), u32(objId(room || 0)));
     // OUR OWN TRAIL, AT THE RATE WE ACTUALLY WALK IT.
     //

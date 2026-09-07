@@ -18,6 +18,7 @@ process.env.M59_KEEPER = '1';
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { createServer } from 'http';
 import { Session, Pacer } from './m59-session.mjs';
+import { USER_MOVE_MIN_INTERVAL_MS } from './m59-client.mjs';
 import { autopilotFor, dropAutopilot, autopilotIfAny } from './m59-autopilot.mjs';
 import { TickLoop } from './tick/m59-tick.mjs';
 import { makeDecider, DEFAULT_GOALS, intend, INTENTS } from './tick/m59-decide.mjs';
@@ -718,6 +719,44 @@ const server = createServer(async (req, res) => {
       json({ path, direct, self: { x: me.col - 1, z: me.row - 1 }, target: { x: t.col - 1, z: t.row - 1 }, is_travel: isTravel });
       return;
     }
+// DROPPED USER MOVES, IN ONE PLACE. The client drops a UserMove that arrives inside the
+// 1050ms speedhack window and counts the drops, and for a while that was the only
+// movement number in the system that nothing read: a character could have every move it
+// planned swallowed by its own throttle, keep planning, and look perfectly healthy from
+// the outside. A count with no rate cannot be acted on (is 10 drops a week or a
+// second?), and a rate with no window cannot be compared across characters — so both
+// are computed here and every reader uses this one.
+function moveDropStats(session) {
+  const c = session?.client;
+  const dropped = c?._droppedUserMoves ?? 0;
+  const lastDrop = c?._droppedUserMovesAt ?? null;
+  const now = Date.now();
+  // Session lifetime, from the first move we tried to send. If none was ever sent
+  // there is no window and no rate — reporting 0/s would be a claim, not a measurement.
+  const since = c?._firstUserMoveAt ?? c?._lastUserMoveAt ?? null;
+  const windowMs = since != null ? Math.max(0, now - since) : null;
+  const recentMs = lastDrop != null ? Math.max(0, now - lastDrop) : null;
+  return {
+    dropped,
+    // Per second over the whole session, and over the last 60s from the most recent
+    // drop — the number that says whether this is happening NOW.
+    rate_per_sec: windowMs != null && windowMs > 0 ? +(dropped / (windowMs / 1000)).toFixed(4) : null,
+    recent_rate_per_sec: recentMs != null ? +(dropped / (Math.max(recentMs, 1) / 1000)).toFixed(4) : null,
+    window_ms: windowMs,
+    last_drop_ms_ago: recentMs,
+    // The throttle itself, printed so a reader can tell a drop from a refusal: a drop
+    // never reached the wire, a refusal went out and the server said no.
+    throttle_ms: USER_MOVE_MIN_INTERVAL_MS,
+  };
+}
+
+    if (req.method === 'GET' && path === '/move-drops') {
+      // Dropped UserMoves: count, rate, and the window both were measured over.
+      // tools/m59-move-drops.mjs is the reader; it aggregates across the fleet.
+      json(moveDropStats(session));
+      return;
+    }
+
     if (req.method === 'GET' && path === '/probe') {
       // Debug: report the character's position, neighbor walkability,
       // and the geometry state. Used to diagnose stuck-on-a-ledge.
@@ -747,6 +786,7 @@ const server = createServer(async (req, res) => {
       }
       json({
         pos: { col: me.col, row: me.row },
+        moveDrops: moveDropStats(session),
         myHeight: geo?.fineHeightAt ? geo.fineHeightAt(me.col * 64 + 32, me.row * 64 + 32) : null,
         neighbors,
         target: t ? { col: t.col, row: t.row, name: c?.rsc?.get?.(t.nameRsc) } : null,
