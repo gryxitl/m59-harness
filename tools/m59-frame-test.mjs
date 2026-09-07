@@ -133,8 +133,12 @@ console.log('\nHALF 2: tick() reads position twice, from two sources, and never 
   // So the two can disagree arbitrarily. The mover's own traces prove they did.
   ok('the plan trace prints the myProto square',
     /plan from=\(\$\{Math\.floor\(myProtoX \/ KOD_FINENESS\)\}/.test(MOVER));
+  // The trace that showed the split lived in the velocity block. That engine is gone
+  // (one engine now, per docs/TICK-MOVEMENT-PLAN.md), so pin the same split against
+  // whichever send site exists — the defect was never the engine, it was two position
+  // sources printed in one line.
   ok('the send trace prints the me square',
-    /gateOK vel aim=.*me=\(\$\{me\.col\},\$\{me\.row\}\)/.test(MOVER));
+    /gateOK (?:vel|step)[^\n]*me=\(\$\{me\.col\},\$\{me\.row\}\)/.test(MOVER));
 }
 
 console.log('\nthe two sources disagreed in the same tick, in the real log');

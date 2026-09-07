@@ -269,3 +269,129 @@ character moves in production. The opt-in (`policy.ownPhysics`, default off)
 lets you prove it on one character (Lee) before rolling it out. Do you want to
 start with 0a (the velocity declaration) and prove it on Lee, or do you want to
 build all of 0a-0e before turning it on?
+
+---
+
+# Decided: there is one movement engine, and it is the step engine
+
+*Recorded while removing `policy.ownPhysics`. This supersedes the "Open question
+for you" above and the `policy.ownPhysics` opt-in in Phase 0.*
+
+## What the two engines were
+
+Both planned with the same A* over the same fine model. They differed in exactly
+one thing — **what a send names**:
+
+| | the send | reach of one packet |
+|---|---|---|
+| step engine | the centre of the **next adjacent square** | 1 square |
+| velocity engine (`policy.ownPhysics`) | a **stride-clamped target** 160/320 units away | up to 5 squares |
+
+## Why the step engine wins
+
+`clientd3d/move.c` is the model, and it is unambiguous. `UserMovePlayer` computes
+the next position **locally** — `FindOffsets(move_distance, angle, &dx, &dy)`, then
+`num_steps = max(1, min(STEPS_PER_MOVE, ...))` sub-steps of `xinc = dx / num_steps`,
+each one checked with `BSPFindLeafByPoint` and resolved by `SlideAlongWall`. Only
+after that does `MoveUpdatePosition` speak to the server, and what it sends is
+`player.x, player.y` — **where the client already is** — and only once it has moved
+more than `MOVE_THRESHOLD` (FINENESS/4) and no more than once per `MOVE_INTERVAL`
+(1000 ms).
+
+So the real client moves itself and *reports a nearby position*. It never declares
+a far target and waits for a server to integrate it. The step engine's shape —
+name one adjacent square, often — is that model. The velocity engine invented a
+server-side integration that the reference client does not have.
+
+The same property makes the step engine **structurally safe** where the velocity
+engine needed a pile of guards. A send that can only name an adjacent square cannot
+land inside a hole two squares away, cannot skip over a cliff, and cannot cut a
+corner into a wall. Every one of those had a dedicated check in the velocity block,
+and the escape fan existed mostly to clean up after them.
+
+## The proof, not the argument
+
+Reproduced offline on a fixture with a wall between (2,2) and (8,2), a path around
+it, and a server that echoes:
+
+| engine | result |
+|---|---|
+| velocity, stride 160 | 120 sends, **never arrives**, ends in square (2,5) |
+| velocity, stride 64 | 120 sends, **never arrives**, ends in square (2,5) |
+| step | **arrives in 11 sends** |
+
+Shortening the stride does not help, which is the useful part: the failure is not
+"the stride is too long". It is this sequence, from the trace:
+
+```
+0 raw-move  idx=0/3 fan=0   <- slide check fires the fan at the wall
+1 moving    idx=0/3         <- fan releases, declares toward waypoint (160,377)
+2 moving    idx=1/3         <- waypoint consumed
+3 raw-move  idx=1/3 fan=0   <- the next waypoint is 6 squares off; the direct
+4 raw-move  idx=1/3 fan=0      trace to it crosses the wall
+...                          <- forever: fan, one step, fan, one step
+```
+
+The velocity engine aims at a **waypoint**, which is far, so the wall between here
+and there is always in the way, so the fan always fires. The step engine aims at
+the **next square**, which is by construction never behind a wall, so the fan has
+nothing to do. Deleting the velocity engine deletes the loop, not just the code.
+
+## Live evidence, which also corrects the premise
+
+The premise above was that `ownPhysics` is off in production. It is not, and the
+correction matters because it is the whole reason this was invisible:
+
+| character | `ownPhysics` | engine actually used | outcome |
+|---|---|---|---|
+| t1 | false | step | normal |
+| t3 | **true** | velocity — 1587 `gateOK vel`, 0 `gateOK step` | **0 arrivals** |
+| t4 | true | step — 0 `gateOK vel`, 37779 `gateOK step` | 170 arrivals |
+
+t3 ran the velocity engine from start to finish and arrived nowhere, ever. t4 is
+the puzzle: the flag was on, yet `vel-tick` never logged once, and the velocity
+block's entry trace is unconditional and throttled to one line per 10s. Whatever
+made t4 never enter that block, the point for the record is that **the two engines
+were both live at the same time in one fleet**, on characters that looked identical
+in the roster. That is what "choose one" is for.
+
+## What was removed
+
+`tools/tick/m59-mover.mjs`, 1965 → 1772 lines:
+
+- the slide-along-wall check (34 lines) — existed to route a blocked *long* aim to
+  the fan; an adjacent square is never blocked long
+- the raycast-ahead check (40 lines) — same reason, one step ahead of a one-square
+  step is the step itself
+- the velocity declaration (133 lines), including its own waypoint-consume and its
+  own copy of the aim clamp
+- the `ownPhysics` flag, its heartbeat field, and the `standOnNear` exemption that
+  only those three blocks consulted
+
+Standing is its own tick again: the fall-through that skipped it existed so the
+velocity declaration could fire on the same tick as the `stand()`.
+
+Kept, because they were never velocity-only: the escape fan, the raw door push, the
+stand_on boundary crossing, the server-static escalation, and `aimX`/`aimY` (the fan
+probes around the aim and the boundary check tests it).
+
+## Two defects found on the way, both still live in the code that remains
+
+1. **The velocity send never called `_noteServerStatic`.** That function is the sole
+   maintainer of `stuckTicks`. Sends flowed, the server never moved, `stuckTicks`
+   stayed 0 forever, so the escalation could not fire and the wedge was invisible —
+   which is exactly the shape of t3's 790 identical sends. The step site does call
+   it. Anyone adding a new send site must call it too; a site that does not is a
+   site that cannot be seen to fail.
+2. **The void check guarded only the aim, and only when a path existed.** A send
+   made with no path — the escape case, where the fine model has already said "no
+   route" — was never floor-checked at all. The step engine is exposed to this far
+   less, because the square it names is adjacent, but the check is on the square
+   being *aimed at*, not the square being *stepped onto*.
+
+## Corrected end state
+
+`Router` (ours) → `Mover` (ours, **one engine**: A* on the fine model, one adjacent
+square per send, at most one send per second, escape fan and raw door push for the
+squares the fine model gets wrong) → the server. `policy.ownPhysics` is gone; a
+roster that still carries it is ignored, not honoured.

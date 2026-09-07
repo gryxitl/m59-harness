@@ -153,8 +153,20 @@ function advance(session, sent) {
 // can ever be seen to arrive. Tests that want to study a STALL must not call this.
 function fakeServer(session) {
   session._pose = new Pose();
+  session._pose.updateServer({ ...session.client.self });
+  // The rig's moveTo only records the packet; nothing moves the character. A server that
+  // accepts a position moves the character there, so install that here — otherwise every
+  // walk ends 'stuck' for a reason that has nothing to do with the mover.
   const c = session.client.self;
-  session._pose.updateServer({ ...c });
+  const apply = (x, y) => {
+    c.x = x; c.y = y;
+    c.col = Math.floor(x / 64); c.row = Math.floor(y / 64);
+  };
+  if (session._serverAccepts !== false) {
+    const rawMove = session.client.moveTo, rawSquare = session.client.moveToSquare;
+    session.client.moveTo = (x, y) => { apply(x, y); return rawMove(x, y); };
+    session.client.moveToSquare = (col, row) => { apply(col * 64 + 32, row * 64 + 32); return rawSquare(col, row); };
+  }
   return () => { session._pose.updateServer({ ...session.client.self }); };
 }
 
@@ -253,17 +265,16 @@ console.log('\nsitting trap: stand before move');
   ok('second tick moves or plans', r2.state === 'moving' || r2.state === 'planning', r2.state);
 }
 {
-  // Velocity engine (ownPhysics on): stand() is fire-and-forget and the velocity
-  // declaration fires on the same tick, so there is no separate standing tick. That is
-  // the point: the two-tick stand/move handshake is what let the vigor_low goal trap the
-  // mover in a stand/sit loop, because the goal re-sat the character between the ticks.
+  // The policy flag cannot change the engine any more: there is one engine, and
+  // standing is its own tick. This test exists to pin that — a policy that used to
+  // select the other engine must now be inert.
   const { mover, sent } = rig({ geo: clearGeometry() });
   mover.session.policy = { ownPhysics: true };
   mover.to(4, 2);
   mover.markSitting();
   const r = mover.tick();
-  ok('velocity engine stands and moves on one tick',
-    r.state === 'moving' || r.state === 'planning', r.state);
+  ok('the removed engine flag does not resurrect it — standing is still its own tick',
+    r.state === 'standing', r.state);
   ok('a stand was issued', sent.some(x => x && x.stand === true), JSON.stringify(sent).slice(0, 60));
 }
 
@@ -399,36 +410,37 @@ console.log('\nPHASE 0a: the hold gate is off by default (ownPhysics off)');
   ok('a second move was sent (step model re-sends)', sent.length === 1, JSON.stringify(sent));
 }
 
-console.log('\nPHASE 0c: the slide-along-wall check (ownPhysics on, direct path blocked)');
+console.log('\nblocked direct path: the escape fan takes over');
 {
-  // Geometry where the direct path to the dest is blocked by a wall.
+  // One engine, so there is no on/off pair any more — just the escalation. A blocked
+  // trace to the DESTINATION is not a blocked step: the mover names one ADJACENT square
+  // per send, so it first tries the square next to it (the raw door push, which exists
+  // because the fine model is wrong about door alcoves). Only when that stops moving
+  // the character does the escape fan start probing headings.
   const wallGeo = {
     collisionReady: true,
     traceFineMoveClient() { return { blocked: true, moved: false, arrived: false }; },
     finePathProtocol() { return { found: false, reason: 'wall', waypoints: [] }; },
+    standable: () => true,
+    fineWalkable: () => true,
   };
   const { mover, sent, session } = rig({ geo: wallGeo });
-  session.policy = { ownPhysics: true };
+  session._serverAccepts = false;   // sends go out and nothing moves: that is the situation under test
+  const echo = fakeServer(session);
   mover.to(4, 2); // 2 squares away, direct path blocked
   const r1 = mover.tick();
-  ok('first tick: fires the fan (slide), not the direct velocity', r1.state === 'raw-move', r1.state + ' ' + (r1.why ?? ''));
-  ok('fan index 0', r1.fanIndex === 0, r1.fanIndex);
+  ok('first tick tries the adjacent square, not a fan', r1.state === 'moving', r1.state + ' ' + (r1.why ?? ''));
+  ok('the send is the adjacent square centre', JSON.stringify(sent) === '[[224,160]]', JSON.stringify(sent));
+  let fan = null;
+  for (let i = 0; i < 14 && fan == null; i++) {
+    clock(1600); echo();
+    const r = mover.tick();
+    if (r.state === 'raw-move') fan = r.fanIndex;
+    if (r.state === 'stuck' || r.state === 'arrived') break;
+  }
+  ok('a character that is not moving escalates to the escape fan', fan != null, `fanIndex=${fan}`);
+  ok('the fan starts at heading 0', fan === 0, String(fan));
 }
-
-console.log('\nPHASE 0c: the slide check is off by default (ownPhysics off)');
-{
-  const wallGeo = {
-    collisionReady: true,
-    traceFineMoveClient() { return { blocked: true, moved: false, arrived: false }; },
-    finePathProtocol() { return { found: false, reason: 'wall', waypoints: [] }; },
-  };
-  const { mover, sent, session } = rig({ geo: wallGeo });
-  // No policy.ownPhysics — the default step model.
-  mover.to(4, 2);
-  const r1 = mover.tick();
-  ok('first tick: does NOT fire the 0c slide (step model)', r1.state !== 'raw-move' || r1.why !== '0c: direct path blocked, sliding along wall', r1.state + ' ' + (r1.why ?? ''));
-}
-
 console.log('\nTHE 5s ANTI-DEADLOCK FLOOR (the gate/fan stall fix)');
 {
   // The exact stall: a step that is CLOSE to the server (movedEnough=false)
@@ -598,19 +610,32 @@ console.log('\nNEVER ENTER A VOID (step model)');
   ok('waypoint stepper skips the floorless neighbor', sent.length === 1 && !(sent[0][0] === 224 && sent[0][1] === 160), JSON.stringify(sent));
 }
 {
-  // Velocity branch: a floorless stride-clamped aim is refused, not declared.
+  // NEVER ENTER A VOID. The old velocity engine declared a stride-clamped point up to
+  // five squares away, so a single send could land inside a hole two squares off and
+  // needed an explicit aim check to stop it. The one engine names a single ADJACENT
+  // square per send, so the square it names is the only square it can reach — the
+  // floor check is on the square it is about to step onto. Assert the stronger
+  // property: over a whole walk toward a destination that sits past a hole, the
+  // character never once declares a position inside the hole.
   const voidGeo = {
     collisionReady: true,
-    standable(r, c) { return !(r === 2 && c === 5); }, // clamped aim (5,2) is void
+    standable(r, c) { return !(r === 2 && c === 5); }, // the hole, two squares short of dest (6,2)
+    fineWalkable(r, c) { return !(r === 2 && c === 5); },
+    traceFineMoveClient(x0, y0, x1, y1) { return { blocked: false, moved: true, arrived: true, x: x1, y: y1 }; },
+    finePathProtocol() { return { found: false, reason: 'maze', waypoints: [] }; },
   };
-  const { mover, sent } = rig({ col: 2, row: 2, geo: voidGeo });
-  mover.session.policy = { ownPhysics: true };
-  mover.to(6, 2);
-  mover.path = [{ x: 6 * 64 + 32, y: 2 * 64 + 32 }];
-  mover.pathIdx = 0;
-  const r = mover.tick();
-  ok('floorless velocity aim is refused', r.state === 'stuck' && r.why === 'aim has no floor', `${r.state} ${r.why ?? ''}`);
-  ok('nothing is sent into the void', sent.length === 0, JSON.stringify(sent));
+  const { mover, sent, session } = rig({ col: 2, row: 2, geo: voidGeo });
+  session._serverAccepts = false;   // a server that refuses everything must still never be told to enter the hole
+  const echo = fakeServer(session);
+  mover.to(6, 2, { by: 'router' });
+  const entered = [];
+  for (let i = 0; i < 24; i++) {
+    clock(1600); echo();
+    mover.tick();
+    for (const m of sent) if (Array.isArray(m) && m[0] === 5 * 64 + 32 && m[1] === 2 * 64 + 32) entered.push(m);
+    sent.length = 0;
+  }
+  ok('never declares a position inside the hole', entered.length === 0, JSON.stringify(entered));
 }
 {
   // Raw-door-push: a floorless non-exit destination is a bad target, not a door.
@@ -643,16 +668,25 @@ console.log('\nCORNER FLOW (trace-gated lookahead)');
       return { blocked: false, moved: true, arrived: true, x: x1, y: y1 };
     },
   };
-  const { mover, sent } = rig({ col: 2, row: 2, geo: cornerGeo });
-  mover.session.policy = { ownPhysics: true };
-  mover.to(3, 4);
+  const { mover, sent, session } = rig({ col: 2, row: 2, geo: cornerGeo });
+  const echo = fakeServer(session);
+  mover.to(3, 4, { by: 'router' });
+  // The corner is hand-set rather than planned: this fixture has no finePathProtocol,
+  // and the point under test is what the mover DOES with a path, not how it got one.
   mover.path = [{ x: 3 * 64 + 32, y: 2 * 64 + 32 }, { x: 3 * 64 + 32, y: 4 * 64 + 32 }];
   mover.pathIdx = 0;
   const r = mover.tick();
   ok('corner aims at the clear waypoint, striding', r.state === 'moving', `${r.state} ${r.why ?? ''}`);
   ok('the send goes to wp1, not into the wall', sent.length === 1 && sent[0][0] === 224 && sent[0][1] === 160, JSON.stringify(sent));
   ok('the fan stays out of it', mover._fanIndex == null && mover._fanTarget == null);
-  ok('wp1 consumed, corner kept for arrival', mover.pathIdx === 1, `idx=${mover.pathIdx}`);
+  let end = r.state;
+  for (let i = 0; i < 8 && end !== 'arrived' && end !== 'stuck'; i++) {
+    clock(1600); echo();
+    end = mover.tick().state;
+  }
+  ok('the L-turn is walked without a fan', end === 'arrived', end);
+  ok('the fan never engaged on the way round', mover._fanIndex == null && mover._fanTarget == null,
+    `idx=${mover._fanIndex}`);
 }
 
 console.log('\nSTRIDED NO-PATH DECLARATION');
@@ -730,20 +764,37 @@ console.log('\nFAN NEVER STEPS INTO A VOID');
 
 console.log('\nFAN INIT FALLS THROUGH TO SEND (no silent wedge)');
 {
-  // 0c-blocked + open gate: the init must fall through to the fan branch and
-  // send on the SAME tick. The old early-return sent nothing (verified live:
-  // 40 ticks of silent inits, 1 send via the 5s floor).
+  // NO SILENT TICK. This used to pin the 0c slide check falling through to a send on
+  // the same tick instead of returning after arming the fan (verified live: 40 ticks of
+  // silent inits, 1 send via the 5s floor). The slide check is gone with the engine that
+  // owned it, so the property is stated where it now lives: a tick that has a grounded
+  // square to step onto sends, and a tick that has nothing to say reports a state — a
+  // tick never goes quiet with neither.
   const wallGeo = {
     collisionReady: true,
     traceFineMoveClient() { return { blocked: true, moved: false, arrived: false }; },
     finePathProtocol() { return { found: false, reason: 'wall', waypoints: [] }; },
+    standable: () => true,
+    fineWalkable: () => true,
   };
-  const { mover, sent } = rig({ geo: wallGeo });
-  mover.session.policy = { ownPhysics: true };
-  mover.to(4, 2);
+  const { mover, sent, session } = rig({ geo: wallGeo });
+  session._serverAccepts = false;
+  mover.to(4, 2, { by: 'router' });
   const r1 = mover.tick();
-  ok('first tick sends through the fresh fan (no silent init)', sent.length === 1, `sent=${JSON.stringify(sent)} state=${r1.state}`);
-  ok('fan engaged', mover._fanIndex === 0, `idx=${mover._fanIndex}`);
+  ok('first tick sends rather than arming a fan and going quiet',
+    sent.length === 1, `sent=${JSON.stringify(sent)} state=${r1.state}`);
+  let saw = { sent: 0, states: new Set() };
+  for (let i = 0; i < 20; i++) {
+    clock(1600);
+    const r = mover.tick();
+    saw.states.add(r.state);
+    saw.sent += sent.length;
+    sent.length = 0;
+  }
+  ok('no tick is silent across a full escape: every tick sends or reports',
+    saw.sent > 0 && !saw.states.has('idle'), `sends=${saw.sent} states=${[...saw.states]}`);
+  ok('and it reaches the escape fan when stepping cannot get through',
+    saw.states.has('raw-move'), [...saw.states].join(','));
 }
 
 console.log('\nHEIGHT DISCIPLINE (move.c step limit)');

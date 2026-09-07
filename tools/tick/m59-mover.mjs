@@ -465,7 +465,7 @@ export class Mover {
     // or holding, which made multi-minute stalls undiagnosable. One line.
     if (Date.now() - (this._hbAt ?? 0) > 60000) {
       this._hbAt = Date.now();
-      try { console.error(`[mover-hb] dest=${this.dest ? this.dest.col + ',' + this.dest.row : 'null'} path=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} fan=${this._fanIndex} stuck=${this.stuckTicks} sends=${this._sendCount ?? 0} ownPhys=${this.session?.policy?.ownPhysics === true} gateAge=${Date.now() - (this._lastReportAt ?? 0)} cli=${this.session?.client ? this.session.client.state : 'noclient'} pacer=${this.session?.pacer ? 'Y' : 'n'}`); } catch {}
+      try { console.error(`[mover-hb] dest=${this.dest ? this.dest.col + ',' + this.dest.row : 'null'} path=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} fan=${this._fanIndex} stuck=${this.stuckTicks} sends=${this._sendCount ?? 0} gateAge=${Date.now() - (this._lastReportAt ?? 0)} cli=${this.session?.client ? this.session.client.state : 'noclient'} pacer=${this.session?.pacer ? 'Y' : 'n'}`); } catch {}
     }
     const s = this.session;
     const c = s?.client;
@@ -536,17 +536,10 @@ export class Mover {
       this.sitting = false;
       const rec = s.pacer.submit('stand', () => c.stand(), 0);
       Promise.resolve(rec).catch(() => {});
-      // PHASE 0a: when ownPhysics is on, do NOT return — let the tick
-      // continue to the velocity declaration. The stand() command is
-      // fire-and-forget (the server processes it asynchronously). The
-      // velocity declaration fires on the same tick. The server might
-      // refuse the move (the character is still sitting), but the next
-      // tick the character is standing, and the velocity declaration
-      // fires again. This breaks the stand/sit loop caused by the
-      // vigor_low goal.
-      if (!this.session?.policy?.ownPhysics) {
-        return { state: 'standing' };
-      }
+      // Standing is its own tick. The velocity engine used to fall through and
+      // declare a stride on the same tick as the stand(); with one engine there
+      // is nothing left to fall through to.
+      return { state: 'standing' };
     }
 
     // PHASE 0c fix: BLINK PROGRESS + HOLD. When a blink is pending (cast in
@@ -785,16 +778,10 @@ export class Mover {
       return { state: 'arrived', position: { col: effMe.col, row: effMe.row } };
     }
 
-    // PHASE 0a: the velocity-declaration hold (computed here, applied after PLAN).
-    // The server moves the character toward the declared target at the declared
-    // speed. If we've already sent this target AND the character is making
-    // progress (moved since the last send), hold the SEND (not the PLAN) —
-    // the A* path is still planned (to get the route), but the moveTo is not
-    // re-sent. GATED: only active when policy.ownPhysics is on (opt-in).
-    // FIX: measure progress toward the CURRENT AIM (waypoint if path exists,
-    // target if not), not the target. The character is moving toward the
-    // waypoint (the A* path), not the target (beeline).
-    const ownPhysics = this.session?.policy?.ownPhysics === true;
+    // THE AIM: the current waypoint if a path exists, else the destination. The
+    // escape fan probes around it and the boundary check tests it, so both need
+    // it even though nothing declares it directly any more (see the engine note
+    // in docs/TICK-MOVEMENT-PLAN.md).
     const holdWp = this.path ? this.path[this.pathIdx] : null;
     let aimX = holdWp ? holdWp.x : this.destProto.x;
     let aimY = holdWp ? holdWp.y : this.destProto.y;
@@ -822,13 +809,6 @@ export class Mover {
         aimY = myProtoY + (ady / ad) * strideNow;
       }
     }
-
-    // Final-approach flag for the boundary checks below (0c slide,
-    // raycast-ahead): they skip only within 4 squares of an exit square,
-    // where the crossing logic takes over. En route they must run — a
-    // blocked direct path means a real wall even when headed to a door.
-    const standOnNear = !!this._destIsStandOn && this.destProto != null &&
-      Math.hypot(this.destProto.x - myProtoX, this.destProto.y - myProtoY) < KOD_FINENESS * 4;
 
     // WALL-AIM DIAGNOSTIC (visibility only, no behavior change): if the
     // destination square itself is fine-blocked and not a stand_on exit,
@@ -912,51 +892,6 @@ export class Mover {
       }
     } else if (this._progWin?.length) {
       this._progWin.length = 0;
-    }
-
-    // PHASE 0c: the slide-along-wall check. When ownPhysics is on and we're
-    // about to send (not holding), check the direct path to the AIM (waypoint
-    // if path exists, target if not). If the fine model says it's blocked by
-    // a wall segment, don't send the direct velocity (that walks into the
-    // wall) — fire the fan (slide along the wall) instead. The fan tries 8
-    // headings; the one that clears the wall is the slide.
-    // FIX: check the path to the AIM (not the target) — the velocity
-    // declaration sends the character toward the aim (waypoint), not the
-    // target (beeline).
-    // En route: run the slide check whenever the direct path is blocked.
-    if (ownPhysics && !standOnNear) {
-      const geo = this.session?.world?.geometry;
-      if (geo?.traceFineMoveClient) {
-        // Trace origin is the SIM (the live position; the server is
-        // client-authoritative, so the sim is where we are — the echo lags).
-        const clientX = protocolToClient(myProtoX), clientY = protocolToClient(myProtoY);
-        const aimClientX = protocolToClient(aimX), aimClientY = protocolToClient(aimY);
-        // RADIUS-FREE (parity with the stepmask): the full player radius (32)
-        // clips nearby walls and reads the direct path as blocked on open
-        // ground, firing the fan (which then "escapes" a pocket that doesn't
-        // exist). The server is client-authoritative (it slides us along walls),
-        // so the radius-free verdict is the right guide.
-        const trace = geo.traceFineMoveClient(clientX, clientY, aimClientX, aimClientY, { slide: false, playerRadius: 1 });
-        if (trace.blocked && !trace.arrived) {
-          // Direct path to the aim is blocked by a wall. Fire the fan
-          // (slide) instead of the direct velocity. NO EARLY RETURN: the fan
-          // branch below gates and sends; returning here starves it (and
-          // everything below) whenever this check re-fires, which is the
-          // observed wedge of silence with a live path and an open gate.
-          if (this._fanIndex == null && this._fanTarget == null) {
-            this._fanIndex = 0;
-            this._fanFrom = { x: clientX, y: clientY };
-          }
-        } else if (this._fanIndex != null) {
-          // Direct path is CLEAR and we were sliding: corner rounded.
-          // Release the fan so velocity resumes (persistent slide would
-          // otherwise keep sidestepping past the opening).
-          this._fanIndex = null;
-          this._fanTarget = null;
-          this._fanFrom = null;
-          this._fanSentAt = null;
-        }
-      }
     }
 
     // If the fan is active (we were in raw-move fallback), fire the next heading.
@@ -1152,181 +1087,6 @@ export class Mover {
           this._recordReport(pastX, pastY);
         }
         return { state: 'crossing', walkPast: true };
-      }
-    }
-
-    // PHASE 0a: RAYCAST-AHEAD CHECK. Before sending the velocity
-    // declaration, check if the character's NEXT position (one step ahead
-    // at the declared speed) would collide with a wall. This is the
-    // proper physics engine approach: check the trajectory, not just the
-    // direct line. At running speed, the character covers more ground per
-    // tick, so a wall that's clear on the direct line might not be clear
-    // on the trajectory. If the next position is invalid (wall, out of
-    // bounds), fire the fan (slide) instead of the velocity declaration.
-    // BOUNDARY EXCEPTION: if the destination is a stand_on (exit) square,
-    // skip the block — the character is at a boundary (a door/exit), and
-    // the next position is in the other room (out of bounds for the
-    // current room). The boundary-crossing check (below) fires the go()
-    // command. The raycast-ahead check should not block the velocity
-    // declaration when the character is at a boundary.
-    if (ownPhysics && !standOnNear) {
-      const geo = this.session?.world?.geometry;
-      // Compute the next position: one step ahead in the aim direction,
-      // from the SIM (the live position; the server is client-authoritative,
-      // so the sim is where we are — the echo lags).
-      const dx = aimX - myProtoX, dy = aimY - myProtoY;
-      const dist = Math.hypot(dx, dy) || 1;
-      const nextX = myProtoX + (dx / dist) * MOVEUNITS_PROTO;
-      const nextY = myProtoY + (dy / dist) * MOVEUNITS_PROTO;
-      // Check if the next position is valid (not a wall, not out of bounds).
-      // inBounds is 1-indexed (like the aimOOB check above): the floor() square
-      // needs +1, or edge squares read out-of-bounds and the fan engages forever.
-      const nextValid = geo?.fineWalkable?.(Math.floor(nextY / KOD_FINENESS), Math.floor(nextX / KOD_FINENESS)) !== false
-        && geo?.inBounds?.(Math.floor(nextY / KOD_FINENESS) + 1, Math.floor(nextX / KOD_FINENESS) + 1) !== false;
-      if (!nextValid) {
-        // Next position is invalid (wall or out of bounds). Fire the fan
-        // (slide) instead of the velocity declaration. NO EARLY RETURN (see
-        // the 0c note above): fall through to the fan branch so the gate can
-        // send this same tick.
-        if (this._fanIndex == null && this._fanTarget == null) {
-          const clientX = protocolToClient(srvX), clientY = protocolToClient(srvY);
-          this._fanIndex = 0;
-          this._fanFrom = { x: clientX, y: clientY };
-        }
-      }
-    }
-
-    // PHASE 0a: VELOCITY DECLARATION. Under ownPhysics, declare the (already
-    // stride-clamped) aim: one accepted position per second IS the speed
-    // (walk 160 = 2.5 sq/s, run 320 = 5 sq/s). The byte must match the
-    // stride: >18 with vigor < 10 gets rubber-banded as cheating (user.kod),
-    // and runNow already requires RUN_VIGOR_FLOOR.
-    if (ownPhysics) {
-      // ENTRY TRACE (throttled): why does the velocity declaration never send live?
-      if (Date.now() - (this._velDbgAt ?? 0) > 10000) {
-        this._velDbgAt = Date.now();
-        try { console.error(`[movedbg] t3 vel-tick path=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} dest=${this.dest ? this.dest.col + ',' + this.dest.row : 'null'} run=${runNow} stride=${strideNow} stuck=${this.stuckTicks} fan=${this._fanIndex}`); } catch {}
-      }
-      // Advance past reached waypoints HERE: the shared advance block below
-      // is unreachable past this return. Without this, pathIdx freezes on a
-      // reached waypoint, aim == position, the send gate closes forever —
-      // the observed one-step-then-stop.
-      let cornerAim = null;
-      if (this.path && this.pathIdx < this.path.length) {
-        // Stride lookahead, TRACE-GATED: consume every waypoint within one
-        // stride whose beeline from here is trace-clear, so each send covers
-        // the full official distance on straightaways. Stop at the first
-        // waypoint whose beeline is blocked (a corner): aiming past it would
-        // cut the corner through the wall and trip the 0c fan into minutes of
-        // sliding. The corner waypoint is consumed on arrival (its beeline is
-        // trivially clear once reached), so curves flow without fanning.
-        const geoLA = this.session?.world?.geometry;
-        const beelineClear = (wx, wy) => {
-          if (!geoLA || !geoLA.traceFineMoveClient) return true;
-          try {
-            const t = geoLA.traceFineMoveClient(
-              protocolToClient(myProtoX), protocolToClient(myProtoY),
-              protocolToClient(wx), protocolToClient(wy),
-              { slide: false, playerRadius: 32 });
-            return !(t && t.blocked && !t.arrived);
-          } catch { return true; }
-        };
-        let lastClear = -1;
-        while (this.pathIdx < this.path.length) {
-          const w = this.path[this.pathIdx];
-          if (Math.hypot(w.x - myProtoX, w.y - myProtoY) >= strideNow) break;
-          if (!beelineClear(w.x, w.y)) {
-            cornerAim = lastClear >= 0 ? this.path[lastClear] : null;
-            break;
-          }
-          lastClear = this.pathIdx;
-          this.pathIdx++;
-        }
-        // PASSED-WAYPOINT CONSUMPTION (the dog-chasing-its-own-nose fix). The
-        // aim is clamped to one stride AHEAD of the sim, so it never lands
-        // within the 1-square consumption radius of a far waypoint — the
-        // index never advanced (watched live: idx=44/55 for minutes while
-        // the character walked from (47,6) to (53,8)). The character is
-        // client-authoritative: if it is already at/past a waypoint's
-        // SQUARE, that waypoint is behind it and must be consumed. Only
-        // consume waypoints that are BEHIND the current aim direction (dot
-        // product >= 0 toward the next unconsumed target), never a waypoint
-        // the character still has to walk to.
-        if (this.pathIdx < this.path.length) {
-          const _nq = this.path[this.pathIdx];
-          const _adx0 = _nq.x - myProtoX, _ady0 = _nq.y - myProtoY;
-          const _ad0 = Math.hypot(_adx0, _ady0) || 1;
-          // CONSUME THE CURRENT WAYPOINT IF AT-IT: the path often starts at
-          // the character's current square (idx=0 is where we are). The old
-          // loop only consumed pathIdx-1, so idx=0 was never consumed and the
-          // aim was the character's own square (watched live: aim=(21,19)
-          // me=(21,19) for 2 minutes). If the current waypoint is within 1
-          // square, we're on it — advance to the next.
-          if (Math.hypot(_nq.x - myProtoX, _nq.y - myProtoY) < KOD_FINENESS) {
-            this.pathIdx++;
-          }
-          let _guard = 0;
-          while (this.pathIdx > 0 && _guard++ < 64) {
-            const _p = this.path[this.pathIdx - 1];
-            const _dxp = _p.x - myProtoX, _dyp = _p.y - myProtoY;
-            // Already at/past its square: consumed.
-            const _atIt = Math.hypot(_dxp, _dyp) < KOD_FINENESS;
-            // Or the step toward the next waypoint moved past it: the
-            // projection of (prev - here) onto the walk direction is <= 0
-            // (it is behind), or >= the full leg (we've gone beyond it).
-            const _proj = (_dxp * _adx0 + _dyp * _ady0) / _ad0;
-            const _behind = _proj <= 0;
-            if (!(_atIt || _behind)) break;
-            this.pathIdx--;
-          }
-        }
-      }
-      if (!this.path || this.pathIdx >= this.path.length) {
-        // Past all waypoints (or no path): fall through to the
-        // destination-direct logic below.
-      } else {
-        // At a corner the lookahead stops early: aim at the furthest CLEAR
-        // waypoint (cornerAim), not the blocked one the index points at.
-        const w = cornerAim ?? this.path[this.pathIdx];
-        aimX = w.x; aimY = w.y;
-        // Re-clamp: the new aim may be farther than one stride. Clamped from
-        // the SIM (the live position; the server is client-authoritative, so
-        // the sim is where we are — the echo lags and would pull backward).
-        const adx = aimX - myProtoX, ady = aimY - myProtoY;
-        const ad = Math.hypot(adx, ady);
-        if (ad > strideNow) {
-          aimX = myProtoX + (adx / ad) * strideNow;
-          aimY = myProtoY + (ady / ad) * strideNow;
-        }
-        const speed = runNow ? 36 : 18;
-      // NEVER ENTER A VOID: from a grounded start, refuse to declare an aim
-      // square with no BSP floor (the deliberate stand_on exit itself is
-      // exempt — boundary handling owns that). A dumb server would accept the
-      // packet and strand the character outside the environment.
-      {
-        const aimSqC = Math.floor(aimX / KOD_FINENESS), aimSqR = Math.floor(aimY / KOD_FINENESS);
-        const destSqC = this.destProto ? Math.floor(this.destProto.x / KOD_FINENESS) : null;
-        const destSqR = this.destProto ? Math.floor(this.destProto.y / KOD_FINENESS) : null;
-        const aimIsExit = this._destIsStandOn === true && aimSqC === destSqC && aimSqR === destSqR;
-        if (!startIsVoid && !aimIsExit && transitBanned(this.session?.world?.geometry, aimSqR, aimSqC) === true) {
-          this.stuckTicks++;
-          return { state: 'stuck', why: 'aim has no floor' };
-        }
-      }
-      // Cheat-clean send: gated to 1/s. Ungated this fires every tick (10/s)
-      // and flags the account (speedhack counter threshold 2).
-      const vServerPX = curCol * KOD_FINENESS + HALF, vServerPY = curRow * KOD_FINENESS + HALF;
-      const gateOk = this._movementGateOk(aimX, aimY, myProtoX, myProtoY, vServerPX, vServerPY);
-      // TEMP BISECT (t4 freeze): bypass gate once to test if submits flow.
-      const bisect = process.env.M59_BISECT_SEND === '1';
-      if (bisect || gateOk) {
-        this._submitMove(s, c, () => c.moveTo(Math.round(aimX), Math.round(aimY), speed, c.room?.id ?? 0));
-        if (process.env.M59_MOVE_DEBUG !== '0')
-          console.error(`[movedbg] t3 gateOK vel aim=(${Math.round(aimX)},${Math.round(aimY)}) sq=(${Math.floor(aimX / KOD_FINENESS)},${Math.floor(aimY / KOD_FINENESS)}) me=(${me.col},${me.row}) idx=${this.pathIdx}/${this.path ? this.path.length : 'null'} stuck=${this.stuckTicks} srv=(${curCol},${curRow}) speed=${speed} moveTo sent`);
-        this._recordSend(aimX, aimY, myProtoX, myProtoY);
-        this._recordReport(aimX, aimY);
-      }
-        return { state: 'moving', velocity: true, speed };
       }
     }
 
