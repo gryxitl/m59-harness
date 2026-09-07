@@ -33,6 +33,22 @@
 import { protocolToClient, clientToProtocol, KOD_FINENESS, PLAYER_RADIUS } from '../m59-roo.mjs';
 import { isGrounded, isEmbedded, nearestGrounded, segHeightOk, transitBanned } from './m59-ground.mjs';
 import '../m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
+
+// WHO MAY OWN THE DESTINATION. Setting a destination throws away the previous
+// one's path, stuckTicks and escape fan, so simultaneous callers destroy each
+// other's planning. Rank by how much planning sits behind the aim: the router
+// walks a multi-leg route and a stolen leg loses the whole route; recovery is a
+// single escape; combat and patrol are opportunistic and can wait a tick.
+// An unrecognised caller gets OWNER_RANK_DEFAULT, which is below every named
+// owner — a caller that has not declared itself cannot take a destination from
+// one that has.
+export const OWNER_RANK = { router: 100, recovery: 60, buy: 40, combat: 30, patrol: 20 };
+export const OWNER_RANK_DEFAULT = 10;
+// An owner that has not touched the destination in this long has abandoned it,
+// so the guard must not freeze movement forever. Well above the ~1s send law and
+// the ~1.2s echo cadence, so a live owner never looks stale mid-step.
+export const OWNER_STALE_MS = 10000;
+
 // CANDIDATE ORDERING (pure, unit tested). Loop avoidance (unvisited
 // squares first) engages ONLY while genuinely stuck (stuckTicks >= 3,
 // the fan threshold — the echo lags ~1s, so 1-2 static ticks are healthy
@@ -206,6 +222,33 @@ export class Mover {
       console.error(`[mover] to() refused non-finite dest col=${col} row=${row} (keeping ${this.dest ? this.dest.col + ',' + this.dest.row : 'none'})`);
       return false;
     }
+    // ONE OWNER OF THE DESTINATION. Every caller that sets a destination also
+    // resets path/stuckTicks/fan below, so an unguarded re-aim throws away the
+    // planning of whoever set it last. keeper-t1.log counted 13,619 destination
+    // changes against 244,021 sends: the mover was re-aimed ~1.4x per step, A*
+    // never finished a search, stuckTicks never accumulated, and the escape fan
+    // was cleared before it could fire. The fix is rank order: a caller may take
+    // the destination only from a strictly lower-ranked one, and only from a
+    // stamp that has gone stale. Refusal is visible (returns false, logs a
+    // reason) and mutates NOTHING — path, stuckTicks and fan all survive.
+    if (this.dest && (this.dest.col !== col || this.dest.row !== row)) {
+      const rank = OWNER_RANK[by] ?? OWNER_RANK_DEFAULT;
+      const held = this._owner ?? null;
+      const heldRank = OWNER_RANK[held] ?? OWNER_RANK_DEFAULT;
+      const stale = Date.now() - (this._ownerAt ?? 0) > OWNER_STALE_MS;
+      if (!stale && rank <= heldRank) {
+        // Same-rank or lower, and the owner is live: defer. The owner is still
+        // responsible for this destination; if it has genuinely finished, it
+        // clears it, or it goes stale in OWNER_STALE_MS.
+        if (Date.now() - (this._ownerDbgAt ?? 0) > 5000) {
+          this._ownerDbgAt = Date.now();
+          try {
+            console.error(`[movedbg] to() DEFERRED: '${by ?? '?'}' rank=${rank} wants ${col},${row} but '${held ?? '?'}' rank=${heldRank} holds ${this.dest.col},${this.dest.row} (owner age ${Math.round((Date.now() - (this._ownerAt ?? 0)) / 1000)}s)`);
+          } catch {}
+        }
+        return false;
+      }
+    }
     // A NEW destination (different from the current one) resets path/fan state.
     // The router calls to() every tick with the same aim while walking, so we
     // must NOT reset on a no-op to() — that would defeat planning and send a
@@ -234,6 +277,10 @@ export class Mover {
       edgeTarget = { x: edgeTarget.col * KOD_FINENESS + HALF, y: edgeTarget.row * KOD_FINENESS + HALF };
     }
     this._edgeTarget = edgeTarget;
+    // Claim (or keep) ownership of the destination and stamp the time, so a
+    // lower-ranked caller can be deferred against a live owner.
+    this._owner = by;
+    this._ownerAt = Date.now();
     // Centre of the destination square in protocol units.
     this.destProto = {
       x: col * KOD_FINENESS + HALF,

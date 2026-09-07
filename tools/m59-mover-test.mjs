@@ -93,6 +93,15 @@ function clearGeometry() {
   };
 }
 
+// The mover's waits are wall-clock (the 1.5s fan echo-patience, the 1s send gate),
+// and a rig that ticks 200 times in a millisecond can never get past an echo wait —
+// it reads 'waiting' on every tick and reports a loop that does not exist live. So the
+// rig drives a virtual clock: `clock(ms)` moves real time forward for the mover.
+let CLOCK_MS = 0;
+const REAL_NOW = Date.now;
+Date.now = () => CLOCK_MS + REAL_NOW.call(Date);
+const clock = (ms) => { CLOCK_MS += ms; };
+
 function rig({ col = 2, row = 2, destCol = 8, destRow = 2, geo } = {}) {
   const sent = [];
   const session = {
@@ -110,11 +119,19 @@ function rig({ col = 2, row = 2, destCol = 8, destRow = 2, geo } = {}) {
     walkTo: (col, row) => { sent.push([col * 64 + 32, row * 64 + 32]); return Promise.resolve({ arrived: true }); },
     world: { geometry: geo ?? wallGeometry() },
   };
+  // Production always hands the mover a Pose (keeper-process wires it, tick-driver
+  // feeds updateServer). A rig without one silently exercises the legacy _simX
+  // fallback instead of the position truth the fleet actually uses.
+  session._pose = new Pose();
+  session._pose.updateServer({ col, row, x: col * 64 + 32, y: row * 64 + 32 });
   const mover = new Mover(session, { reportIntervalMs: 0, moveCapMs: 0 });  // the rig ticks in microseconds; the 1s client gate is a LIVE constraint
-  return { mover, sent, session };
+  return { mover, sent, session, clock };
 }
 
-// Advance the fake position to match the last sent move.
+// Advance the fake position to match the last sent move, and feed the same position
+// to the Pose as the server echo. The mover reads its position from the Pose; a rig
+// that only moves client.self leaves the Pose frozen and the mover plans from a
+// square it left three sends ago.
 function advance(session, sent) {
   for (const s of sent) {
     if (Array.isArray(s) && s.length === 2) {
@@ -164,6 +181,7 @@ console.log('\nthe wall segment: route goes around it');
   const path = [];
 
   for (let i = 0; i < 200; i++) {
+    clock(1600);   // one live tick per second: past the fan's 1.5s echo-patience
     const r = mover.tick({ col: session.client.self.col, row: session.client.self.row, x: session.client.self.x, y: session.client.self.y });
     states.push(r.state);
     if (r.state === 'arrived') break;
@@ -204,13 +222,19 @@ console.log('\nno wall: straight line works');
   ok('it reports moving or planning', r.state === 'moving' || r.state === 'planning', r.state);
 }
 
-console.log('\nsitting trap: stand before move');
+console.log('\nsitting trap: stand, then move on the same tick');
 {
+  // The stand() command is fire-and-forget and the velocity declaration fires on
+  // the same tick, so there is no separate 'standing' tick any more. That is the
+  // point: the old two-tick stand/sit handshake is what let the vigor_low goal
+  // trap the mover in a stand/move loop.
   const { mover, sent, session } = rig({ geo: clearGeometry() });
   mover.to(4, 2);
   mover.markSitting();
   const r = mover.tick();
-  ok('first tick stands', r.state === 'standing');
+  ok('first tick stands and moves (no separate standing tick)',
+    r.state === 'moving' || r.state === 'planning', r.state);
+  ok('a stand was issued', sent.some(x => x && x.stand === true), JSON.stringify(sent).slice(0, 60));
   const r2 = mover.tick();
   ok('second tick moves or plans', r2.state === 'moving' || r2.state === 'planning', r2.state);
 }
@@ -876,6 +900,72 @@ console.log('\nrest hold: a sent rest stills the mover for trance');
   session._restHold = false;
   const r2 = mover.tick();
   ok('movement resumes after', r2.state !== 'resting', r2.state);
+}
+
+console.log('\nOWNERSHIP: a lower-rank caller cannot steal the destination');
+{
+  // The live failure: 13,619 destination changes vs 244,021 sends on keeper-t1.
+  // Each new destination reset path/pathIdx/stuckTicks/fan, so A* never finished
+  // and the escape fan never reached its threshold. Here: the router claims the
+  // destination, then combat and patrol try to take it every tick.
+  const { mover, sent, session } = rig({ geo: clearGeometry() });
+  mover.to(8, 2, { by: 'router' });
+  const r1 = mover.tick();
+  ok('router owns it and moves', r1.state === 'moving' || r1.state === 'planning', r1.state);
+  // Build real plan state to be destroyed: a path and a stuck count.
+  const pathBefore = mover.path ? mover.path.length : null;
+  mover.stuckTicks = 7;
+  const fanBefore = mover._fanIndex;
+  sent.length = 0;
+
+  const stolen = mover.to(4, 2, { by: 'combat' });
+  ok('combat to() is REFUSED (returns false)', stolen === false, String(stolen));
+  ok('destination unchanged by the refusal', mover.dest.col === 8 && mover.dest.row === 2,
+    `${mover.dest.col},${mover.dest.row}`);
+  ok('stuckTicks NOT reset by the refusal', mover.stuckTicks === 7, String(mover.stuckTicks));
+  ok('fan state NOT reset by the refusal', mover._fanIndex === fanBefore, String(mover._fanIndex));
+  if (pathBefore != null) ok('path NOT dropped by the refusal',
+    mover.path && mover.path.length === pathBefore, String(mover.path && mover.path.length));
+
+  const stolen2 = mover.to(3, 3, { by: 'patrol' });
+  ok('patrol to() is REFUSED too', stolen2 === false, String(stolen2));
+  ok('still the router destination', mover.dest.col === 8 && mover.dest.row === 2);
+
+  // A same-owner re-assert (the router calling to() every tick) changes nothing
+  // and is not treated as a steal of itself.
+  const reassert = mover.to(8, 2, { by: 'router' });
+  ok('router re-assert is a no-op success', reassert !== false, String(reassert));
+  ok('stuckTicks survives the owner re-assert', mover.stuckTicks === 7, String(mover.stuckTicks));
+}
+
+console.log('\nOWNERSHIP: a higher-rank caller CAN take the destination');
+{
+  const { mover } = rig({ geo: clearGeometry() });
+  mover.to(4, 2, { by: 'patrol' });
+  mover.stuckTicks = 2;
+  const taken = mover.to(8, 2, { by: 'router' });
+  ok('router takes it from patrol', taken !== false && mover.dest.col === 8, `${taken} ${mover.dest.col}`);
+  ok('a genuine steal resets stuckTicks', mover.stuckTicks === 0, String(mover.stuckTicks));
+}
+
+console.log('\nOWNERSHIP: recovery outranks combat and patrol, router outranks recovery');
+{
+  const { mover } = rig({ geo: clearGeometry() });
+  mover.to(4, 2, { by: 'combat' });
+  ok('recovery takes from combat', mover.to(5, 5, { by: 'recovery' }) !== false);
+  ok('patrol cannot take from recovery', mover.to(6, 6, { by: 'patrol' }) === false);
+  ok('router takes from recovery', mover.to(7, 7, { by: 'router' }) !== false);
+  ok('unknown caller cannot take from router', mover.to(9, 9, { by: undefined }) === false);
+}
+
+console.log('\nOWNERSHIP: an abandoned owner does not freeze movement');
+{
+  const { mover } = rig({ geo: clearGeometry() });
+  mover.to(8, 2, { by: 'router' });
+  // Simulate the owner going away: the stamp ages past OWNER_STALE_MS.
+  mover._ownerAt = Date.now() - 11000;
+  const took = mover.to(4, 2, { by: 'combat' });
+  ok('a stale owner loses the destination', took !== false && mover.dest.col === 4, `${took} ${mover.dest.col}`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
