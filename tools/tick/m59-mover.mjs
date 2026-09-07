@@ -1184,6 +1184,35 @@ export class Mover {
           lastClear = this.pathIdx;
           this.pathIdx++;
         }
+        // PASSED-WAYPOINT CONSUMPTION (the dog-chasing-its-own-nose fix). The
+        // aim is clamped to one stride AHEAD of the sim, so it never lands
+        // within the 1-square consumption radius of a far waypoint — the
+        // index never advanced (watched live: idx=44/55 for minutes while
+        // the character walked from (47,6) to (53,8)). The character is
+        // client-authoritative: if it is already at/past a waypoint's
+        // SQUARE, that waypoint is behind it and must be consumed. Only
+        // consume waypoints that are BEHIND the current aim direction (dot
+        // product >= 0 toward the next unconsumed target), never a waypoint
+        // the character still has to walk to.
+        if (this.pathIdx < this.path.length) {
+          const _nq = this.path[this.pathIdx];
+          const _adx0 = _nq.x - myProtoX, _ady0 = _nq.y - myProtoY;
+          const _ad0 = Math.hypot(_adx0, _ady0) || 1;
+          let _guard = 0;
+          while (this.pathIdx > 0 && _guard++ < 64) {
+            const _p = this.path[this.pathIdx - 1];
+            const _dxp = _p.x - myProtoX, _dyp = _p.y - myProtoY;
+            // Already at/past its square: consumed.
+            const _atIt = Math.hypot(_dxp, _dyp) < KOD_FINENESS;
+            // Or the step toward the next waypoint moved past it: the
+            // projection of (prev - here) onto the walk direction is <= 0
+            // (it is behind), or >= the full leg (we've gone beyond it).
+            const _proj = (_dxp * _adx0 + _dyp * _ady0) / _ad0;
+            const _behind = _proj <= 0;
+            if (!(_atIt || _behind)) break;
+            this.pathIdx--;
+          }
+        }
       }
       if (!this.path || this.pathIdx >= this.path.length) {
         // Past all waypoints (or no path): fall through to the
