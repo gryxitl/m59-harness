@@ -363,7 +363,15 @@ export const INTENTS = {
   // This is the fallback when the only weapon in the pack is broken (the shattered-
   // mace case): the character buys a replacement instead of retrying the broken one
   // forever.
-  buy: (f, act, ctx) => {
+  // THE PARAMETER IS `frame`, NOT `f`. Every intent in INTENTS takes `frame` and
+  // intend() calls them as `fn(frame, act, ctx)`; `buy` alone named its first
+  // parameter `f` while its body called `routeIntent(s._router)(frame, act)` in
+  // three places. `frame` is not in scope there, so every tick that reached a
+  // merchant threw `ReferenceError: frame is not defined` out of decide() —
+  // which the tick loop counted as a tick error and skipped the rest of the
+  // tick, including movement. On t4 that was 2,361 of 2,461 ticks: the
+  // character was not lost, it was crashing on its way to the shop.
+  buy: (frame, act, ctx) => {
     const c = ctx.client;
     const s = ctx.session;
     // In-flight guard: the atomic is async and multi-phase. If a phase is still
