@@ -24,7 +24,8 @@
 import { readFileSync } from 'node:fs';
 
 const file = process.argv[2];
-if (!file) { console.error('usage: m59-rate-live.mjs <keeper log>'); process.exit(1); }
+const argSince = (process.argv.find(a => a.startsWith('--since=')) ?? '').split('=')[1];
+if (!file) { console.error('usage: m59-rate-live.mjs <keeper log> [--since=<ISO time>]'); process.exit(1); }
 let txt;
 try { txt = readFileSync(file, 'utf8'); }
 catch (e) { console.error(`cannot read ${file}: ${e.message}`); process.exit(1); }
@@ -38,6 +39,29 @@ if (starts.length > 1) {
   txt = txt.slice(starts[starts.length - 1].index);
   console.log(`(window: current session only — ${starts.length} in the file, ` +
               `${((before - txt.length) / 1e6).toFixed(1)} MB of earlier code excluded)`);
+}
+
+// AN OPTIONAL TIME WINDOW, because a cumulative reading is not a rate. The first version of
+// this tool reported 0.81 squares/s, and a reading 90 s later reported 0.46 on the same code
+// in the same session — because the log is append-mode and the second window CONTAINS the
+// first. Ground divided by elapsed-since-boot averages the whole session, so it drifts with
+// history and cannot answer 'is it faster now'. --since takes an ISO timestamp and measures
+// only the lines after it, which is what a before/after comparison needs and what an auditor
+// re-running a claim needs.
+let windowFrom = argSince ? Date.parse(argSince) : NaN;
+if (argSince && !Number.isFinite(windowFrom)) {
+  console.error(`--since: '${argSince}' does not parse as an ISO timestamp. Refusing to guess.`);
+  process.exit(1);
+}
+if (Number.isFinite(windowFrom)) {
+  const before = txt.length;
+  const keep = txt.split('\n').filter(l => {
+    const m = l.match(/^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z)/);
+    return !m || Date.parse(m[1]) >= windowFrom;
+  });
+  txt = keep.join('\n');
+  console.log(`(window: lines at or after ${new Date(windowFrom).toISOString()} — ` +
+              `${((before - txt.length) / 1e6).toFixed(1)} MB of earlier log excluded)`);
 }
 
 const KOD = 64;
