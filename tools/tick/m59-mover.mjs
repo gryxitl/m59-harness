@@ -273,6 +273,24 @@ export class Mover {
     this._lastSentKey = `${Math.round(keyX)},${Math.round(keyY)}`;
     this._lastSentPos = { x: posX, y: posY };
     this._sendCount = (this._sendCount ?? 0) + 1;
+    // ONE LINE PER PACKET, EMITTED WHERE THE COUNT LIVES.
+    //
+    // The fleet's movement rate was never measurable, and the reason is embarrassingly mundane:
+    // this mover has nine `moveTo` call sites and exactly one of them logged anything. Any count
+    // taken from the log was therefore a count of one branch. Worse, the historical baseline
+    // everyone has been quoting — '244,021 sends' in keeper-t1.log — was a count of the string
+    // `moveTo sent`, which is that one branch's log text. It is not a number of packets, it is a
+    // number of lines matching a sentence, and it changed when the sentence changed without any
+    // change in behaviour. A metric that moves when a comment moves is not a metric.
+    //
+    // So the line is emitted here, at the single place every send is already required to pass
+    // through on pain of the teleport detector misfiring. If a future send site forgets to call
+    // this, the counter is wrong in a way that breaks something else, which is the only kind of
+    // guarantee this file has ever had. `sent=` is the packet count; `aim=` is the position the
+    // packet declared, which is the quantity the locomotion rate is actually made of.
+    try {
+      console.error(`[move-sent] n=${this._sendCount} aim=${Math.round(keyX)},${Math.round(keyY)} from=${Math.round(posX)},${Math.round(posY)}`);
+    } catch {}
   }
 
   /**
