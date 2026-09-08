@@ -228,5 +228,62 @@ console.log('\nPose.confirmed — the one commitment read');
     Pose.confirmed(undefined).source === 'none' && Pose.confirmed(null).source === 'none');
 }
 
+
+// 13. DEAD RECKONING AND ECHO ADOPTION, PINNED WITH THE LIVE NUMBERS.
+//
+// WHAT THIS BLOCK IS AND IS NOT. It was written to pin a defect I believed I had found — an
+// oscillation where the server accepts a declaration and the sim is then dragged back to the
+// pre-declaration position, so the mover re-declares the same point forever. **That defect does
+// not exist, and the change this block was written for was reverted.** The falsification is
+// the evidence: with the change removed, every assertion here still passes. A test that cannot
+// tell the fix from the bug is not a test of the fix, and the honest response is to say so in
+// the file rather than leave a comment that attributes these assertions to a phantom.
+//
+// What the live log actually shows is a PIPELINE, not a loop:
+//
+//   vel-tick declare=(736,2464) ground=281 stride=320  srvXY=(1102,2040) prevDecl=(822,2196)
+//   move-sent n=163 at=736,2464 aim=736,2464 from=822,2196
+//   next tick: srvXY=(822,2196)
+//
+// `ground=281` — the integration travelled. The server then moved toward the PREVIOUS
+// declaration. The server is one declaration behind us and catches up; the sim is seeded from
+// the echo, so `from` is always a stride behind the aim. That is echo lag of about two strides,
+// and it is why 'ground per packet' computed from consecutive echoes understates what the
+// mover is doing. Reading a lag as a freeze is how I spent an evening on a bug that was a
+// pipeline, and the numbers that looked like the 790-send freeze were that misreading.
+//
+// The assertions themselves are worth keeping on their own merits: dead reckoning goes to the
+// declaration, an echo we have already been accepted for does not move the track, and an echo
+// to a position we never declared IS adopted (a legacy walk, a slide, a knockback).
+{
+  // THE LIVE NUMBERS, NOT INVENTED ONES. keeper-t3.log: the mover's sim was (822,2196), it
+  // declared (736,2464) — 282 units, 4.4 squares — and the server's echo became (736,2464). The
+  // gap is UNDER the divergence guard's 384 threshold, so the guard does not fire and cannot be
+  // what saves the track. Any test that picks a gap large enough for the guard to notice is
+  // testing the guard, and passes with the adopt bug in place. That is why the first draft of
+  // this block did not catch the defect it was written for.
+  const p = new Pose();
+  p.updateServer({ col: 12, row: 34, x: 822, y: 2196 });
+  p.advance(822, 2196);                       // seed the track from the echo, as a real send does
+  p.advance(736, 2464);                       // then declare the stride
+  ok(p.sim.x === 736 && p.sim.y === 2464, 'dead reckoning goes to the declaration');
+  const gap = Math.hypot(736 - 822, 2464 - 2196);
+  ok(gap < 384, `the live gap is inside the divergence guard (${gap.toFixed(0)} < 384), so the guard cannot be what protects the track`);
+  // The server accepts it. This is the echo for our send, and it arrives later than the send.
+  const simBefore = { ...p.sim };
+  p.updateServer({ col: 11, row: 38, x: 736, y: 2464 });
+  ok(p.sim.x === simBefore.x && p.sim.y === simBefore.y,
+     'an echo that agrees with our declaration does not move the track');
+  // And the opposite case: an echo to somewhere we never declared IS the server moving us
+  // (a legacy walk, a slide, a knockback). That must be adopted, or the track is a fiction.
+  p.updateServer({ col: 1, row: 1, x: 96, y: 96 });
+  ok(p.sim.x === 96 && p.sim.y === 96,
+     'an echo to a position we never declared IS adopted (the server moved us)');
+  // NOTE FOR WHOEVER READS THIS NEXT: reverting the adopt condition in pose.mjs to the plain
+  // `movedSquare` leaves this block PASSING. That was the measurement that killed the change,
+  // and it is recorded here so the block is not mistaken for cover of a condition that is not
+  // there. If a real echo-adopt defect is ever found, this is where its assertion goes.
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

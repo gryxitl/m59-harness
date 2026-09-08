@@ -946,3 +946,39 @@ walkability: when the planner fails again it should say why in terms that can be
 `stride=320` and delivers 0.50 squares per packet, so the stride is being computed and then not
 sent. The step branch and the escape fan still own most ticks. That is the next thing, and it is
 measurable in the same units now.
+## A lag read as a freeze: the misreading that cost the most time
+
+Near the end of this work I concluded the fleet was still frozen, from four consecutive log lines:
+
+```
+vel-tick  declare=(736,2464) ground=281 stride=320  srvXY=(1102,2040) prevDecl=(822,2196)
+move-sent n=163 at=736,2464 aim=736,2464 from=822,2196 site=stride-declaration
+move-sent n=164 at=736,2464 aim=736,2464 from=822,2196 site=stride-declaration
+next tick: srvXY=(822,2196)
+```
+
+`at=` equalled `aim=` and the character's own position was 282 units away, which is *shaped* like
+the 790-send freeze that opened the whole piece of work. It is not that. **`ground=281` says the
+integration travelled 281 units**, and the server then moved toward the *previous* declaration:
+the server is one declaration behind us and catches up, and the sim is seeded from the echo, so
+`from` is always a stride behind the aim. Echo lag of roughly two strides, read as a loop.
+
+I wrote a fix for the phantom — an extra condition on `Pose.updateServer`'s echo adoption — and
+the falsification killed it: with the condition removed, the test written for it still passed.
+The change was reverted. What was kept is the assertions, on their own merits (dead reckoning
+goes to the declaration; an echo to a position we never declared *is* adopted), with the comment
+stripped of the claim that they cover the reverted condition.
+
+**The consequence for the rate figure, which matters more than the misreading.** If the server
+lags by two strides, then ground computed by differencing consecutive server echoes
+understates what the mover achieves, because it measures the pipeline's output one or two
+packets late. The committed `m59-rate-live.mjs` reports **0.39 squares/s, 16% of the client's
+walk** that way, and that number is a lower bound rather than a rate. The honest statement is
+that the fleet is at roughly *0.4 squares per second, measured conservatively*, that it was at
+0.09 before the branch-ordering fix, and that neither figure is tight enough to support a claim
+about the client's rate.
+
+**What would make it tight.** The log needs the server position at every packet rather than
+whenever a `vel-tick` line happens to be emitted — the echo is available on every tick and is
+only logged on some of them. That is a one-field change at the single send site, and it is the
+next thing, ahead of any further engine work."
