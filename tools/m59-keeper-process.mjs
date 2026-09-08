@@ -28,6 +28,27 @@ import { protocolToClient, clientToProtocol, buildAllRoomGeometry } from './m59-
 import { loadMap, buildReverseEdges } from './m59-map.mjs';
 import { attachStepMasks } from './m59-routes.mjs';
 import * as watchdog from './m59-watchdog.mjs';
+
+// EVERY LOG LINE GETS A WALL-CLOCK PREFIX, and this exists because it was not true.
+//
+// The keeper writes stderr straight to `substrate/keeper-<agent>.log` (broker.mjs:766, an
+// append-mode fd handed to the child's stdio) with no timestamp layer. So the file that every
+// rate argument in this repository has been conducted from could not support a rate: without
+// timestamps, squares per SECOND is not computable from it by anyone, and it was quoted anyway
+// — I read 0.09 and 0.35 squares/s off this log tonight, and neither was derivable from what
+// was actually in it. The window came from wall-clock memory of when the restart happened,
+// which is not a measurement and cannot be reproduced by a reader, or by an auditor, or by me
+// tomorrow.
+//
+// Prefixing at the stream rather than at each call site is deliberate: there are hundreds of
+// console.error calls in the tick files, and a convention is not enforced by a comment.
+{
+  const _oe = console.error.bind(console);
+  const _ol = console.log.bind(console);
+  const stamp = () => new Date().toISOString();
+  console.error = (...a) => _oe(stamp(), ...a);
+  console.log = (...a) => _ol(stamp(), ...a);
+}
 import './m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
 
 // ---------------------------------------------------------------- args
