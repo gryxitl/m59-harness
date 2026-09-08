@@ -401,3 +401,6 @@ _verify2.mjs
 # one per machine, and meaningless in anybody else's checkout.
 /substrate/run-*.lock
 /substrate/keeper-trace.jsonl
+
+# Session handoff notes for the next agent. Local scratch, re-verified on read.
+/docs/SESSION-HANDOFF.md
