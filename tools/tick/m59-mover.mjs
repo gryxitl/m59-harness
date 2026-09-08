@@ -655,7 +655,7 @@ export class Mover {
     // or holding, which made multi-minute stalls undiagnosable. One line.
     if (Date.now() - (this._hbAt ?? 0) > 60000) {
       this._hbAt = Date.now();
-      try { console.error(`[mover-hb] dest=${this.dest ? this.dest.col + ',' + this.dest.row : 'null'} path=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} fan=${this._fanIndex} stuck=${this.stuckTicks} sends=${this._sendCount ?? 0} drops=${this.session?.client?._droppedUserMoves ?? 0} gateAge=${Date.now() - (this._lastReportAt ?? 0)}${(() => { const g = this.session?._pose?.groundRate?.(); return g && g.seconds ? ` ground=${g.squares.toFixed(1)}sq/${g.seconds.toFixed(0)}s=${g.rate.toFixed(2)}sq/s trans=${g.transitions}` : ''; })()} cli=${this.session?.client ? this.session.client.state : 'noclient'} pacer=${this.session?.pacer ? 'Y' : 'n'}`); } catch {}
+      try { console.error(`[mover-hb] dest=${this.dest ? this.dest.col + ',' + this.dest.row : 'null'} path=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} fan=${this._fanIndex} stuck=${this.stuckTicks} sends=${this._sendCount ?? 0} drops=${this.session?.client?._droppedUserMoves ?? 0} gateAge=${Date.now() - (this._lastReportAt ?? 0)}${(() => { const c = this.session?._pose?.corroboration?.(); return c ? ` unconfirmed=${c.outstanding}` : ''; })()}${(() => { const g = this.session?._pose?.groundRate?.(); return g && g.seconds ? ` ground=${g.squares.toFixed(1)}sq/${g.seconds.toFixed(0)}s=${g.rate.toFixed(2)}sq/s trans=${g.transitions}` : ''; })()} cli=${this.session?.client ? this.session.client.state : 'noclient'} pacer=${this.session?.pacer ? 'Y' : 'n'}`); } catch {}
     }
     const s = this.session;
     const c = s?.client;

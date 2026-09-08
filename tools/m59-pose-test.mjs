@@ -183,7 +183,7 @@ function ok(cond, msg, detail) {
   //    and the suite green.
   //
   // The three assertions this replaces demanded (23,19) and divergence 64 — the crawl — and were
-  // written ok('message', condition) into a suite whose signature is ok(condition, message). The
+  // written ok(condition, 'message') into a suite whose signature is ok(condition, message). The
   // condition parameter received a message string, was always truthy, and they were counted as
   // passes for a day, including across the edit that introduced the crawl.
   // What is decidable here is not 'which value was seeded' — after a send the track is at the
@@ -390,6 +390,88 @@ console.log('\nPose.confirmed — the one commitment read');
   Date.now = real;
 }
 
+
+
+// ---------------------------------------------------------------- corroboration
+// The divergence guard cannot catch a track fabricated from a declaration: the largest possible
+// bad seed is one stride (320) and its threshold is 384. What distinguishes a truthful track from
+// an invented one is history rather than position — a truthful track gets confirmed.
+{
+  const p = new Pose();
+  p.updateServer({ col: 10, row: 10, x: 672, y: 672 });
+  ok(p.corroboration().outstanding === 0, 'a track with nothing outstanding reads zero',
+     JSON.stringify(p.corroboration()));
+
+  p.noteDeclared(736, 672);
+  ok(p.corroboration().outstanding === 1, 'a send is outstanding until the echo arrives',
+     JSON.stringify(p.corroboration()));
+  p.updateServer({ col: 11, row: 10, x: 736, y: 672 });
+  ok(p.corroboration().outstanding === 0, 'an echo at the declared position clears it',
+     JSON.stringify(p.corroboration()));
+
+  p.noteDeclared(2000, 672);
+  p.updateServer({ col: 10, row: 10, x: 672, y: 672 });
+  const after1 = p.corroboration().outstanding;
+  p.noteDeclared(2064, 672);
+  p.updateServer({ col: 10, row: 10, x: 672, y: 672 });
+  const after2 = p.corroboration().outstanding;
+  ok(after1 === 2, 'an echo nowhere near the declaration does not clear it', `${after1}`);
+  ok(after2 > after1, 'repeated denials accumulate rather than resetting', `${after1} -> ${after2}`);
+  ok(p.corroboration().oldest_ms >= 0, 'the oldest outstanding declaration ages',
+     JSON.stringify(p.corroboration()));
+
+  // Silence is not denial: a resting character sends nothing and gets no echo.
+  const q = new Pose();
+  q.updateServer({ col: 5, row: 5, x: 352, y: 352 });
+  q.noteDeclared(416, 352);
+  for (let i = 0; i < 5; i++) q.updateServer({ col: 5, row: 5, x: 352, y: 352 });
+  ok(q.corroboration().outstanding <= 2,
+     'an echo that merely repeats our position does not multiply the count',
+     JSON.stringify(q.corroboration()));
+  // A declaration 64 units away is CORROBORATED by the echo above (the tolerance is two squares),
+  // so nothing was outstanding when this first asserted about reset — the assertion passed against
+  // a broken reset and I only noticed by mutating it. Build a state that genuinely has claims in it
+  // before testing that reset discards them.
+  q.noteDeclared(4000, 352);
+  q.noteDeclared(4320, 352);
+  ok(q.corroboration().outstanding >= 2, 'the reset case has outstanding declarations to lose',
+     JSON.stringify(q.corroboration()));
+  q.reset();
+  ok(q.corroboration().outstanding === 0, 'reset clears the outstanding declarations',
+     JSON.stringify(q.corroboration()));
+
+  // THE FAILURE THIS EXISTS FOR: the mover sends a stride every second and the server never puts
+  // us there. It ran for hours with stuck=0, because the sim advanced on every send and the
+  // server-static check could not see it.
+  const r = new Pose();
+  r.updateServer({ col: 12, row: 3, x: 800, y: 224 });
+  for (let i = 0; i < 20; i++) {
+    // advance(), not noteDeclared: a send both moves the track and records the declaration. The
+    // first version of this loop called only the bookkeeping, so divergence() honestly returned
+    // null for a Pose that had never moved and I read that as 'the guard saw nothing'.
+    r.advance(800 + (i + 1) * 320, 224);
+    r.updateServer({ col: 12, row: 3, x: 800, y: 224 });
+  }
+  ok(r.corroboration().outstanding >= 20, 'twenty uncorroborated declarations are reported as twenty',
+     JSON.stringify(r.corroboration()));
+  // The guard is not merely blind at small magnitudes — it is blind at LARGE ones too, for a reason
+  // worth writing down because it is the walk-in-place mechanism itself. The guard fires by ADOPTING
+  // the echo, so it drags the track back to the server's position, which makes the distance it just
+  // measured go to zero. Observed, six sends of 320 units each against a server that never moves:
+  //
+  //   send 0  declared x=1120  after echo sim x=1120  div=320   pending=2
+  //   send 1  declared x=1440  after echo sim x=800   div=0     pending=4   <- guard fired
+  //   send 2  declared x=1760  after echo sim x=800   div=0     pending=6   <- guard fired
+  //   ...
+  //
+  // The guard fires EVERY SECOND and reports success by construction. It cannot accumulate a signal
+  // because the thing it does to fix divergence is to erase the evidence of divergence. A mover that
+  // re-declares from the corrected position one second later walks in place for ever, and the only
+  // number that grows is the count of declarations nobody confirmed.
+  ok(r.divergence() === 0 && r.corroboration().outstanding >= 20,
+     'the guard reports zero divergence while 20+ declarations go unconfirmed, because it erases the evidence it measures',
+     `divergence ${r.divergence()} vs ${r.corroboration().outstanding} unconfirmed declarations`);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

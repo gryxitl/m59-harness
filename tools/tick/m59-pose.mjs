@@ -208,6 +208,7 @@ export class Pose {
       // written ok('message', condition) into a suite whose signature is ok(condition, message) —
       // so the condition argument received the message, was always truthy, and the assertion was
       // counted as a pass. See the guard at the top of m59-pose-test.mjs.
+      this.noteDeclared(x, y);   // as below: a send is a claim about where we will be
       this.sim = { x, y };
       this.simAt = Date.now();
       void step;
@@ -232,6 +233,7 @@ export class Pose {
     // `step` is retained as a FLOOR, not a ceiling: it is the smallest advance a send can
     // claim, which keeps a zero-distance send from leaving the track stale in time while
     // being unmoved in space. A send that declares two squares moves the track two squares.
+    this.noteDeclared(x, y);   // the declaration is made HERE, so corroboration is automatic
     this.sim = { x, y };
     this.simAt = Date.now();
     void step;
