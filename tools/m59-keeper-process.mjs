@@ -130,8 +130,13 @@ async function join() {
       // advances it on each send and resets it on teleport/blink/room change.
       // Every other tick file reads session._pose.current() and nothing else.
       session._pose = new Pose();
-      // PHASE 0: expose the policy on the session so the Mover can read
-      // policy.ownPhysics (the continuous-motion opt-in flag).
+      // PHASE 0: expose the policy on the session so the Mover can read it.
+      // The flag this line used to name, policy.ownPhysics, no longer selects anything: it was
+      // the gate on the velocity declaration that 2d44a48 deleted, and the engine that replaced
+      // it has no switch. It is still passed through to the status page below because
+      // substrate/fleet-state.json sets it for two characters, and a status field that silently
+      // disappears is worse than one that reports a stale value — but nothing should read it as
+      // a mode. See docs/TICK-MOVEMENT-PLAN.md.
       session.policy = policy;
       INTENTS.travel = routeIntent(router);
 
@@ -1318,6 +1323,9 @@ function moveDropStats(session) {
               routerDest: session?._router?.dest ?? null,
               routerLeg: session?._router?.leg ? { to: session._router.leg.next, standOn: session._router.leg.standOn, kind: session._router.leg.kind } : null,
               routerSub: session?._router?.subWp ?? null,
+              // Reports the VALUE SET IN THE ROSTER, not a mode in effect. Nothing in the mover
+              // reads this any more; it is here so a roster that still carries it is visible
+              // rather than invisible. Do not read it as 'which engine is running'.
               ownPhysics: session?.policy?.ownPhysics ?? null,
             };
             break;
