@@ -254,3 +254,100 @@ node tools/m59-range-probe.mjs --agent t4 --i-mean-it --range 5 --reps 2
 makes, and that is the only direct evidence of a refusal. Every "why" in this file is inferred from
 the source tree, and the live shard may not be built from it. If a question needs the server's reason,
 say so instead of inferring one.
+
+---
+
+## 9. ROOT CAUSE FOUND — the broker's keeper proxy makes `s.world` a function, and it explains
+## symptoms we attributed to the mover, the decider and the geometry
+
+**This is the most important finding in this file and it is not about movement at all.**
+
+`m59-broker.mjs:1050`:
+
+```js
+// Wrap KeeperProxy instances with a Proxy that returns null for any
+// undefined method, so the fleet tool and other MCP tools don't crash.
+function makeKeeperProxy(agent, index) {
+  const target = new KeeperProxy(agent, index);
+  return new Proxy(target, {
+    get(target, prop, receiver) {
+      if (prop in target) return Reflect.get(target, prop, receiver);
+      if (typeof prop === 'string') return (...args) => null;   // <-- every unknown name
+      return undefined;
+    }
+  });
+}
+```
+
+`KeeperProxy` sets only `name`, `pacer` and `movementGeneration` — **it has no `world` field.**
+So on a keeper-backed agent:
+
+- `s.world` → **a function** (not null, not undefined)
+- `s.world.route` → `undefined` → `TypeError: s.world.route is not a function`
+- `s.world?.room?.num ?? null` → **`null`, silently, forever**
+
+**Every character in this fleet is keeper-backed** (the pacer lives in the keeper process — that is
+what the `status` tool's own error says: *"keeper-backed: pacer is in the keeper process"*). So the
+47 `s.world` reads in the broker are all reading a function.
+
+### What this breaks, and it is the list of things we have been fighting
+
+| symptom | what it actually is |
+|---|---|
+| `travel` fails with `s.world.route is not a function` | Reproduced live 2026-09-08 sending Gountrug to room 535. **`travel` cannot work for any keeper-backed character**, i.e. for everyone. |
+| `s.world?.room?.num ?? null` at broker:2474, 3328, 3465, 3646, 3649, 3653 | **Returns `null` for every character, always.** A tool that asks "which room is he in?" through the broker cannot distinguish "unknown" from "no room". Any `!room` / `!in_underworld` style predicate built on it fires when it should not. |
+| The `t3` predicate bug: `!in_underworld -> escape_underworld` fires while `uwdbg` prints `in_underworld=true` | **The same shape.** A null read somewhere upstream is being treated as a false verdict. |
+| `path=null` with thousands of sends, destination thrashing | Not yet proven to be this, but it is the same class — a null that should be a value. **Check this before touching the mover again.** |
+
+### The design error, stated plainly
+
+The comment says the catch-all exists *"so the fleet tool and other MCP tools don't crash."*
+Returning `null` for an unknown **property** (not just an unknown method) converts every missing field
+into a callable function, which then makes `?.` chains **succeed with a wrong answer** instead of
+failing. `s.world?.room?.num ?? null` looks defensive and is the opposite: it guarantees a plausible
+`null` where an exception would have been caught on the first day.
+
+**A catch-all `get` trap should return `undefined` for unknown *properties* and a stub only for
+unknown *methods*.** As written it cannot tell the two apart, which is why it produced this.
+
+### How to tell if you are hitting it
+
+If a broker tool reports a room, a destination, a route length, or a boolean derived from either, and
+the keeper's own log disagrees — **trust the keeper log.** The broker is reading a function.
+
+### Not yet done
+
+- `travel` for keeper-backed agents needs to go through the keeper's HTTP endpoint (which does know
+  `session.world.room.num` — `/room-view` and `/grid` both answer correctly) rather than through
+  `s.world`.
+- The 47 `s.world` reads need auditing; the `?.` ones are the dangerous ones because they are silent.
+- **The mover's own `path=null` should be checked against this before any further locomotion work.**
+
+---
+
+## 10. What the spawn tables say about hunting grounds, since travel cannot take anyone anywhere
+
+From the server's own generator data (`hunting_grounds`), which is a lookup and not a search —
+**monsters do not wander; a room spawns a creature if and only if its table names it.**
+
+Gountrug: **lv22, 22/22 hp, vigor 130/200, mace** (the fleet row says `has_weapon: false` but the
+keeper log shows `re-equipped mace after zap lapse` — check which you believe).
+
+| room | name | spawns | danger |
+|---|---|---|---|
+| **535** | **West Merchant Way through Ilerian Woods** | **giant rat lv30 @70%, baby spider lv25 @30%** | nothing above lv30 — **this is the room** |
+| 545 | West Merchant Way | centipede lv30 @50%, baby spider lv25 @50% | lv30 |
+| 534 | Deep Woods of Ileria (current) | baby spider lv25 @60%, **living tree lv50 @40%** | **lv50** |
+| 544 | (the forced hop) | **fungus beast lv50 @65%**, groundworm larva lv35 @35% | **lv50** |
+| 574 | Main gate to Cor Noth | baby spider lv25 @75%, centipede lv30 @25% | lv30 |
+| 6 | Deep Dark Woods of Marion | **spider lv50 @40%, ant lv40 @60%** | **lv50 — no baby spiders, no rats** |
+
+**Why he sees no prey where he stands:** room 534 rolls baby spiders at 60% but a lv50 living tree takes
+the other 40% of the table, and the cap is shared. Room 535 is 70% giant rats / 30% baby spiders with
+nothing above lv30 — exactly the room described, and confirmed as *west* of Marion by its own
+`north -> 200 (Marion)` exit.
+
+**Route 534 -> 535 is 3 hops: east to 544, south to 545, west to 535. There is no route avoiding 544**
+(a full search of the room graph from 534 reaches 9 rooms and every one of them goes through it), and
+544 has a lv50 fungus beast at 65%. That is a lv22 character walking through lv50 territory — which
+is a decision to make deliberately, not one to discover halfway.
