@@ -676,6 +676,7 @@ export class Mover {
         if (_vg?.fineWalkable && _me && Number.isFinite(_me.col) && Number.isFinite(_me.row)) {
           const _c1 = _me.col + 1, _r1 = _me.row + 1;   // self is 0-based; the API is 1-based
           const _coarse = _vg.walkable?.(_r1, _c1) === true;
+          const _fineBlocked = _vg.fineWalkable?.(_r1, _c1) === false;
           let _floor = false;
           // Always test the lattice directly rather than reading standable(): standable()
           // short-circuits on the coarse grid (m59-roo.mjs:1697), so it returns true for exactly
@@ -690,10 +691,24 @@ export class Mover {
           // The condition we are looking for: the server's grid says there is floor here, the
           // BSP says there is none anywhere on the square. That is the disagreement room3d
           // draws as a hole. Reported whether or not it fires, so a run of 'no' is visible too.
+          // TWO DIFFERENT THINGS, AND THE FIRST VERSION ONLY TESTED THE WRONG ONE.
+          //
+          // A VOID is coarse=walkable with no BSP floor. An IN-A-WALL is coarse=walkable and
+          // BSP floor PRESENT but fineWalkable FALSE -- the fine wall grid says blocked while
+          // the server and the BSP both say there is ground. The first probe tested only the
+          // first, and stayed silent while the character stood visibly inside a wall, which is
+          // the second. Room 557 has 221 of the second and 169 of the first; the character was
+          // in one of the second.
           if (_coarse && !_floor) {
             console.error(`[void-probe] STANDS IN A VOID square=(${_me.col},${_me.row}) `
               + `coarse=walkable bsp_floor=none fine=${_vg.fineWalkable(_r1, _c1)} `
               + `room=${this.session?.world?.room?.num ?? '?'} -- the server put a body where the BSP has no floor`);
+          } else if (_coarse && _fineBlocked) {
+            console.error(`[void-probe] STANDS INSIDE A WALL square=(${_me.col},${_me.row}) `
+              + `coarse=walkable bsp_floor=present fine=BLOCKED `
+              + `room=${this.session?.world?.room?.num ?? '?'} -- the fine wall grid calls this square `
+              + `a wall while the server stands a body on it; a client drawing the fine grid draws `
+              + `a wall around the character`);
           }
         }
       } catch { /* a diagnostic must never break the tick */ }

@@ -195,8 +195,21 @@ if (probeArg) {
     const px = protocolToClient(pc * 64 + 32), py = protocolToClient(pr * 64 + 32);
     const tr = geo.traceFineMoveClient?.(px, py, px, py, { slide: false, playerRadius: PLAYER_RADIUS });
     P(`  (${pc},${pr}) [1-based ${c1},${r1}]  coarse=${coarse} fine=${fine} stand=${stand} bspFloor=${floor}`);
-    P(`      trace at centre: blocked=${tr?.blocked} reason=${tr?.reason ?? 'none'}`
-      + `   ${coarse && !floor ? '<-- THE COARSE GRID WOULD PUT A BODY HERE AND THE BSP HAS NO FLOOR' : ''}`);
+    // Three-way, not two-way. The original tool compared coarse-grid against BSP floor and so
+    // was blind to the case that actually happened: a square the FINE wall grid calls blocked
+    // while both the coarse grid and the BSP say there is floor. That is a square the mover can
+    // stand on, the server accepts, and the client draws as a wall. 221 of room 557's 2,450
+    // squares are like this, 182 of them with BSP floor, and the character was in one while this
+    // tool reported "no disagreement".
+    const inFineWall = coarse && !fine;
+    P(`      trace at centre: blocked=${tr?.blocked} reason=${tr?.reason ?? 'none'}`);
+    if (coarse && !floor) {
+      P('      <== VOID: the coarse grid would put a body here and the BSP has no floor');
+    } else if (inFineWall) {
+      P(`      <== IN A WALL: the FINE grid says blocked while coarse=${coarse} bsp_floor=${floor}.`);
+      P('          The server accepts a body here; a client drawing the fine grid draws a wall');
+      P('          around it. This is the square that looks like standing inside a wall.');
+    }
   }
   P('');
 }
