@@ -1516,3 +1516,87 @@ What survives, and is worth keeping:
 The rule this turn earned: **when a measurement returns the same extreme value across unrelated
 inputs, the bug is in the measurement.** Check the units before believing the number, and check
 them against the call site rather than against the variable's name.
+
+---
+
+## 2026-09-08 — THE GOAL'S PREMISE IS FALSE, AND THE SERVER'S OWN SOURCE SAYS SO
+
+**Read the move handler. It is not in C. It is kod, and it is the authority on this question.**
+
+`blakserv/game.c:524` dispatches every in-game packet through a `default:` branch to
+`ClientToBlakodUser`, which is a generic parameter-table interpreter (`parsecli.c`). The handler for
+`BP_REQ_MOVE` is `kod/object/active/holder/nomoveon/battler/player/user.kod:895`, which reduces our
+fine coordinates to a square and calls `@UserMove` (`user.kod:2907`).
+
+`@UserMove` opens with this, verbatim:
+
+```
+% Speedhack works by sending a LOT of little moves very, very quickly.
+% Normal players only send 1 movement packet per second, but
+% speedhackers send more.  Even at low levels, speedhackers will send
+% more packets per second.  So, we keep track of the number of packets
+% sent and the number of seconds that happen.  Every movement packet
+% sent increases our piMovesCounter by one.  Every second that passes
+% decreases it by one.
+```
+
+and then:
+
+```
+piMovesCounter = (piMovesCounter + 1) - iDelta;
+piMovesCounter = bound(piMovesCounter, -MOVEMENT_DELTA_LAG_THRESHOLD, $);
+if piMovesCounter > MOVEMENT_COUNT_THRESHOLD   -> "is moving too fast. Has moves count of ... Possible speedhacker."
+```
+
+with `MOVEMENT_COUNT_THRESHOLD = 2` (user.kod:61) and `USER_WALKING_SPEED = 18` (user.kod:46).
+
+### What this means for the goal
+
+**One move packet per second is not a limitation we failed to fix. It is the server's contract for a
+legitimate player, and sending faster is what the server calls a speedhack.** Our
+`USER_MOVE_MIN_INTERVAL_MS = 1050` is not a bug, and neither is the reference client's
+`MOVE_INTERVAL = 1000`.
+
+The goal's premise — that the velocity engine would move the fleet at the real client's rate, and
+that the rate would be above the step engine's — is false. **Both engines are capped at one packet
+per second by the server, so the only thing either can change is ground covered *per packet*.**
+That is a smaller and different objective than the one I was given, and it should be stated as such
+rather than quietly reinterpreted.
+
+### The measurement that agrees, from a source that is not us
+
+A server-driven monster involves no client, no prediction and no rate limiter. Measured per object
+id, in game, with `M59_WATCH_MONSTERS=1`:
+
+| monster | packets | moving | gap between moving packets | ground per moving packet | squares/s |
+|---|---|---|---|---|---|
+| spider | 224 | 111 | 1048 ms | 1.16 squares | 1.05 |
+| spider | 178 | 88 | 1051 ms | 1.25 squares | 1.05 |
+| centipede | 45 | 9 | 4109 ms | 1.00 squares | 0.25 |
+
+**The server moves its own monsters at ~1 square per second, one square per packet, on a ~1s cadence.**
+Ours is 0.96 squares/s at 0.97 squares per packet. We are at the speed the server itself uses.
+
+### Corrections to claims made earlier today
+
+- **"Neither server walkability function is on a movement path"** — wrong in a way that matters.
+  `CanMoveInRoom`/`CanMoveInRoomFine` are kod primitives, and kod *is* the movement path: the server's
+  game logic is kod, not C. Their only in-tree kod caller is `LineOfSight`
+  (`kod/object/active/holder/room.kod:2108,2115`), which is why grepping C alone looked conclusive.
+  Grepping C alone was the error.
+- **`clientd3d` cannot settle anything about the real client**: `messages.h` exists with no
+  `messages.c`, and the tree has no `BF_POS_X` and no `MESSAGE_OBJ` handler.
+- **My first monster measurement was garbage and I reported it before checking it.** Keying the
+  stream by monster *name* interleaved every spider in the room, which produced "16.15 squares/second",
+  346 teleport-jumps, and a monster at `col 53` in a room 21 squares wide. Keyed by object id it gives
+  1.05. The instrumentation now carries `id=` and the reason is a comment in `m59-client.mjs`.
+- **`x` in a move packet is fine units with `FINENESS` per square** and `col = x/FINENESS` — the two
+  agree in 1,267 of 1,267 packets. The `16 squares/s` reading came from dividing by 64 instead.
+
+### Open, and it is the only live question now
+
+`MOVEMENT_COUNT_THRESHOLD = 2` bounds *packets per second*. It says nothing about *distance per
+packet*, which is what the stride engine actually changes. The remaining question is whether the
+server accepts a declared position more than one square away — and the earlier live evidence says it
+sometimes does not (`declare (1783,1257) ground=320 stopped=clear` with `srvXY` unmoving), which is
+what the supercover fix was for. That, and not the packet rate, is where the remaining ground is.
