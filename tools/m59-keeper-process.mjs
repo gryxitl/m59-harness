@@ -488,6 +488,9 @@ const server = createServer(async (req, res) => {
       const me = c?.self;
       const room = c?.room;
       if (!room?.objects) return json({ error: 'no room data', in_game: inGame });
+      // The MAP room, which is the one that carries the .roo we actually loaded. Needed below
+      // because the live client object does not carry room dimensions at all.
+      const rvWroom = session?.world?.room ?? null;
       const objects = [];
       for (const o of room.objects.values()) {
         objects.push({
@@ -502,8 +505,16 @@ const server = createServer(async (req, res) => {
         });
       }
       json({
-        cols: room.cols ?? 50,
-        rows: room.rows ?? 48,
+        // THESE WERE `room.cols ?? 50` AND `room.rows ?? 48`. The client's room object
+        // (m59-client.mjs:259) has NO cols AND NO rows fields and nothing ever sets them, so
+        // the `??` fallbacks fired every single time and this endpoint reported the constants
+        // 50 and 48 as if they were measurements of the room in view. That is how a real
+        // investigation was sent looking for a server/.roo size disagreement in a room whose
+        // .roo is 50x49 and whose kod is 50x49: the '48' was a default. Report the source
+        // honestly -- the .roo we loaded -- and say so when we do not know.
+        cols: room.cols ?? (rvWroom?.roo?.cols ?? null),
+        rows: room.rows ?? (rvWroom?.roo?.rows ?? null),
+        dims_source: room.cols != null ? 'server' : (rvWroom?.roo ? 'roo file (the server does not send room dimensions)' : 'unknown'),
         self: me ? { col: me.col, row: me.row, degrees: me.degrees ?? null } : null,
         objects,
         room_name: c?.rsc?.get?.(c.roomNameRsc) ?? null,

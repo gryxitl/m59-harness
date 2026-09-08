@@ -34,7 +34,7 @@
 // Usage:
 //   node tools/m59-void-scan.mjs --room 557 [--self COL,ROW] [--out FILE]
 //   node tools/m59-void-scan.mjs --room 557 --legend
-import { RoomGeometry, protocolToClient, loadRoo } from './m59-roo.mjs';
+import { RoomGeometry, protocolToClient, loadRoo, PLAYER_RADIUS } from './m59-roo.mjs';
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const argv = process.argv.slice(2);
@@ -170,6 +170,33 @@ if (calib) {
     P('  NOTE: the live square has coarse=stand but no BSP floor on the 5x5 lattice. That is');
     P('  either the disagreement being looked for, or the lattice/trace disagree with each');
     P('  other. Both are answerable from the map below by looking at the marked square.');
+  }
+  P('');
+}
+
+// ---- --probe COL,ROW[;COL,ROW...] : answer every predicate for named squares ----
+// Added because reading a position out of a log line and converting it by hand is the error
+// this whole file exists to prevent, and it was repeated several times while writing it.
+// `at=` and `srv=` in [move-sent] are BOTH in the converted client frame -- verified by
+// clientToProtocol on a live pair, which put both in the same square. Probe instead of
+// converting.
+const probeArg = arg('probe');
+if (probeArg) {
+  P('probe (col,row -> every predicate, asked in the frame each API uses):');
+  for (const spec of probeArg.split(';')) {
+    const [pc, pr] = spec.split(',').map(Number);
+    if (!Number.isFinite(pc) || !Number.isFinite(pr)) { P(`  ${spec}: not COL,ROW`); continue; }
+    const c1 = pc + 1, r1 = pr + 1;              // /grid prints 0-based; the API is 1-based
+    if (!geo.inBounds?.(r1, c1)) { P(`  (${pc},${pr}) [1-based ${c1},${r1}] OUT OF ROOM ${C}x${R}`); continue; }
+    const coarse = geo.walkable(r1, c1) === true;
+    const fine = geo.fineWalkable(r1, c1) === true;
+    const stand = geo.standable(r1, c1) === true;
+    const floor = anyFloor(c1, r1);
+    const px = protocolToClient(pc * 64 + 32), py = protocolToClient(pr * 64 + 32);
+    const tr = geo.traceFineMoveClient?.(px, py, px, py, { slide: false, playerRadius: PLAYER_RADIUS });
+    P(`  (${pc},${pr}) [1-based ${c1},${r1}]  coarse=${coarse} fine=${fine} stand=${stand} bspFloor=${floor}`);
+    P(`      trace at centre: blocked=${tr?.blocked} reason=${tr?.reason ?? 'none'}`
+      + `   ${coarse && !floor ? '<-- THE COARSE GRID WOULD PUT A BODY HERE AND THE BSP HAS NO FLOOR' : ''}`);
   }
   P('');
 }
