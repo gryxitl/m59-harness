@@ -47,7 +47,18 @@ const TRANSITION_CUTOFF = 1000;
 
 // Server-truth positions, in time order, deduplicated.
 const srv = [];
-for (const m of txt.matchAll(/srvXY=\(([-\d]+),([-\d]+)\)/g)) {
+// Server positions from EITHER field: `srv=` on every [move-sent] line (the tight sample, one
+// per packet) and the older `srvXY=` on [movedbg] vel-tick lines (sparse — only the ticks where
+// the stride declaration ran). Prefer the dense one when the log has it.
+const _srvPat = /\[move-sent\][^\n]*?srv=([-\d]+),([-\d]+)/g;
+let _usedDense = false;
+for (const m of txt.matchAll(_srvPat)) {
+  const p = [Number(m[1]), Number(m[2])];
+  if (!Number.isFinite(p[0]) || p[0] < 0) continue;
+  if (!srv.length || srv[srv.length - 1][0] !== p[0] || srv[srv.length - 1][1] !== p[1]) srv.push(p);
+  _usedDense = true;
+}
+if (!_usedDense) for (const m of txt.matchAll(/srvXY=\(([-\d]+),([-\d]+)\)/g)) {
   const p = [Number(m[1]), Number(m[2])];
   if (!Number.isFinite(p[0]) || !Number.isFinite(p[1]) || p[0] < 0) continue;
   if (!srv.length || srv[srv.length - 1][0] !== p[0] || srv[srv.length - 1][1] !== p[1]) srv.push(p);
@@ -87,7 +98,8 @@ const seconds = times.length > 1 ? (times[times.length - 1] - times[0]) / 1000 :
 
 const squares = ground / KOD;
 console.log(file);
-console.log(`  server positions      ${srv.length} distinct (${transitions} room transitions excluded)`);
+console.log(`  server positions      ${srv.length} distinct (${transitions} room transitions excluded)` +
+            (_usedDense ? ' [dense: one per packet]' : ' [sparse: stride ticks only — a lower-bound rate]'));
 console.log(`  packets sent          ${packets}  (${strides} from the stride declaration)`);
 console.log(`  GROUND (server truth) ${squares.toFixed(2)} squares`);
 if (seconds && seconds > 0) {

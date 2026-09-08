@@ -313,7 +313,13 @@ export class Mover {
       // The wire carries the position we declared, so that is what gets logged. `aim=` stays
       // because the freeze diagnostic needs the destination, and the two are only equal by
       // accident.
-      console.error(`[move-sent] n=${this._sendCount} at=${Math.round(atX)},${Math.round(atY)} aim=${Math.round(keyX)},${Math.round(keyY)} from=${Math.round(posX)},${Math.round(posY)} site=${site}`);
+      // `srv=` IS THE SERVER'S POSITION AT THIS PACKET. It is read here, at the one place every
+        // send passes, rather than left to the branch-specific debug lines — and that placement
+        // is the difference between a measurement and a guess. Ground computed by differencing
+        // server positions that appear on some packets and not others is a rate taken across
+        // an irregular sample, which is why the fleet's squares-per-second has been a range
+        // (0.09, 0.34, 0.39) all evening instead of a number.
+        console.error(`[move-sent] n=${this._sendCount} site=${site} at=${Math.round(atX)},${Math.round(atY)} aim=${Math.round(keyX)},${Math.round(keyY)} from=${Math.round(posX)},${Math.round(posY)} srv=${Math.round(this.session?._pose?.server?.x ?? -1)},${Math.round(this.session?._pose?.server?.y ?? -1)}`);
     } catch {}
   }
 
