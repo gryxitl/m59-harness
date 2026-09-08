@@ -1352,3 +1352,75 @@ them cannot support a claim about a character.** Whole-file counts across a log 
 and characters are not measurements of anything, and the counts that looked worst — 6,496 changes,
 35.9% oscillation, 20,173 no-routes — need the session boundary and the name applied before they
 mean what they appear to mean.
+
+## The blink was never the escape — it was the thing being cancelled
+
+For most of this session t2 stood at square (12,18) in the Brownestone Inn with the escape fan
+reporting `all 8 raw moves refused, casting blink` 105 times and one position change to show for
+it. The reading offered at the time — that the geometry refused all eight directions — was wrong,
+and the live event stream says why.
+
+**The server tells you how a cast ended, in words, and the harness was throwing it away.**
+`m59-game.mjs` routes `ev.kind === 'message'` to banker lines, combat lines and loyalty warnings
+and discards everything else. The four lines that matter here:
+
+| the server says | what it means | what to do |
+|---|---|---|
+| `You focus your whole will on casting blink.` | accepted; concentration has begun | hold still |
+| `Your concentration is broken and the blink spell fizzles.` | **we moved during the cast** | stop moving |
+| `You find yourself realigned with your surroundings.` | it worked | replan from the new position |
+| `You don't have enough mana to cast blink!` | **refused before it began** | stop casting |
+
+The fourth is the one the fleet actually produces, and it is on essentially every recording in
+`substrate/recordings/t2-*.jsonl`. It is also the reason the three supplied lines almost never
+appeared: the cast was rejected for mana before a concentration window ever opened.
+
+### The defect that cancelled the spell, in order
+
+```
+t=0      _tryBlink(): submit('stand'), schedule the cast for t+2000
+         returns { state:'blink' } — but _blinkPending is STILL FALSE
+t=0..2s  the mover ticks every 0.30s (measured, n=695). SIX ticks run with no hold,
+         and each one is free to send an escape-fan move packet.
+t=2s     the cast goes out, and _blinkPending = true. Too late by six ticks.
+```
+
+The hold that protects a concentration spell was armed *after* the window it needed to protect.
+Compounding it, the cast was submitted under pacer kind `'blink'`, and the priority list is
+`kind === 'attack' || kind === 'cast'` (`m59-game.mjs:526`) — so the cast queued **behind** the
+move packets. The `1500` third argument is `minGapForKind`, a rate limit and not a staleness
+deadline, and was delaying our own cast by a further 1.5 s.
+
+### What it looks like now, live
+
+```
+[tick-state] t3 state=blink        why=all 8 raw moves refused, casting blink
+[tick-state] t3 state=blinked      why=blink confirmed by server text (9586ms)
+[tick-state] t3 state=blink-refused why=blink refused: not enough mana (server said so)
+```
+
+Both outcomes are now named, and the mover stops holding on the second one instead of waiting out
+a 20 s backstop for a spell the server had already rejected.
+
+### The test-suite finding, which matters more than the blink
+
+`m59-mover-test.mjs` declared
+
+```js
+const clock = (ms) => { CLOCK_MS += ms; };
+```
+
+a mutator returning `undefined`, and **seven call sites assigned its result into a timestamp**:
+`mover._blinkAt = clock()` wrote `NaN`. `Date.now() - NaN > 20000` is false, so the blink backstop
+could not fire inside a test however far the rig advanced. This is the same family as the
+argument-order bug found earlier today: a helper whose contract is violated at the call site, in a
+way that cannot raise an error and shows up as a test that passes.
+
+And two of the assertions written *while writing these very tests* were themselves vacuous:
+
+* `sent.filter(...).length <= before - before + sent.filter(...).length` reduces to `x <= x`.
+* `m59-cast-test.mjs` had **no refusal test at all** — proven by deleting the refusal line from
+  `CAST_LINES` and watching all 53 assertions pass anyway. Rewritten: the same deletion now fails 8.
+
+A test that cannot fail is not a test, and this session has now demonstrated that three separate
+ways.
