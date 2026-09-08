@@ -1600,3 +1600,85 @@ packet*, which is what the stride engine actually changes. The remaining questio
 server accepts a declared position more than one square away — and the earlier live evidence says it
 sometimes does not (`declare (1783,1257) ground=320 stopped=clear` with `srvXY` unmoving), which is
 what the supercover fix was for. That, and not the packet rate, is where the remaining ground is.
+
+---
+
+## 2026-09-08 (later) — the range question, answered by asking the server instead of reading source
+
+**You were right and my conclusion was wrong, though the reasoning that got me there was also wrong.
+The measurement that settles it is a probe, not a source read.**
+
+### The measurement
+
+`tools/m59-range-probe.mjs` (new) declares a position N squares away in each of eight directions and
+asks the server where it actually put us, settling by re-reading until the position is stationary
+rather than by guessing a duration. Run on t4 (Lee), room 106 Brownestone Inn, an agent whose mover
+was idle so nothing else was driving the character:
+
+| declared | tries | arrived | moved | median ground | max ground |
+|---|---|---|---|---|---|
+| 1 | 24 | 24 | 24 | 1.41 | 1.41 |
+| 2 | 18 | 18 | 18 | 2.00 | 2.83 |
+| 3 | 18 | 18 | 18 | 3.00 | 4.24 |
+| 4 | 18 | 18 | 18 | 4.00 | 5.66 |
+| 5 | 18 | 18 | 18 | 5.00 | 7.07 |
+
+**142 declarations, 142 arrived, zero refusals.** Declared 5 squares, went 5.00 squares, every time —
+including 7.07 on diagonals. A 21x20 room is why 6+ was never attempted, not a refusal; the probe
+skips out-of-bounds targets silently and that gap looked like a ceiling.
+
+**So the server carries a player five squares in one packet, and the fleet's rate is not capped by
+distance per packet at anything near our current stride.** The mover's 320-unit (5-square) stride is
+the right shape. The step engine's one square per packet is a self-imposed limit, exactly as you said.
+
+### What the source does say, correctly this time
+
+`@UserMove` (`kod/.../player/user.kod:2907`) caps **packets** per second, not distance. The distance
+check at ~:3050 computes `iSquaredDistance` and at `>= 200` (about 14 squares) with `iDelta < 3`
+**only writes a Debug line and drains vigor — it never returns FALSE.** `UtilGoToSquare`
+(`kod/util.kod:109`) short-circuits the room's walkability veto for a player's own move
+(`if IsClass(what,&User) OR ...`), and `UtilGoNearSquare` spirals outward from the declared square
+up to `max_distance = 50000`. So a far declaration is not vetoed on geometry, and an illegal one
+lands nearby rather than failing.
+
+My earlier claim that the goal's premise was false because one-packet-per-second caps the rate was
+**wrong in its conclusion**: it correctly rules out sending *more often* and incorrectly implied that
+was the end of it. Ground per packet is the lever, and it is worth roughly 5x.
+
+### Corrected: the speed-36 snap-back is real but was not firing
+
+`speed > USER_WALKING_SPEED (18)` with `GetVigor < VIGOR_RUN_THRESHOLD (10)` makes the server put the
+player back on their own square and log "was running with no vigor". The mover sends `runNow ? 36 : 18`
+at the `no-path-stride` site, so this is a live hazard — but t3 was at `vigor=62`, so it was not the
+cause of the frozen stride. It is still a reason to never run below 10 vigor, and the mover should not
+choose speed 36 without checking vigor first.
+
+### The frozen stride on t3 is NOT explained by any of the above
+
+```
+site=no-path-stride at=3174,328 aim=1952,160 from=3491,372 srv=3491,372   (3,339 sends)
+```
+
+Eliminated, each with evidence: **range** (5 squares lands 142/142), **geometry** (squares 54,5 through
+49,5 in room 556 are all `coarse=true fine=true stand=true bspFloor=true`), **posture** (the only
+`sitting` lines are seven hours earlier), **speed/vigor** (vigor=62, threshold 10).
+
+Two mistakes of mine in that investigation worth recording because they are the recurring kind: I
+called `col 54` out of bounds in room 556 without looking the size up — it is **63x55** — and I read
+the 44-square "move" in the first probe run as a teleport when the probe was driving **t3, whose
+keeper was also connected**: one connection per character, so the probe bumped the keeper and the
+broker was rejoining it. The probe now records `room_before`/`room_after` so a transition cannot be
+mistaken for a move.
+
+### The bound on this investigation, and it matters
+
+**The fleet is not playing a local server.** The roster points at `76.214.42.186:5959`, the Docker
+daemon is down, and there is no `blakserv` process on this machine. So:
+
+- The server's own log — which writes an `ALERT!` line for every refusal — is **not readable from
+  here**, and it is the only direct evidence of why a specific move is refused.
+- Every statement above about *why* the server refuses is inference from the source tree, and the
+  live shard may not be built from it.
+
+The remaining question on t3 needs either the server log or an in-game experiment on a character
+nobody else is driving.
