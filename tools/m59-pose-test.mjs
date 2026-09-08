@@ -285,5 +285,72 @@ console.log('\nPose.confirmed — the one commitment read');
   // there. If a real echo-adopt defect is ever found, this is where its assertion goes.
 }
 
+// ---------------------------------------------------------------- ground accumulator
+// The accumulator exists because every rate read out of the keeper log was an artefact of where
+// the position was sampled. It is only trustworthy if it counts what it claims, so:
+{
+  let clock = 1_000_000;
+  const real = Date.now;
+  // Drive the clock through the module's own Date.now by monkeypatching the global.
+  Date.now = () => clock;
+  const p = new Pose();
+  p.updateServer({ col: 10, row: 10, x: 10 * 64 + 32, y: 10 * 64 + 32 });
+  clock += 1000;
+  p.updateServer({ col: 10, row: 11, x: 10 * 64 + 32, y: 11 * 64 + 32 });   // 1 square in 1 s
+  clock += 1000;
+  p.updateServer({ col: 10, row: 12, x: 10 * 64 + 32, y: 12 * 64 + 32 });   // 1 square in 1 s
+  let r = p.groundRate();
+  ok(Math.abs(r.squares - 2) < 0.02, `ground accumulates the two squares, got ${r.squares}`);
+  ok(Math.abs(r.seconds - 2) < 0.02, `the denominator is echo-to-echo time, got ${r.seconds}`);
+  ok(Math.abs(r.rate - 1) < 0.05, `1 square per second, got ${r.rate}`);
+  ok(r.transitions === 0, 'no transitions counted on ordinary steps');
+
+  // A room transition must NOT be ground: the echo's x/y are room-local, so a new room is a new
+  // origin. The live log showed 51.97 squares in 0.30 s, which is 170 squares/second of nothing.
+  clock += 1000;
+  p.updateServer({ col: 40, row: 3, x: 40 * 64 + 32, y: 3 * 64 + 32 });
+  r = p.groundRate();
+  ok(r.transitions === 1, `a 12+ square jump counts as a transition, got ${r.transitions}`);
+  ok(Math.abs(r.squares - 2) < 0.02, `a transition adds NO ground, got ${r.squares}`);
+  // The transition's second IS counted. It was real time in which the character covered no
+  // ground, and an accumulator that dropped it would report a rate over a shorter window than
+  // the one it measured — inflated rather than conservative, which is the failure mode this
+  // file exists to avoid.
+  ok(Math.abs(r.seconds - 3) < 0.02, `a transition contributes its time but no distance, got ${r.seconds}`);
+
+  // STANDING TIME IS COUNTED, AND THAT IS THE POINT. An earlier version of this test asserted
+  // the opposite — that a standstill contributed nothing, making the figure a rate 'while
+  // moving'. That is indefensible: the fleet's speed is what a player experiences, and a player
+  // who is sitting down is slow. It is also the exact confusion that made this repository's
+  // numbers look irreproducible, because a window containing a vigor rest and a window that
+  // happens not to contain one are not the same measurement and neither is wrong.
+  //
+  // The honest decomposition is cadence x ground-per-packet, both measured over the whole window,
+  // with standing showing up as a low packet rate and resting showing up there too. So:
+  clock += 60_000;
+  p.updateServer({ col: 40, row: 4, x: 40 * 64 + 32, y: 4 * 64 + 32 });
+  r = p.groundRate();
+  ok(Math.abs(r.squares - 3) < 0.02, `third square counted, got ${r.squares}`);
+  ok(Math.abs(r.seconds - 63) < 0.02,
+     `a 60 s standstill IS counted, so the rate is the character's real speed: 3 squares in 63 s, got ${r.seconds}`);
+  ok(r.rate < 0.05, `and the rate collapses to ${r.rate?.toFixed(2)} sq/s, which is the truth`);
+
+  // An echo that repeats our position is not movement, but it is time.
+  // An echo that repeats our position is not movement and must not age the clock.
+  clock += 5000;
+  p.updateServer({ col: 40, row: 4, x: 40 * 64 + 32, y: 4 * 64 + 32 });
+  r = p.groundRate();
+  // 68 s = 1 + 1 (two one-square steps) + 1 (the transition's second) + 60 (the standstill)
+  // + 5 (this repeated echo). 3 squares of ground. I wrote 128 here first and the code said 68;
+  // the code was right and my arithmetic was wrong, which is the whole argument for running the
+  // assertion instead of reasoning about it.
+  ok(Math.abs(r.seconds - 68) < 0.02 && Math.abs(r.squares - 3) < 0.02,
+     `a repeated echo adds time and no distance: 3 sq in 68 s, got ${r.squares} sq in ${r.seconds} s`);
+  ok(Math.abs(r.rate - 3 / 68) < 0.001,
+     `and the rate is the honest 0.04 sq/s over a window that includes a minute of standing, got ${r.rate?.toFixed(3)}`);
+  Date.now = real;
+}
+
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

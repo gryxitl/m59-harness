@@ -102,6 +102,8 @@ export class Pose {
       // correction of our intent). When our sends are outstanding (sim newer),
       // keep tracking. (Strictly-less: a same-millisecond advance is a send,
       // not a no-send gap — the divergence guard owns the drifted-sim case.)
+      // GROUND IS ACCUMULATED ON EVERY ECHO, not only on the ones that moved. See noteGround.
+      this.noteGround(this.server.x, this.server.y);
       if (this.sim != null && this.simAt < prevUpd) {
         const scol = Math.floor(this.sim.x / KOD_FINENESS);
         const srow = Math.floor(this.sim.y / KOD_FINENESS);
@@ -223,6 +225,59 @@ export class Pose {
     const sy = Number.isFinite(this.server.y) ? this.server.y : null;
     if (sx == null || sy == null) return null;
     return Math.hypot(this.sim.x - sx, this.sim.y - sy);
+  }
+
+  // THE GROUND TRUTH, READ WITHOUT SAMPLING IT.
+  //
+  // Every rate this repository has printed came from differencing a position sampled at SEND
+  // time, and every one of them was wrong in a different way, because the sample and the
+  // denominator came from different clocks: srv= repeats when no echo arrived between two packets
+  // (so 'the server refused' was really 'no echo yet'); 164 of 331 samples were square centres
+  // synthesised from col/row because the echo carried no x/y; and dividing a move by `updatedAt`
+  // gave 49 squares/second because every no-change echo refreshes it, so the denominator was the
+  // frame period.
+  //
+  // The fix is to stop sampling the echo at moments chosen for a different purpose. This
+  // accumulator is updated at the one moment the echo actually arrives, which is the only event
+  // that can legitimately change a ground total, and it carries its own clock. Room transitions
+  // are excluded at the source — the echo's x/y are room-local, so a new room is a new origin and
+  // the delta is not distance: the log showed 51.97 squares in 0.30 s, which is 170 squares/second
+  // of nothing. A jump of 12+ squares is a transition or a teleport and is counted as a transition
+  // instead of as ground.
+  noteGround(x, y) {
+    const now = Date.now();
+    const prev = this._groundAt;
+    // THE SNAPSHOT MUST BE TAKEN BEFORE THE WRITE, AND THE WRITE MUST HAPPEN ON EVERY ECHO,
+    // INCLUDING THE ONES THAT MOVED. The first version of this compared the incoming echo against
+    // `_groundAt` and then overwrote `_groundAt` unconditionally — so a transition, or any echo
+    // that added nothing, replaced the reference position with the new one and the ground between
+    // them was lost for ever. Measured: three one-second squares in a row accumulated 2 squares
+    // over 1 second instead of 3 over 3, because the 60 s standstill and the transition each
+    // reset the clock. A rate that silently drops the time it cannot count is not conservative,
+    // it is inflated — which is precisely the failure mode this whole file exists to avoid.
+    this._groundAt = { x, y, t: now };
+    if (!prev) return;
+    const moved = Math.hypot(x - prev.x, y - prev.y);
+    const dt = (now - prev.t) / 1000;
+    if (dt <= 0) return;
+    if (moved >= 12 * 64) {
+      // A transition is real elapsed time with no ground under it. Count the time, not the
+      // distance, so the rate over a room change is honest rather than flattering.
+      this.transitions = (this.transitions ?? 0) + 1;
+      this.groundSeconds = (this.groundSeconds ?? 0) + dt;
+      return;
+    }
+    this.groundSeconds = (this.groundSeconds ?? 0) + dt;
+    if (moved < 1) return;
+    this.groundSquares = (this.groundSquares ?? 0) + moved / 64;
+  }
+
+  // Squares per second over the time the character was actually moving, with transitions and
+  // standing time excluded by how it is accumulated. Returned with its own denominator, because a
+  // rate without one is not a measurement.
+  groundRate() {
+    const g = this.groundSquares ?? 0, sec = this.groundSeconds ?? 0;
+    return { squares: g, seconds: sec, rate: sec > 0 ? g / sec : null, transitions: this.transitions ?? 0 };
   }
 
   // THE single read. Returns { col, row, x, y, predicted, source, stale }.
