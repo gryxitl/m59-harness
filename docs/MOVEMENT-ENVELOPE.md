@@ -351,3 +351,95 @@ nothing above lv30 — exactly the room described, and confirmed as *west* of Ma
 (a full search of the room graph from 534 reaches 9 rooms and every one of them goes through it), and
 544 has a lv50 fungus beast at 65%. That is a lv22 character walking through lv50 territory — which
 is a decision to make deliberately, not one to discover halfway.
+
+---
+
+## 11. Why room pathing cannot route Deep Woods of Ileria (534) → Marion (200) → West Merchant
+## Way (535): Marion's edges are hand-written kod corner tests, and the baker cannot see them
+
+Asked why the router did not notice `534 → Marion → 535`, which is the short route. **The router was
+correct for the map it was given, and the map is missing Marion's edges.** Both halves are proven
+below.
+
+### The route does not exist in the game either — 534 does not touch Marion
+
+`kod/object/active/holder/room/monsroom/c4.kod:95-96`, the room's own source:
+
+```
+plEdge_Exits = Cons([LEAVE_EAST,  RID_D4, 21, 2,  ROTATE_NONE], plEdge_exits);
+plEdge_Exits = Cons([LEAVE_NORTH, RID_C3, 40, 13, ROTATE_NONE], plEdge_exits);
+```
+
+`RID_C4 = 534`, `RID_D4 = 544`, `RID_C3 = 533`, `RID_MARION = 200` (all `blakston.khd`). **Two exits,
+neither to Marion.** The bake agrees exactly: `534 -> north 533, east 544`.
+
+**What makes Marion *feel* adjacent:** `c4.kod:63` sets `plYell_Zone = [RID_MARION, RID_TEMPLE]`. You
+hear Marion from 534. Marion returns the compliment — `marion.kod:93` has
+`plYell_Zone = [RID_C4, RID_C5]`. **A yell zone is not a walkable edge**, and the bake records it as
+`yellZone: [205, 202, 204, 201, 2600, 534, 535]` on room 200.
+
+The room naming is a grid and it is worth knowing, because it misleads in prose: **letter = column
+(west→east), digit = row (north→south)**, so `C4 → D4` is genuinely *east*, and 535 (`C5`) is one
+**south** of 534, not west. "West Merchant Way" is a street name, not a direction.
+
+### The real defect: Marion has ZERO edge exits in the bake, and its kod proves otherwise
+
+`kod/object/active/holder/room/marnrm/marion.kod:152-168` implements Marion's borders as
+**hand-written corner tests inside `SomethingMoved`**, not as an exit table:
+
+```
+if (new_row < 32) and (new_col > 66)
+   -> UtilGoNearSquare(#where = FindRoomByNum(RID_C4), #new_row=34, #new_col=5,  ANGLE_NORTH_EAST)
+
+if (new_row > 83) and (new_col > 48)
+   -> UtilGoNearSquare(#where = FindRoomByNum(RID_C5), #new_row=3,  #new_col=23, ANGLE_SOUTH_WEST)
+```
+
+**Marion really does connect to both 534 and 535.** The bake says `Marion 200 edgeExits: []`.
+
+The baker reads `plEdge_Exits` (`m59-map.mjs:367`) and synthesizes a reverse edge at `:230`, but
+guarded by `if (byNum[exit.to]?.edgeExits || []).length` — **Marion has none, so it gets no reverse
+edge either.** Marion is a town: it has 10 `goExits` (doors) and no `plEdge_Exits`, because its walls
+are kod.
+
+### The baker already knows this failure mode and patched one room for it
+
+`m59-map.mjs:82` onward, verbatim:
+
+> **EXITS THE ROOM GRAPH CANNOT OBSERVE, BUT THE ROOM CLASS DEFINITELY IMPLEMENTS.**
+>
+> TempleQor does not populate plEdge_Exits. Its SomethingMoved override catches LEAVE_SOUTH itself
+> and forwards the player to piCurrentExit, which alternates on a timer between OutdoorsH9 (589) and
+> OutdoorsI8 (598). **The admin map builder therefore sees an empty exit list and every consumer calls
+> the temple sealed even though its two walkable south-edge squares are the door.**
+
+…followed by a hand-maintained `SYNTHETIC_EDGE_EXITS` table containing **exactly one room: 802.**
+
+**Marion is the second instance of the room the baker already documented, and nobody added it.**
+
+### The scale of the hole, stated honestly
+
+| | count |
+|---|---|
+| rooms in the map | 264 |
+| rooms with **zero** `edgeExits` | 152 |
+| …of which have a non-empty `yellZone` | **122** |
+
+**Do not read 122 as "122 missing routes."** A yell zone is not an edge, and most of those 152 rooms
+are buildings whose only exits are doors (`goExits`), which is correct. What is proven is **Marion
+(200)**, where the kod is read and shows two real edges that appear nowhere in the bake. The 122 are
+the **place to look**, not a count of defects.
+
+### Why this matters more than the one route
+
+A router that silently cannot reach a town will not report "no route" — it reports the long way, or
+`path=null`, or "stuck". **Every "the mover is lost" report in a town-adjacent room should be checked
+against this before being blamed on locomotion.** The fix is data, not mover code: add Marion's two
+corner tests to `SYNTHETIC_EDGE_EXITS`, the mechanism that already exists for exactly this.
+
+### The route that does exist, and its cost
+
+`534 → east 544 (Valley of Ileria) → south 545 (West Merchant Way) → west 535`. Three hops, and
+**544 has fungus beast lv50 @65% with no alternative** — a full search of the room graph from 534
+reaches 9 rooms and all of them go through it. With Marion's edges added, `534 → 200 → 535` becomes a
+two-hop route that avoids the lv50 room entirely, which is presumably why it was assumed to exist.
