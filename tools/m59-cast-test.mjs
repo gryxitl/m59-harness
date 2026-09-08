@@ -29,11 +29,22 @@ const msg = (text) => ({ kind: 'message', text });
 const BEGIN  = 'You focus your whole will on casting blink.';
 const FIZZLE = 'Your concentration is broken and the blink spell fizzles.';
 const LANDED = 'You find yourself realigned with your surroundings.';
+// The fourth line, and the one the live fleet actually produces most. Captured from
+// substrate/recordings/t2-*.jsonl, where it appears on essentially every recording while
+// the character stands in a pocket holding for a spell that never began.
+const REFUSED = "You don't have enough mana to cast blink!";
 
 console.log('--- classifyCastLine: recognises the three server lines ---');
 ok('begin line -> begin',   classifyCastLine(BEGIN)?.phase === 'begin',   JSON.stringify(classifyCastLine(BEGIN)));
 ok('fizzle line -> fizzle', classifyCastLine(FIZZLE)?.phase === 'fizzle', JSON.stringify(classifyCastLine(FIZZLE)));
 ok('landed line -> landed', classifyCastLine(LANDED)?.phase === 'landed', JSON.stringify(classifyCastLine(LANDED)));
+
+console.log('--- classifyCastLine: recognises the server REFUSAL, which is not a fizzle ---');
+ok('refused line -> refused', classifyCastLine(REFUSED)?.phase === 'refused', JSON.stringify(classifyCastLine(REFUSED)));
+ok('refused is not fizzle', classifyCastLine(REFUSED)?.phase !== 'fizzle',
+   'a refusal never opened a concentration window; conflating them hides the real defect');
+ok('refused recovers the spell name', classifyCastLine(REFUSED)?.spell === 'blink',
+   JSON.stringify(classifyCastLine(REFUSED)));
 
 console.log('--- classifyCastLine: does NOT fire on unrelated text ---');
 for (const t of [
@@ -112,6 +123,37 @@ console.log('--- CastWatch: non-message events are ignored, not counted ---');
   for (const ev of [{ kind: 'move' }, { kind: 'ability' }, { kind: 'message' }, {}, null]) w.note(ev);
   ok('nothing counted', w.counts.begin === 0 && w.counts.landed === 0 && w.counts.fizzle === 0, JSON.stringify(w.counts));
   ok('a message with no text does not begin a cast', w.state === null);
+}
+
+console.log('--- CastWatch: a refusal ends the cast and is counted separately ---');
+{
+  const w = new CastWatch({ log: () => {} });
+  w.note(msg(BEGIN));
+  w.note(msg(REFUSED));
+  ok('refusal ends the cast', w.casting() === false);
+  ok('phase is refused', w.phase === 'refused', w.phase);
+  ok('counted as refused, not fizzle or landed',
+     w.counts.refused === 1 && w.counts.fizzle === 0 && w.counts.landed === 0, JSON.stringify(w.counts));
+}
+
+console.log('--- CastWatch: a refusal with no begin is still terminal (the server can refuse ===');
+console.log('    before we ever see an accept) ---');
+{
+  const w = new CastWatch({ log: () => {} });
+  w.note(msg(REFUSED));
+  ok('not casting', w.casting() === false);
+  ok('phase refused', w.phase === 'refused');
+  ok('flagged untracked', w.counts.untracked === 1, JSON.stringify(w.counts));
+}
+
+console.log('--- CastWatch: summary() reports all four outcomes ---');
+{
+  const w = new CastWatch({ log: () => {} });
+  for (const t of [BEGIN, LANDED, BEGIN, FIZZLE, BEGIN, REFUSED]) w.note(msg(t));
+  const sum = w.summary();
+  ok('summary names refused', sum.includes('refused=1'), sum);
+  ok('summary names landed', sum.includes('landed=1'), sum);
+  ok('summary names fizzle', sum.includes('fizzle=1'), sum);
 }
 
 console.log('--- CastWatch: a cast line we did not wait for is counted, not swallowed ---');

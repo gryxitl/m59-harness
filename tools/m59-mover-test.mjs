@@ -103,7 +103,13 @@ function clearGeometry() {
 let CLOCK_MS = 0;
 const REAL_NOW = Date.now;
 Date.now = () => CLOCK_MS + REAL_NOW.call(Date);
-const clock = (ms) => { CLOCK_MS += ms; };
+// clock(ms) ADVANCES the virtual clock and returns the new virtual `Date.now()`. It used to
+// return undefined, and seven call sites assigned its result straight into a timestamp field
+// (`mover._blinkAt = clock()`), silently writing NaN. `Date.now() - NaN > 20000` is false, so
+// the blink backstop could never fire inside a test no matter how long the rig advanced —
+// which is how a real defect in that path stayed invisible. Returning the value is what every
+// existing call site obviously expected; the ones that use it as a statement are unaffected.
+const clock = (ms = 0) => { CLOCK_MS += ms; return Date.now(); };
 
 function rig({ col = 2, row = 2, destCol = 8, destRow = 2, geo } = {}) {
   const sent = [];
@@ -1418,6 +1424,7 @@ function blinkFrom(col, row) {
 const CAST_BEGIN  = 'You focus your whole will on casting blink.';
 const CAST_FIZZLE = 'Your concentration is broken and the blink spell fizzles.';
 const CAST_LANDED = 'You find yourself realigned with your surroundings.';
+const CAST_REFUSED = "You don't have enough mana to cast blink!";
 
 function blinkRig({ col = 3, row = 5 } = {}) {
   const sent = [];
@@ -1465,6 +1472,53 @@ function blinkRig({ col = 3, row = 5 } = {}) {
      'pacer isUrgent is attack|cast; kind blink queued behind move packets');
   ok('no setTimeout is involved — the cast is already submitted', sent.some(s => s[0] === 'cast'),
      'the cast must be on the wire synchronously, not 2s later');
+}
+
+{
+  // The server's REFUSAL line is the most common cast outcome in this fleet, and it was
+  // invisible: every refusal bought a 20,000 ms hold on a cast that never began.
+  const { mover, session } = blinkRig();
+  mover.stuckTicks = 3;
+  mover._blinkPending = true;
+  mover._blinkAt = clock();
+  mover._blinkFrom = blinkFrom(3, 5);
+  session._castWatch.note({ kind: 'message', text: CAST_REFUSED });
+  const r = mover.tick();
+  ok('a mana refusal ends the hold at once', r.state === 'blink-refused', JSON.stringify(r));
+  ok('it is NOT reported as a fizzle', r.state !== 'blink-fizzled',
+     'a refusal never opened a concentration window; a fizzle means we moved during one');
+  ok('the refusal is remembered', mover._blinkRefusedAt != null);
+  ok('the hold is cleared', mover._blinkPending === false);
+  ok('the refusal is counted separately from landed', session._castWatch.counts.refused === 1
+     && session._castWatch.counts.landed === 0, JSON.stringify(session._castWatch.counts));
+}
+
+{
+  // ...and the next escape attempt must not buy another 20s hold for the same refusal.
+  const { mover, session, sent } = blinkRig();
+  mover.stuckTicks = 4;
+  const first = mover._tryBlink();
+  ok('first attempt does try to cast', first === true);
+  // Simulate the server refusing it, then run the escape path again on the next tick.
+  session._castWatch.note({ kind: 'message', text: CAST_REFUSED });
+  mover._blinkPending = true;
+  mover._blinkAt = clock();
+  mover.tick();
+  const before = sent.filter(s => s[0] === 'cast').length;
+  const second = mover._tryBlink();
+  ok('a recent mana refusal stops the next cast', second === false, 'retrying costs another hold');
+  // NOT `n <= n`: that was written here once and is always true. Count the casts the retry
+  // added and compare against the count before it.
+  ok('and no second cast went on the wire',
+     sent.filter(s => s[0] === 'cast').length === before,
+     `casts before=${before} after=${sent.filter(s => s[0] === 'cast').length}`);
+  // ...and after the cooldown expires the character should get to try again, or a
+  // character that ran out of mana in a pocket never blinks out.
+  clock(61000);
+  ok('after the cooldown a cast is attempted again', mover._tryBlink() === true);
+  ok('and that attempt really submitted',
+     sent.filter(s => s[0] === 'cast').length === before + 1,
+     `casts=${sent.filter(s => s[0] === 'cast').length}`);
 }
 
 {

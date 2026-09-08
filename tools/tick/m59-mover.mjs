@@ -783,7 +783,7 @@ export class Mover {
           // The cost is one 0.30 s tick.
           return { state: 'blinked', why: `blink confirmed by server text (${_cw.elapsed()}ms)` };
         }
-        if (_cw.phase === 'fizzle' || _cw.phase === 'lost') {
+        if (_cw.phase === 'fizzle' || _cw.phase === 'lost' || _cw.phase === 'refused') {
           this._blinkPending = false;
           this._blinkFrom = null;
           this.stuckTicks++;
@@ -791,6 +791,14 @@ export class Mover {
           // evidence that something moved during the cast, and if that something was us,
           // the next move packet will fizzle the retry for the same reason. The fan's own
           // gate paces the next attempt.
+          if (_cw.phase === 'refused') {
+            // A mana refusal is not bad luck, it is arithmetic: the server will say the
+            // same thing next time. Record when we last heard it so the caller can stop
+            // spending 20s holds on an unaffordable spell, and say so in the why rather
+            // than letting it look like a spell that nearly worked.
+            this._blinkRefusedAt = Date.now();
+            return { state: 'blink-refused', why: 'blink refused: not enough mana (server said so)' };
+          }
           return { state: 'blink-fizzled', why: `blink cancelled (${_cw.phase}) — movement during concentration` };
         }
       }
@@ -2562,6 +2570,26 @@ export class Mover {
     if (this.stuckTicks === 0) return false; // moving, don't blink
     const c = this.session?.client;
     if (!c?.cast) return false;
+
+    // MANA REFUSAL COOLDOWN.
+    //
+    // The server told us, in words, that this character cannot afford blink. Retrying on
+    // the next escape attempt does not change that, and each retry cost a 20,000 ms hold
+    // because nothing was watching for the answer. In the live fleet this was the single
+    // most common cast outcome: "You don't have enough mana to cast blink!" appears on
+    // essentially every recording, and each one bought a full backstop wait.
+    //
+    // The cooldown is one minute, not forever: mana regenerates, and a character that
+    // waits it out should get the blink it is standing in a pocket for. It is keyed on
+    // the refusal we actually observed rather than on a mana threshold we would have to
+    // guess at -- blink's cost is spell DATA, and the spell record the client is given
+    // (id/name/targets/school) carries no cost field at all, so any number written here
+    // would be invented.
+    const _ref = this._blinkRefusedAt ?? 0;
+    if (Date.now() - _ref < 60000) {
+      return false;   // let the escape fan / stuck report run instead of holding on a refusal
+    }
+
     const blink = (c.spells ?? []).find(sp => {
       const n = c.rsc?.get?.(sp.nameRsc) ?? sp.name ?? '';
       return n.toLowerCase() === 'blink';

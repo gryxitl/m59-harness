@@ -67,6 +67,21 @@ export const CAST_LINES = [
   { phase: 'fizzle',   match: 'concentration is broken' },
   // "You find yourself realigned with your surroundings."  — succeeded.
   { phase: 'landed',   match: 'realigned with your surroundings' },
+  // "You don't have enough mana to cast blink!"  — REFUSED BEFORE IT BEGAN.
+  //
+  // This line is not a hypothesis. It is what the live server sent, four times in one
+  // recording, while t2 stood in the Brownestone Inn: the raw event stream at
+  // substrate/recordings/t2-*.jsonl is full of it. It is the commonest cast outcome in
+  // this fleet by a wide margin, and it was invisible: the mover held the character
+  // still for the full 20,000 ms backstop on a cast the server had rejected in well
+  // under a second, then tried again. Over 106 blinks that is minutes of standing in a
+  // pocket doing nothing, on a spell that was never going to fire.
+  //
+  // It is a REFUSAL, not an interruption: no concentration window ever opened, so it
+  // must not be treated like a fizzle (which means "we moved during the cast"). The
+  // distinction matters because the remedies differ — a fizzle says stop moving, a
+  // refusal says stop casting until there is mana.
+  { phase: 'refused',  match: "don't have enough mana to cast" },
 ];
 
 // A cast that never resolves is a bug in SOMETHING, and the old code's failure mode was a hold
@@ -87,8 +102,13 @@ export function classifyCastLine(text) {
     if (!t.includes(match)) continue;
     // The begin line names the spell ("...on casting blink."); the other two do not, so the
     // spell name is recovered where present and left null otherwise rather than guessed.
+    // The spell name appears in two constructions, and both are worth recovering:
+    // "...on casting blink." on the accept line, "...to cast blink!" on the refusal. The
+    // original pattern knew only the first, so every refusal came back spell: null -- inert
+    // today, but a silent gap the moment two spells' refusals need telling apart.
     let spell = null;
-    const m = /casting ([a-z][a-z '-]*?)\s*[.!?]/i.exec(t);
+    let m = /casting ([a-z][a-z '-]*?)\s*[.!?]/i.exec(t);
+    if (!m) m = /to cast ([a-z][a-z '-]*?)\s*[.!?]/i.exec(t);
     if (m) spell = m[1].trim();
     return { phase, spell };
   }
@@ -108,10 +128,10 @@ export class CastWatch {
     this.spell = null;
     this.beganAt = 0;
     this.endedAt = 0;
-    this.phase = null;        // last terminal phase seen: 'landed' | 'fizzle' | 'lost'
+    this.phase = null;        // last terminal phase seen: 'landed' | 'fizzle' | 'refused' | 'lost'
     // Counts are the durable part. A single fizzle is an event; a hundred fizzles and no
     // landings is a diagnosis, and the second one is what the next reader needs.
-    this.counts = { begin: 0, fizzle: 0, landed: 0, lost: 0, untracked: 0 };
+    this.counts = { begin: 0, fizzle: 0, landed: 0, refused: 0, lost: 0, untracked: 0 };
     this._lastLoggedAt = 0;
   }
 
@@ -137,7 +157,7 @@ export class CastWatch {
       this._emit('begin', ev.text);
       return hit;
     }
-    if (hit.phase === 'landed' || hit.phase === 'fizzle') {
+    if (hit.phase === 'landed' || hit.phase === 'fizzle' || hit.phase === 'refused') {
       this.counts[hit.phase]++;
       if (this.state === 'casting') this.state = null;
       else this.counts.untracked++;
@@ -177,8 +197,8 @@ export class CastWatch {
   /** A one-line summary for a heartbeat or an HTTP diagnostic. */
   summary() {
     const c = this.counts;
-    return `cast begin=${c.begin} landed=${c.landed} fizzle=${c.fizzle} lost=${c.lost}`
-      + ` untracked=${c.untracked} state=${this.state ?? 'idle'}`
+    return `cast begin=${c.begin} landed=${c.landed} fizzle=${c.fizzle} refused=${c.refused}`
+      + ` lost=${c.lost} untracked=${c.untracked} state=${this.state ?? 'idle'}`
       + (this.state === 'casting' ? ` age=${this.elapsed()}ms` : '');
   }
 
