@@ -554,7 +554,7 @@ export class CombatController {
       if (process.env.M59_DEBUG_SWING) {
         const sinceLast = Date.now() - (this._lastSwingLogAt ?? 0);
         this._lastSwingLogAt = Date.now();
-        console.error(`[swing-debug] t3 swing at ${Date.now()} sinceLast=${sinceLast}ms lastSwing=${this.lastSwing} now=${Date.now()} gap=${Date.now()-this.lastSwing}ms`);
+        console.error(`[swing-debug] ${this.session?.name ?? "?"} swing at ${Date.now()} sinceLast=${sinceLast}ms lastSwing=${this.lastSwing} now=${Date.now()} gap=${Date.now()-this.lastSwing}ms`);
       }
       const zapActive = zapStatus(client).active;
       return { kind: 'swing', what: `swing at ${this.targetName}${zapActive ? ' (zap active)' : ''}` };

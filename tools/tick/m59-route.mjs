@@ -742,7 +742,7 @@ export class Router {
         // re-planning the same leg. The mover reports when the push finally lands.
         this.mark = { col: srvCol, row: srvRow, at: t };
         if (process.env.M59_ROUTE_DEBUG === '1')
-          console.error(`[routedbg] t3 stuck AT DOOR (${aim.col},${aim.row}) for ${held}s — keeping leg, letting raw-door-push engage`);
+          console.error(`[routedbg] ${this.mover?.logName ?? "?"} stuck AT DOOR (${aim.col},${aim.row}) for ${held}s — keeping leg, letting raw-door-push engage`);
         // Fall through to the mover below (do NOT return) so it runs the raw-door-push.
       } else {
         this.leg = null;
@@ -859,7 +859,7 @@ export class Router {
     const aim = this.subWp && this.subWp.length ? this.subWp[0]
       : (at && this.leg.edgeTarget ? this.leg.edgeTarget : this.leg.standOn);
     if (process.env.M59_ROUTE_DEBUG === '1')
-      console.error(`[routedbg] t3 here=${here} me=(${me.col},${me.row}) standOn=(${this.leg.standOn?.col},${this.leg.standOn?.row}) sub=(${sub?sub.col+','+sub.row:'-'}) aim=(${aim.col},${aim.row}) dir=${this.leg.direction} kind=${this.leg.kind} subWp=${this.subWp?this.subWp.length:0}`);
+      console.error(`[routedbg] ${this.mover?.logName ?? "?"} here=${here} me=(${me.col},${me.row}) standOn=(${this.leg.standOn?.col},${this.leg.standOn?.row}) sub=(${sub?sub.col+','+sub.row:'-'}) aim=(${aim.col},${aim.row}) dir=${this.leg.direction} kind=${this.leg.kind} subWp=${this.subWp?this.subWp.length:0}`);
 
     // Hand the aim to the FINE-MODEL MOVER. It plans on wall segments,
     // moves at most MOVEUNITS per tick, and reports blocked when the

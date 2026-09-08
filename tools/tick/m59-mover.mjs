@@ -591,12 +591,27 @@ export class Mover {
   // because a return that skips the wrapper does not exist. It is rate-limited to changes of
   // state plus one line per 15 s so a 10 Hz tick does not drown the log the way the per-tick
   // diagnostics already do.
+  // The name every diagnostic should carry. `session.name` is what decide.mjs uses
+  // (m59-decide.mjs:1786), and the session is already on `this`.
+  //
+  // This exists because the diagnostics in this class had the character's name BAKED INTO THE
+  // STRING — `[movedbg] t3 vel-tick`, `[movestuck] t3 server static` — in a class that all five
+  // characters instantiate. So t4's log line says 't3', and any conclusion drawn from 'the t3
+  // mover does X' is about whichever character happens to have written the line. Every diagnosis
+  // tonight that started from a `t3`-prefixed line is therefore suspect, including some of the
+  // ones I retracted. The literal 't3' in those format strings is the bug; this is the fix, and
+  // the existing strings are left alone rather than edited in 40 places so the change is small
+  // and the new lines are unambiguous.
+  get logName() {
+    try { return this.session?.name ?? '?'; } catch { return '?'; }
+  }
+
   tickLogged(posOverride) {
     let r;
     try {
       r = this.tick(posOverride);
     } catch (e) {
-      try { console.error(`[tick-state] ${this.name ?? '?'} THREW ${e.message}`); } catch {}
+      try { console.error(`[tick-state] ${this.logName} THREW ${e.message}`); } catch {}
       throw e;
     }
     try {
@@ -604,7 +619,7 @@ export class Mover {
       const now = Date.now();
       if (st !== this._lastTickState || now - (this._lastTickStateAt ?? 0) > 15000) {
         this._lastTickState = st; this._lastTickStateAt = now;
-        console.error(`[tick-state] ${this.name ?? '?'} state=${st}` +
+        console.error(`[tick-state] ${this.logName} state=${st}` +
           `${r && r.why ? ' why=' + r.why : ''}${r && r.hold ? ' hold=1' : ''}` +
           ` sends=${this._sendCount ?? 0} gateAge=${now - (this._lastReportAt ?? 0)}` +
           ` path=${this.path ? this.pathIdx + '/' + this.path.length : 'null'}` +
@@ -1021,7 +1036,7 @@ export class Mover {
       try { _df = _dgeo?.fineWalkable ? _dgeo.fineWalkable(_dsqR, _dsqC) : undefined; } catch { _df = undefined; }
       if (_df === false && process.env.M59_MOVE_DEBUG !== '0' && Date.now() - (this._wallAimLogAt ?? 0) > 10000) {
         this._wallAimLogAt = Date.now();
-        console.error(`[movestuck] t3 wall aim: dest=(${_dsqC},${_dsqR}) fine-blocked (not stand_on) — pushing/stepping anyway`);
+        console.error(`[movestuck] ${this.logName} wall aim: dest=(${_dsqC},${_dsqR}) fine-blocked (not stand_on) — pushing/stepping anyway`);
       }
     }
 
@@ -1042,7 +1057,7 @@ export class Mover {
       // PLAN OUTCOME TRACE: velocity never engages because path is null at
       // its block — is _plan failing, or is the path dropped after?
       if (process.env.M59_MOVE_DEBUG !== '0')
-        try { console.error(`[movedbg] t3 plan from=(${Math.floor(myProtoX / KOD_FINENESS)},${Math.floor(myProtoY / KOD_FINENESS)}) dest=${this.dest ? this.dest.col + ',' + this.dest.row : 'null'} found=${result.found} wp=${result.found ? result.waypoints.length : 0} reason=${result.found ? '-' : (result.reason ?? '?')} expanded=${result.expanded} budget=20000 tgtFine=${geo?.fineWalkable?.(Math.floor((this.destProto?.y ?? 0) / KOD_FINENESS), Math.floor((this.destProto?.x ?? 0) / KOD_FINENESS))} tgtStand=${geo?.standable?.(Math.floor((this.destProto?.y ?? 0) / KOD_FINENESS), Math.floor((this.destProto?.x ?? 0) / KOD_FINENESS))} adjusted=${(tx !== this.destProto?.x || ty !== this.destProto?.y) ? 'yes' : 'no'} goal=${Math.floor(ty / KOD_FINENESS)},${Math.floor(tx / KOD_FINENESS)}`); } catch {}
+        try { console.error(`[movedbg] ${this.logName} plan from=(${Math.floor(myProtoX / KOD_FINENESS)},${Math.floor(myProtoY / KOD_FINENESS)}) dest=${this.dest ? this.dest.col + ',' + this.dest.row : 'null'} found=${result.found} wp=${result.found ? result.waypoints.length : 0} reason=${result.found ? '-' : (result.reason ?? '?')} expanded=${result.expanded} budget=20000 tgtFine=${geo?.fineWalkable?.(Math.floor((this.destProto?.y ?? 0) / KOD_FINENESS), Math.floor((this.destProto?.x ?? 0) / KOD_FINENESS))} tgtStand=${geo?.standable?.(Math.floor((this.destProto?.y ?? 0) / KOD_FINENESS), Math.floor((this.destProto?.x ?? 0) / KOD_FINENESS))} adjusted=${(tx !== this.destProto?.x || ty !== this.destProto?.y) ? 'yes' : 'no'} goal=${Math.floor(ty / KOD_FINENESS)},${Math.floor(tx / KOD_FINENESS)}`); } catch {}
       if (result.found) {
         this.path = result.waypoints;
         this.pathIdx = 0;
@@ -1813,7 +1828,7 @@ export class Mover {
     if (stepCol == null) {
       // Name the wall: which check rejected all 8 neighbors.
       if (process.env.M59_MOVE_DEBUG !== '0')
-        console.error(`[movestuck] t3 me=(${myCol},${myRow}) srv=(${curCol},${curRow}) wp=(${wpCol},${wpRow}) rejects=${JSON.stringify(rejects)}`);
+        console.error(`[movestuck] ${this.logName} me=(${myCol},${myRow}) srv=(${curCol},${curRow}) wp=(${wpCol},${wpRow}) rejects=${JSON.stringify(rejects)}`);
       // No fine-reachable neighbor: the fine model has walled us in. The server is
       // CLIENT-AUTHORITATIVE (it does not check geometry), so a fine-wall here may be
       // a model mismatch, not a real wall (the Raza Blacksmith traps a character exactly
@@ -1920,7 +1935,7 @@ export class Mover {
           const back = this._roundBackward(moved, { x: aimX, y: aimY });
           this._submitMove(s, c, () => c.moveTo(back.x, back.y, speed, c.room?.id ?? 0));
           if (process.env.M59_MOVE_DEBUG !== '0')
-            try { console.error(`[movedbg] t3 vel-tick declare=(${Math.round(moved.x)},${Math.round(moved.y)}) ground=${moved.moved.toFixed(0)} stopped=${moved.stopped ?? 'clear'} run=${runNow} stride=${strideNow} idx=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} me=(${me.col},${me.row}) srv=(${curCol},${curRow}) srvXY=(${Math.round(this._serverPos?.x ?? -1)},${Math.round(this._serverPos?.y ?? -1)}) prevDecl=(${Math.round(this._lastDeclX ?? -1)},${Math.round(this._lastDeclY ?? -1)})`); } catch {}
+            try { console.error(`[movedbg] ${this.logName} vel-tick declare=(${Math.round(moved.x)},${Math.round(moved.y)}) ground=${moved.moved.toFixed(0)} stopped=${moved.stopped ?? 'clear'} run=${runNow} stride=${strideNow} idx=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} me=(${me.col},${me.row}) srv=(${curCol},${curRow}) srvXY=(${Math.round(this._serverPos?.x ?? -1)},${Math.round(this._serverPos?.y ?? -1)}) prevDecl=(${Math.round(this._lastDeclX ?? -1)},${Math.round(this._lastDeclY ?? -1)})`); } catch {}
           this._lastDeclX = back.x; this._lastDeclY = back.y;
           // THE SERVER'S RAW POSITION, FOR THE ONE MEASUREMENT THAT SETTLES THE MOVEMENT MODEL.
           // Every claim in this file about how far the server moves per accepted packet has been
@@ -1975,15 +1990,15 @@ export class Mover {
       // branch — the step is fine-model-validated, send it raw.
       if (this._claimMoveSlot()) Promise.resolve(s.client.moveTo(enrProtoX, enrProtoY, 18, s.client.room?.id ?? 0))
         .then(() => { if (process.env.M59_MOVE_DEBUG !== '0')
-          console.error(`[movedbg] t3 gateOK step=(${stepCol},${stepRow}) me=(${me.col},${me.row}) wp=(${wpCol},${wpRow}) idx=${this.pathIdx}/${this.path ? this.path.length : 'null'} stuck=${this.stuckTicks} srv=(${curCol},${curRow}) moveTo sent`); })
+          console.error(`[movedbg] ${this.logName} gateOK step=(${stepCol},${stepRow}) me=(${me.col},${me.row}) wp=(${wpCol},${wpRow}) idx=${this.pathIdx}/${this.path ? this.path.length : 'null'} stuck=${this.stuckTicks} srv=(${curCol},${curRow}) moveTo sent`); })
         .catch(e => { if (process.env.M59_MOVE_DEBUG !== '0')
-          console.error(`[movedbg] t3 gateOK step=(${stepCol},${stepRow}) ERR ${e.message}`); });
+          console.error(`[movedbg] ${this.logName} gateOK step=(${stepCol},${stepRow}) ERR ${e.message}`); });
       this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY, enrProtoX, enrProtoY, 'waypoint-step');
       this._recordReport(enrProtoX, enrProtoY);
       this._noteServerStatic(curCol, curRow);
     } else {
       if (process.env.M59_MOVE_DEBUG !== '0')
-        console.error(`[movedbg-gate] t3 gateCLOSED step=(${stepCol},${stepRow}) me=(${me.col},${me.row}) server=(${myProtoX},${myProtoY}) lastReport=(${this._lastReportX},${this._lastReportY}) interval=${Date.now()-this._lastReportAt}ms`);
+        console.error(`[movedbg-gate] ${this.logName} gateCLOSED step=(${stepCol},${stepRow}) me=(${me.col},${me.row}) server=(${myProtoX},${myProtoY}) lastReport=(${this._lastReportX},${this._lastReportY}) interval=${Date.now()-this._lastReportAt}ms`);
     }
     // STUCK SIGNAL HONESTY: _noteServerStatic above (server squares) is the
     // SOLE maintainer of stuckTicks/lastPos. The old me-based check compared
@@ -1998,7 +2013,7 @@ export class Mover {
     // parked; the failure must be visible, not papered over).
     if (this.stuckTicks >= 5) {
       if (process.env.M59_MOVE_DEBUG !== '0')
-        console.error(`[movestuck] t3 server static x${this.stuckTicks} sends at srv=(${curCol},${curRow}) sim=(${myCol},${myRow}) — re-anchoring sim to server`);
+        console.error(`[movestuck] ${this.logName} server static x${this.stuckTicks} sends at srv=(${curCol},${curRow}) sim=(${myCol},${myRow}) — re-anchoring sim to server`);
       this._simX = null; this._simY = null; this._simAt = 0;
       try { this.session?._pose?.reset(); } catch {}
       this.path = null; this.pathIdx = 0;
@@ -2475,7 +2490,7 @@ export class Mover {
         return { state: 'blink', why: 'all 8 raw moves refused, casting blink' };
       }
     } else if (process.env.M59_MOVE_DEBUG !== '0') {
-      console.error(`[movestuck] t3 travel-mode pocket: all 8 raw moves refused at srv=(${this.lastPos?.col},${this.lastPos?.row}) — blink parked, holding`);
+      console.error(`[movestuck] ${this.logName} travel-mode pocket: all 8 raw moves refused at srv=(${this.lastPos?.col},${this.lastPos?.row}) — blink parked, holding`);
     }
     return { state: 'stuck', why: 'server refused all 8 raw move directions' };
   }

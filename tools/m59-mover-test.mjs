@@ -1331,5 +1331,39 @@ console.log('\nOWNERSHIP: an abandoned owner does not freeze movement');
   ok('a stale owner loses the destination', took !== false && mover.dest.col === 4, `${took} ${mover.dest.col}`);
 }
 
+
+// ---------------------------------------------------------------- diagnostic identity
+// A diagnostic that names the wrong character is worse than no diagnostic: every conclusion
+// drawn from it is about whichever character happened to write the line. This class is
+// instantiated once per character, and its format strings had `t3` BAKED IN —
+// `[movedbg] t3 vel-tick`, `[movestuck] t3 server static` — so on a five-character fleet the
+// log said 't3' for all five. Prove the label comes from the session.
+{
+  const lines = [];
+  const orig = console.error;
+  console.error = (s) => lines.push(String(s));
+  try {
+    const session = {
+      name: 'zebra',
+      client: { state: 'game', room: { id: 5 }, self: { col: 3, row: 4 } },
+      policy: {},
+    };
+    const mover = new Mover(session, { reportIntervalMs: 0 });
+    mover.tickLogged();
+  } finally {
+    console.error = orig;
+  }
+  const ts = lines.filter((l) => l.includes('[tick-state]'));
+  ok(ts.length >= 1, 'tickLogged reports the state it returned');
+  ok(ts.every((l) => l.includes('zebra')), 'the tick-state line carries the session name');
+  ok(!ts.some((l) => /\bt3\b/.test(l)), 'and no baked-in character name survives in it');
+}
+{
+  const probe = new Mover({ name: 'zebra', policy: {} }, { reportIntervalMs: 0 });
+  ok(probe.logName === 'zebra', 'logName reads through the session');
+  const anon = new Mover({}, { reportIntervalMs: 0 });
+  ok(anon.logName === '?', 'a session with no name is ? rather than a wrong name');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
