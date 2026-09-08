@@ -45,11 +45,60 @@
 // mover reports "search-exhausted". These are different answers and the
 // caller can distinguish them.
 //
+// A REGION EXIT IS A DOOR THAT IS INVISIBLE TO EVERY WALKABILITY PREDICATE.
+//
+// Some rooms implement their borders in kod instead of `plEdge_Exits`, so the bake sees
+// `edgeExits: []` and the geometry says the whole corner is ordinary floor. Marion (200) is the
+// case that produced this: `marion.kod:150` opens `SomethingMoved` and tests two corners --
+//
+//   if (new_row < 32) and (new_col > 66)  -> RID_C4 (534), arriving at 34,5
+//   if (new_row > 83) and (new_col > 48)  -> RID_C5 (535), arriving at 3,23
+//
+// Nothing in `transitBanned`, `fineWalkable`, `standable` or `inBounds` can see either. A mover
+// asked to walk to (50,85) -- which is INSIDE the second corner, the correct destination -- will
+// blunder through the first one on the way, get teleported to room 534, be re-sent to Marion by
+// the router, and walk into it again. Measured live: `trans=75` room transitions with the
+// character never leaving the pair of rooms, and 79 of 1,653 move declarations landing inside the
+// unwanted corner.
+//
+// THE RULE IS NOT "corners are impassable". A corner is the door for exactly ONE room, so it is
+// forbidden only when it is not the room we are travelling to. Banning it unconditionally would
+// seal the exit we are trying to reach, which is the opposite bug.
+//
+// The cost is small and measured rather than assumed: in Marion, the C4 corner is 837 squares of
+// which only 22 are walkable, and the C5 corner is 225 of which only 15 are. These are tight
+// doorways, not open ground, which is why they are safe to exclude and also why a mover can
+// stumble into one -- there is no room to be merely near it.
+export function regionCornerBanned(geo, row, col, wantRoom) {
+  if (!geo) return false;
+  const num = geo.roomNum ?? geo.num;
+  if (num == null) return false;
+  let exits;
+  try { exits = codeExits(num); } catch { return false; }
+  if (!Array.isArray(exits) || !exits.length) return false;
+  for (const e of exits) {
+    if (e.to == null || !Array.isArray(e.when) || !e.when.length) continue;
+    // The door for the room we actually want: walk through it freely.
+    if (wantRoom != null && e.to === wantRoom) continue;
+    let inCorner = true;
+    for (const c of e.when) {
+      const v = c.axis === 'row' ? row : c.axis === 'col' ? col : null;
+      if (v == null) { inCorner = false; break; }
+      if (c.op === '<' && !(v < c.value)) { inCorner = false; break; }
+      if (c.op === '>' && !(v > c.value)) { inCorner = false; break; }
+      if (c.op === '==' && !(v === c.value)) { inCorner = false; break; }
+    }
+    if (inCorner) return true;
+  }
+  return false;
+}
+
 // The straight-line + brute-force fan from the previous revision is gone.
 // The raw-move fallback remains as a last resort for stale geometry where
 // the fine model says "wall" but the server says "floor".
 
 import { protocolToClient, clientToProtocol, KOD_FINENESS, PLAYER_RADIUS } from '../m59-roo.mjs';
+import { codeExits } from '../m59-map.mjs';
 import { isGrounded, isEmbedded, nearestGrounded, segHeightOk, transitBanned } from './m59-ground.mjs';
 import { Pose } from './m59-pose.mjs';
 import '../m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
@@ -328,7 +377,9 @@ export class Mover {
    * Set the destination. col/row are protocol square coordinates
    * (the same space as client.self.col/.row).
    */
-  to(col, row, { standOn = false, edgeTarget = null, by = null } = {}) {
+  to(col, row, { standOn = false, edgeTarget = null, by = null, wantRoom = null } = {}) {
+    // The room this destination is ultimately FOR. Used only to decide which of a room's
+    // kod teleport corners may be walked through; see regionCornerBanned.
     // Never poison the destination: a non-finite col/row makes destProto NaN,
     // and every later send throws RangeError inside a swallowed catch —
     // counted by the pacer, never on the wire, frozen with zero errors.
@@ -389,6 +440,12 @@ export class Mover {
     // the server handles the transition. The mover skips the floor check and
     // lets the raw-move fallback carry the character onto it.
     this._destIsStandOn = standOn;
+    // Which room the destination is ultimately FOR, so a kod teleport corner can be told
+    // apart from ordinary floor. Null means "nobody told me", which is NOT the same as
+    // "there is no such room": with it null every corner is treated as unwanted, which is
+    // the safe direction to be wrong (we avoid doors we might have wanted) but would seal
+    // a room whose only exit is a corner. The router always passes it now.
+    this._wantRoom = wantRoom ?? null;
     // PHASE 2: the edge target. The square beyond the boundary (in the other
     // room). Used to compute the edge direction for the walk-past-boundary
     // check. The direction from the stand_on square to the edgeTarget is the
@@ -1243,6 +1300,20 @@ export class Mover {
       if (result.found) {
         this.path = result.waypoints;
         this.pathIdx = 0;
+        // IS THE PATH ACTUALLY INSTALLED? Asked because the coarse-tier fallback logs a
+        // SUCCESS EVERY ~100ms -- "coarse A* found 18 waypoints" -- while the heartbeat keeps
+        // reporting `path=null`. One of those two statements has to be false, and the only way
+        // to tell which is to log the install itself. If a path is installed and then reported
+        // null on the next tick, something between these two lines is discarding it.
+        // Rate-limited to once a second so this cannot become the thing that fills the log.
+        if (Date.now() - (this._lastInstallLogAt ?? 0) > 1000) {
+          this._lastInstallLogAt = Date.now();
+          console.error(`[path-install] ${this.logName} ${result.waypoints?.length ?? 0} waypoints `
+            + `tier=${result.coarseTier ? 'COARSE' : 'fine'} `
+            + `to=(${Math.floor((result.waypoints?.at(-1)?.x ?? 0) / KOD_FINENESS)},`
+            + `${Math.floor((result.waypoints?.at(-1)?.y ?? 0) / KOD_FINENESS)}) `
+            + `from=(${Math.floor(myProtoX / KOD_FINENESS)},${Math.floor(myProtoY / KOD_FINENESS)})`);
+        }
       } else {
         // No fine path, or search exhausted. The server is
         // CLIENT-AUTHORITATIVE: it does not check geometry, it
@@ -1469,13 +1540,20 @@ export class Mover {
         // Skip headings into floorless ground OR up unclimbable faces. The
         // stride extension above already refused wall/height-blocked segments;
         // this covers the 16-unit base probe the extension falls back to.
+        // A KOD TELEPORT CORNER IS REFUSED LIKE A WALL. The fan is the site that actually
+        // caused the ping-pong: it probes eight headings, the corner squares are perfectly
+        // walkable, and the heading that points into the corner is often the best-scoring one.
+        // In Marion the fan declared into the 534 corner 79 times while the destination was in
+        // 535, and each declaration teleported the character out of the room the router had
+        // just sent him into.
         if (!startIsVoid && !sqIsExit && (transitBanned(_fgeo, sqR, sqC) === true
-            || segHeightOk(_fgeo, myProtoX, myProtoY, fanX, fanY) === false)) {
+            || segHeightOk(_fgeo, myProtoX, myProtoY, fanX, fanY) === false
+            || regionCornerBanned(_fgeo, sqR, sqC, this._wantRoom))) {
           this._fanIndex = idx + 1;
           if (this._fanIndex >= 9) {
             return this._fanExhausted(protocolToClient(myProtoX), protocolToClient(myProtoY));
           }
-          return { state: 'raw-move', fanIndex: this._fanIndex, why: 'fan heading refused (no floor or too steep), skipping' };
+          return { state: 'raw-move', fanIndex: this._fanIndex, why: 'fan heading refused (no floor, too steep,), skipping' };
         }
       }
       // Cheat-clean: gate fan probes to the 1/s send law like every move.
@@ -1643,7 +1721,8 @@ export class Mover {
       const standOnNear = this._destIsStandOn && distToDest0 < KOD_FINENESS * 4;
       // NEVER PUSH INTO A VOID: a floorless non-exit destination is a bad
       // target, not a door alcove. Stand_on exits are exempt by design.
-      const destGroundOk = this._destIsStandOn === true || transitBanned(geoRef, destRow, destCol) !== true;
+      const destGroundOk = (this._destIsStandOn === true || transitBanned(geoRef, destRow, destCol) !== true)
+        && !regionCornerBanned(geoRef, destRow, destCol, this._wantRoom);
       if (distToDest0 < KOD_FINENESS * 4 && (destFineOk === false || noPathToNearDest || standOnNear) && destGroundOk) {
         const rx = this.destProto.x - myProtoX, ry = this.destProto.y - myProtoY;
         const rd = Math.hypot(rx, ry) || 1;
@@ -1738,7 +1817,8 @@ export class Mover {
           const sy = Math.round(myProtoY + (ndy / nd) * slen);
           const sqC = Math.floor(sx / KOD_FINENESS), sqR = Math.floor(sy / KOD_FINENESS);
           const sqIsExit = this._destIsStandOn === true && sqC === destCol && sqR === destRow;
-          const sqGroundOk = sqIsExit || transitBanned(geo, sqR, sqC) !== true;
+          const sqGroundOk = (sqIsExit || transitBanned(geo, sqR, sqC) !== true)
+            && !regionCornerBanned(geo, sqR, sqC, this._wantRoom);
           let segOk = false;
           if (sqGroundOk && geo?.traceFineMoveClient) {
             try {
@@ -1799,7 +1879,8 @@ export class Mover {
           const destSqC1 = this.destProto ? Math.floor(this.destProto.x / KOD_FINENESS) : null;
           const destSqR1 = this.destProto ? Math.floor(this.destProto.y / KOD_FINENESS) : null;
           const isExitDest1 = this._destIsStandOn === true && nc === destSqC1 && nr === destSqR1;
-          if (!isExitDest1 && transitBanned(geo, nr, nc) === true) continue;
+          if (!isExitDest1 && (transitBanned(geo, nr, nc) === true
+              || regionCornerBanned(geo, nr, nc, this._wantRoom))) continue;
         }
         stepCol = nc; stepRow = nr;
         break;
@@ -2001,7 +2082,8 @@ export class Mover {
         const destSqC0 = this.destProto ? Math.floor(this.destProto.x / KOD_FINENESS) : null;
         const destSqR0 = this.destProto ? Math.floor(this.destProto.y / KOD_FINENESS) : null;
         const isExitDest0 = this._destIsStandOn === true && nc === destSqC0 && nr === destSqR0;
-        if (!isExitDest0 && transitBanned(geo, nr, nc) === true) { rejects.void++; continue; }
+        if (!isExitDest0 && (transitBanned(geo, nr, nc) === true
+            || regionCornerBanned(geo, nr, nc, this._wantRoom))) { rejects.void++; continue; }
       }
       if (f === true) { stepCol = nc; stepRow = nr; break; }  // fine says ok
       if (f === undefined && s === false) continue;   // no fine data, coarse blocked

@@ -8,7 +8,7 @@
 // gets this wrong (it sees no blocked squares); the fine model routes
 // around the segment.
 
-import { Mover, MOVEUNITS_PROTO } from './tick/m59-mover.mjs';
+import { Mover, MOVEUNITS_PROTO , regionCornerBanned} from './tick/m59-mover.mjs';
 import { readFileSync } from 'node:fs';
 import { Pose } from './tick/m59-pose.mjs';
 import { CastWatch } from './tick/m59-cast.mjs';
@@ -1583,6 +1583,84 @@ function blinkRig({ col = 3, row = 5 } = {}) {
   ok('an outstanding cast holds the mover', r.state === 'blinking', JSON.stringify(r));
   ok('and it sends no move packet while the cast is in flight',
      sent.filter(s => s[0] === 'move').length === 0, JSON.stringify(sent.slice(before)));
+}
+
+// ---------------------------------------------------------------------------
+// A KOD TELEPORT CORNER MUST NOT BE WALKED INTO UNLESS IT IS THE DOOR WE WANT.
+//
+// This is the bug that made Gountrug bounce between Marion and the Deep Woods for
+// the whole of 2026-09-08: `trans=75` room transitions, and 79 of 1,653 move
+// declarations landing inside the corner that teleports him OUT of the room the
+// router had just sent him into. Marion's borders are kod, not `plEdge_Exits`
+// (marion.kod:150), so the bake sees `edgeExits: []` and every walkability
+// predicate -- transitBanned, fineWalkable, standable, inBounds -- calls the
+// corner ordinary floor. The escape fan scored the corner heading as the best
+// available and steered into it, repeatedly, forever.
+{
+  const { loadMap } = await import('./m59-map.mjs');
+  const { RoomGeometry } = await import('./m59-roo.mjs');
+  const map = loadMap();
+  const rooms = Array.isArray(map.rooms) ? map.rooms : Object.values(map.rooms);
+  const rec = rooms.find(x => x.num === 200);
+  const geo = RoomGeometry.fromJSON(rec.roo);
+  geo.roomNum = 200;
+  const banned = (r, c, want) => regionCornerBanned(geo, r, c, want);
+
+  // Marion's two corners, read out of marion.kod rather than assumed:
+  //   row<32 && col>66 -> RID_C4 (534), arriving 34,5
+  //   row>83 && col>48 -> RID_C5 (535), arriving 3,23
+  const C4 = { row: 30, col: 68 };   // inside the 534 door only
+  const C5 = { row: 85, col: 50 };   // inside the 535 door only
+  const OPEN = { row: 40, col: 63 }; // ordinary floor: row<32 is FALSE here
+
+  ok('the 534 corner is banned when we want 535',
+     banned(C4.row, C4.col, 535) === true, 'the whole ping-pong is this one verdict');
+  ok('the 535 corner is ALLOWED when we want 535 -- it IS the door',
+     banned(C5.row, C5.col, 535) === false, 'banning unconditionally would seal the exit');
+  ok('the 535 corner is banned when we want 534',
+     banned(C5.row, C5.col, 534) === true);
+  ok('ordinary floor is never banned',
+     banned(OPEN.row, OPEN.col, 535) === false);
+
+  // THE ASYMMETRY THAT CAUGHT US OUT: (63,30) satisfies row<32 but NOT col>66, so it is
+  // not the corner. The character stood at (63,30) and (66,30) without teleporting, and a
+  // rule that tested only one axis would have banned ground he was legitimately standing on.
+  ok('a square satisfying ONE axis of the condition is not the corner',
+     banned(30, 63, 535) === false, 'row<32 is true but col>66 is false');
+  ok('the corner needs BOTH axes',
+     banned(31, 67, 535) === true && banned(32, 67, 535) === false && banned(31, 66, 535) === false);
+
+  // An unknown destination room must be the SAFE direction: avoid every corner rather
+  // than blunder into one. That is what a caller that never passes wantRoom gets.
+  ok('wantRoom null avoids every corner rather than none',
+     banned(C4.row, C4.col, null) === true && banned(C5.row, C5.col, null) === true);
+
+  // A room with no kod exits must be entirely unaffected -- this must not become a
+  // predicate that bans ground in the 262 rooms that have no corner exits at all.
+  {
+    const r534 = rooms.find(x => x.num === 534);
+    const g534 = RoomGeometry.fromJSON(r534.roo);
+    g534.roomNum = 534;
+    let bannedCount = 0;
+    for (let r = 1; r <= g534.rows; r++) for (let c = 1; c <= g534.cols; c++)
+      if (banned(r, c, 535)) bannedCount++;
+    ok('a room with no kod corner exits loses no walkable ground',
+       bannedCount === 0, `${bannedCount} squares banned in room 534`);
+  }
+
+  // THE MEASURED COST, asserted so a future edit cannot quietly make this a big hammer.
+  // In Marion the 534 corner is 837 squares of which 22 are walkable and the 535 corner
+  // is 225 of which 15 are. If a re-bake makes that number jump, the rule has started
+  // excluding ground rather than doorways.
+  {
+    let c4 = 0, c5 = 0;
+    for (let r = 1; r <= 88; r++) for (let c = 1; c <= 93; c++) {
+      if (geo.walkable(r, c) && banned(r, c, 535)) c4++;
+      if (geo.walkable(r, c) && banned(r, c, 534)) c5++;
+    }
+    ok('the ban excludes only the doorway squares',
+       c4 <= 40 && c5 <= 40, `want-535 bans ${c4} walkable squares, want-534 bans ${c5}`);
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

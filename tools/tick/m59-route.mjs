@@ -285,6 +285,12 @@ export class Router {
                     edgeTarget,
                     direction: exit.direction ?? null,
                     kind: exit.kind ?? 'walk',
+                    // THE ROOM WE ARE TRYING TO REACH, PASSED THROUGH TO THE MOVER.
+                    // It is needed because a room's kod region exits -- the corners that
+                    // teleport you -- are invisible to every walkability predicate, and the
+                    // only thing that distinguishes the door we want from the door we do not
+                    // is this number. See regionCornerBanned in m59-mover.mjs.
+                    wantRoom: next ?? null,
                     startedAt: this.now() } };
   }
 
@@ -892,7 +898,12 @@ export class Router {
           `room=${this._geo()?.roomNum ?? this._geo()?.num ?? '?'} geoRows=${this._geo()?.rows ?? '?'} geoCols=${this._geo()?.cols ?? '?'}`);
       } catch {}
     }
-    this.mover.to(aimCol, aimRow, { standOn: isStandOn, edgeTarget: this.leg.edgeTarget, by: 'router' });
+    // wantRoom IS THE LEG'S TARGET ROOM, and it is the only thing that lets the mover tell a
+    // kod teleport corner it wants from one it does not -- those corners are ordinary floor to
+    // every geometry predicate. Omitting it makes the mover avoid ALL of them, which in a room
+    // whose only exit is a corner means it can never leave.
+    this.mover.to(aimCol, aimRow, { standOn: isStandOn, edgeTarget: this.leg.edgeTarget,
+                                    by: 'router', wantRoom: this.leg.wantRoom ?? null });
     // tickLogged, not tick: the 1,430-line tick() has 29 exits that log nothing, so a character
     // standing still for three minutes is undiagnosable from the log. The wrapper is the only
     // place that sees every return, and it cannot drift from the code.
