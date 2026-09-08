@@ -848,8 +848,6 @@ class Session {
     // m59-hits.mjs.
     this.hits = null;                   // the book, loaded lazily by character name
     this.lastHealth = null;             // to tell a hit from a heal
-    this.blockedSquares = new Set();   // squares the server rejected (fine-blocked)
-    this.lastRoomId = null;            // to detect room changes and clear blockedSquares
     this.lastCombatLine = null;         // { at, who } — best-effort attribution
     this.hitsSaveTimer = null;
     // HOW LONG EACH MAP TAKES TO CROSS. The other half of the same question and the more
@@ -1959,32 +1957,6 @@ class Session {
     // rather than a sector one — and that reads as "we do not know", so the whole room is
     // still refused. Same safe reading `until == null` already gets.
     const invalidated = c.room.collisionInvalidated;
-    
-    // CHECK IF THE TARGET SQUARE IS IN THE BLOCKED SET (SERVER REJECTED IT BEFORE).
-    // If the server rejected a move to this square in the past, we should not try it
-    // again. The fine model said it was walkable, but the server's BSP check says it
-    // isn't. We record this so the pathfinder doesn't try the same square again.
-    //
-    // CLEAR THE SET IF THE ROOM HAS CHANGED. The blocked squares are room-specific,
-    // so when the character changes rooms, the set should be cleared.
-    //
-    // GUARD: the test context may not have `blockedSquares` defined. Check before using.
-    if (this.blockedSquares) {
-      if (this.lastRoomId !== c.room.id) {
-        this.blockedSquares.clear();
-        this.lastRoomId = c.room.id;
-      }
-      
-      if (Number.isFinite(x) && Number.isFinite(y)) {
-        const key = `${Math.round(x)},${Math.round(y)}`;
-        if (this.blockedSquares.has(key)) {
-          return { available: false, moved: false, blocked: true,
-                  reason: 'fine_blocked',
-                  note: 'server rejected this square before; the fine model and the server disagree' };
-        }
-      }
-    }
-    
     if (invalidated && (invalidated.until == null || Date.now() < invalidated.until)) {
       let touches = true;
       if (Number.isInteger(invalidated.sector) && typeof geo.leafAtClient === 'function') {
@@ -2225,32 +2197,6 @@ class Session {
     if (c.room.id !== roomId) return { sent: false, validation: {
       available: false, moved: false, blocked: true, reason: 'room_changed_before_move',
     } };
-    
-    // CHECK IF THE TARGET SQUARE IS IN THE BLOCKED SET (SERVER REJECTED IT BEFORE).
-    // If the server rejected a move to this square in the past, we should not try it
-    // again. The fine model said it was walkable, but the server's BSP check says it
-    // isn't. We record this so the pathfinder doesn't try the same square again.
-    //
-    // CLEAR THE SET IF THE ROOM HAS CHANGED. The blocked squares are room-specific,
-    // so when the character changes rooms, the set should be cleared.
-    //
-    // GUARD: the test context may not have `blockedSquares` defined. Check before using.
-    if (this.blockedSquares) {
-      if (this.lastRoomId !== c.room.id) {
-        this.blockedSquares.clear();
-        this.lastRoomId = c.room.id;
-      }
-      
-      if (Number.isFinite(x) && Number.isFinite(y)) {
-        const key = `${Math.round(x)},${Math.round(y)}`;
-        if (this.blockedSquares.has(key)) {
-          return { sent: false, validation: {
-            available: false, moved: false, blocked: true,
-            reason: 'fine_blocked',
-            note: 'server rejected this square before; the fine model and the server disagree' } };
-        }
-      }
-    }
 
     // OFF THE MAP IS A LEGAL DESTINATION, AND IT STILL NEEDS AN ATOMIC LOCAL PROOF.
     //
@@ -2307,15 +2253,6 @@ class Session {
         // recovered-from-no-floor, or merely-near results are not movement authority.
         const validation = this.validateFineTarget(target.x, target.y,
           { slide: false, fall: false });
-        
-        // MARK THE SQUARE AS BLOCKED IF THE COLLISION CHECK REJECTED IT.
-        // The collision check said the square is not walkable, but the fine model said it
-        // was. We record this so the pathfinder doesn't try the same square again.
-        if (validation?.blocked !== false && Number.isFinite(target.x) && Number.isFinite(target.y)) {
-          const key = `${Math.round(target.x)},${Math.round(target.y)}`;
-          if (this.blockedSquares) this.blockedSquares.add(key);
-        }
-        
         if (validation?.drift) noteGeometryDrift(this, validation.drift);
         const exact = validation?.target?.x === target.x && validation?.target?.y === target.y;
         if (!validation?.available || !validation?.moved || !validation?.arrived
@@ -2832,7 +2769,6 @@ class Session {
       const validation = queued.validation ?? {};
       const leftRoom = c.room.id !== roomId;
       const at = c.self ? { x: c.self.x, y: c.self.y, col: c.self.col, row: c.self.row } : before;
-      
       return { moved: false, position: at, left_room: leftRoom,
                geometry_blocked: validation.blocked !== false,
                reason: validation.reason ?? 'geometry_blocked', note: validation.note };
@@ -2948,14 +2884,6 @@ class Session {
             return { moved: true, position: { x: after.x, y: after.y, col: after.col, row: after.row },
                      left_room: c2.room?.id !== startRoom, travelled: Math.hypot(after.x - before.x, after.y - before.y),
                      raw_move: true };
-          }
-          // MARK THE SQUARE AS BLOCKED SO THE PATHFINDER AVOIDS IT IN THE FUTURE.
-          // The server rejected the move because the square is not walkable (fine model
-          // said it was, but the server's BSP check says it isn't). We record this so
-          // the pathfinder doesn't try the same square again.
-          if (Number.isFinite(x) && Number.isFinite(y)) {
-            const key = `${Math.round(x)},${Math.round(y)}`;
-            this.blockedSquares.add(key);
           }
           return { moved: false, position: before, left_room: c2.room?.id !== startRoom,
                    reason: 'raw_move_rejected', note: 'server rejected the raw move' };

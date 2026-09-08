@@ -985,6 +985,71 @@ console.log('\nEXACT-POINT VOID (square floored, body point leafless)');
   void sent;
 }
 
+console.log('\nDESTINATION OWNERSHIP: the owner may re-aim its own destination');
+{
+  // THE GUARD EXISTS TO STOP A LOWER CALLER STEALING A ROUTE. It was written as
+  // `rank <= heldRank`, which also refuses the holder itself. That is not a conservative
+  // reading of the guard — a router walks a route as a SEQUENCE of destinations, so a guard
+  // that forbids it from updating its own destination freezes the character on the first leg.
+  // Seen live: `to() DEFERRED: 'router' rank=100 wants 71,49 but 'router' rank=100 holds
+  // 69,49` repeating while the mover walked to the stale square, ending with gateAge past
+  // twenty minutes and stuck past thirteen thousand.
+  const { mover } = rig({ geo: clearGeometry() });
+  mover.to(8, 2, { by: 'router' });
+  ok('first claim takes the destination', mover.dest?.col === 8 && mover.dest?.row === 2, JSON.stringify(mover.dest));
+  mover.to(9, 2, { by: 'router' });   // the same owner, advancing along its own route
+  ok('the SAME owner can re-aim its own destination', mover.dest?.col === 9 && mover.dest?.row === 2,
+     `dest=${mover.dest?.col},${mover.dest?.row} — a router that cannot advance is frozen on leg one`);
+  // And the guard still does the job it was written for. Without this half, the assertion above
+  // is just 'anyone may set anything', which is what the mover did before and why it thrashed
+  // at 13,619 destination changes against 244,021 sends.
+  mover.to(4, 4, { by: 'combat' });
+  ok('a LOWER caller still cannot steal it', mover.dest?.col === 9,
+     `dest=${mover.dest?.col},${mover.dest?.row} — combat took the route`);
+  mover.to(4, 4, { by: 'router' });
+  ok('and the owner may still re-aim after a refusal', mover.dest?.col === 4 && mover.dest?.row === 4,
+     `dest=${mover.dest?.col},${mover.dest?.row}`);
+}
+
+console.log('\nCORNER ROUNDED: the fan releases when the direct path clears');
+{
+  // THE CLAUSE THIS ASSERTION EXISTS FOR was deleted with the slide-along-wall check in
+  // 2d44a48 and never replaced: 'Direct path is CLEAR and we were sliding: corner rounded.
+  // Release the fan so velocity resumes (persistent slide would otherwise keep sidestepping
+  // past the opening).' Its absence is not cosmetic. The dither detector can only FIRE the
+  // fan; with no release, a character that fans once keeps sidestepping past the opening it
+  // was sliding toward, which is the oscillation this mover was reported for.
+  //
+  // WHY THIS RIG AND NOT A CLEANER ONE. It uses the `maze` geometry, where the fan is engaged
+  // by the dither detector rather than hand-set. The first attempt at this assertion hand-set
+  // `_fanIndex = 0` and then asserted the fan was gone three ticks later — and it passed
+  // vacuously, because the fan had never engaged in the first place, so 'null' was the state
+  // before and after. An assertion that holds on a run where nothing happened is the exact
+  // failure this repository keeps hitting, so the fan's ENGAGEMENT is asserted before its
+  // release, on the same object, with nothing reset in between.
+  const mazeGeo = {
+    collisionReady: true,
+    standable: () => true,
+    fineWalkable: () => true,
+    traceFineMoveClient: () => ({ blocked: true, moved: false, arrived: false }),
+    finePathProtocol: () => ({ found: false, reason: 'maze', waypoints: [] }),
+  };
+  const { mover, clock } = rig({ geo: mazeGeo });
+  mover.to(6, 2, { by: 'router' });
+  let engaged = false;
+  for (let i = 0; i < 40 && !engaged; i++) { clock(1600); mover.tick(); if (mover._fanIndex != null) engaged = true; }
+  ok('the fan engages while the path is blocked (the release assertion needs this)', engaged, `fanIndex=${mover._fanIndex}`);
+  if (engaged) {
+    // The corner is rounded: the wall is gone, the direct path is clear.
+    mazeGeo.traceFineMoveClient = (x0, y0, x1, y1) => ({ blocked: false, moved: true, arrived: true, x: x1, y: y1 });
+    let released = false;
+    for (let i = 0; i < 6 && !released; i++) { clock(1600); mover.tick(); if (mover._fanIndex == null) released = true; }
+    ok('the fan releases once the direct path is clear', released, `fanIndex=${mover._fanIndex}`);
+  } else {
+    ok('the fan releases once the direct path is clear', false, 'never engaged, so release is untested');
+  }
+}
+
 console.log('\norderCandidates: straight while moving, taboo only when stuck');
 {
   const { orderCandidates } = await import('./tick/m59-mover.mjs');

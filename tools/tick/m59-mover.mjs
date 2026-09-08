@@ -319,7 +319,17 @@ export class Mover {
       const held = this._owner ?? null;
       const heldRank = OWNER_RANK[held] ?? OWNER_RANK_DEFAULT;
       const stale = Date.now() - (this._ownerAt ?? 0) > OWNER_STALE_MS;
-      if (!stale && rank <= heldRank) {
+      // THE OWNER MAY ALWAYS RE-AIM ITS OWN DESTINATION. This guard exists to stop a
+      // lower-priority caller (combat, patrol) from stealing a route out from under the router
+      // and resetting the path every tick — the thrashing this mover was rebuilt for. It used
+      // `rank <= heldRank`, which also refuses the holder ITSELF: observed live as
+      // `to() DEFERRED: 'router' rank=100 wants 71,49 but 'router' rank=100 holds 69,49`, over
+      // and over, while the mover walked toward the stale 69,49 and then fell silent with
+      // gateAge past 20 minutes and stuck past 13,000. A router walks a route as a sequence of
+      // destinations; a guard that forbids it from updating its own destination does not
+      // protect the route, it freezes the character on the first leg. Equality is the owner,
+      // not a rival of equal rank.
+      if (!stale && by !== held && rank <= heldRank) {
         // Same-rank or lower, and the owner is live: defer. The owner is still
         // responsible for this destination; if it has genuinely finished, it
         // clears it, or it goes stale in OWNER_STALE_MS.
@@ -533,6 +543,10 @@ export class Mover {
    * @param {object} [posOverride] - { col, row, x, y } to use instead of client.self.
    */
   tick(posOverride) {
+    // When this tick began, for the corner-rounded release below. Captured first because every
+    // later `Date.now()` in a 2,000-line function can drift past a millisecond boundary and make
+    // a fan created on this very tick look like it predates it.
+    this._tickStartedAt = Date.now();
     if (!this.active) return { state: 'idle' };
     // CASTING HOLD: movement breaks concentration (server-side cast time),
     // so a cast never completes while strides go out every second — mana
@@ -789,6 +803,7 @@ export class Mover {
       }
       this._fanIndex = 0;
       this._fanFrom = { x: protocolToClient(myProtoX), y: protocolToClient(myProtoY) };
+      this._fanFiredAt = Date.now();   // see the corner-rounded release below
       // NO EARLY RETURN (see the 0c note below): fall through to the fan
       // branch so the gate can send this same tick.
     }
@@ -974,6 +989,102 @@ export class Mover {
       }
     } else if (this._progWin?.length) {
       this._progWin.length = 0;
+    }
+
+    // CORNER ROUNDED: RELEASE THE FAN. Restored from 2d44a48^, where it read 'Direct path is
+    // CLEAR and we were sliding: corner rounded. Release the fan so velocity resumes
+    // (persistent slide would otherwise keep sidestepping past the opening).' It was deleted
+    // with the slide-along-wall check and never replaced, and its absence is a live defect
+    // rather than a stylistic one: the dither detector above can only FIRE the fan and nothing
+    // here ever puts it down, so a character that fans once keeps fanning — it sidesteps past
+    // the opening it was sliding toward and then dithers again, which is the oscillation this
+    // goal was opened to fix.
+    //
+    // The clear-test is the INTEGRATION rather than the old radius-free trace. The pre-fix code
+    // used `playerRadius: 1` and justified it as 'the full player radius clips nearby walls and
+    // reads the direct path as blocked on open ground, firing the fan which then escapes a
+    // pocket that doesn't exist'. That reasoning is sound and the constant was wrong for the
+    // reason documented at PLAYER_WALL_CLEARANCE_CLIENT_UNITS. What matters here is that the
+    // release test and the declaration agree about what 'clear' means; if they use different
+    // geometry the fan re-fires on the next tick and the release does nothing.
+    // `standOnNear` in 2d44a48^ was declared at preFix:830, above the clause. Here it is
+    // recomputed from the same formula rather than reaching for the `standOnNear` at line
+    // 1256, which is inside a different block and out of scope — the same class of error as
+    // the `f`/`frame` crash in decide(), and the reason this restore is written with its own
+    // binding instead of assuming the old one is still in view.
+    const _standOnNear = !!this._destIsStandOn && this.destProto != null &&
+      Math.hypot(this.destProto.x - myProtoX, this.destProto.y - myProtoY) < KOD_FINENESS * 4;
+    if (this._fanIndex != null && !_standOnNear) {
+      const geo = this.session?.world?.geometry;
+      if (geo?.traceFineMoveClient) {
+        // THE TEST MUST HAVE SOMETHING TO TEST. A zero-length path — the aim is where we already
+        // are — integrates to 'clear' trivially, because nothing blocks a move of zero distance.
+        // Releasing on that would clear the fan on the exact tick the fan exists to escape, which
+        // is how the first draft of this restore failed five fan tests: the fan fired, the release
+        // ran on the same tick with the character's own position as the aim, and the fan was gone
+        // before it could probe. Require real distance before trusting a 'clear' verdict, and
+        // require the full distance to be clear, not merely some of it.
+        const relDist = Math.hypot(aimX - myProtoX, aimY - myProtoY);
+        const rel = relDist < 1 ? { moved: 0, stopped: 'no path to test' }
+          : this._integrateToward(geo, myProtoX, myProtoY, aimX, aimY,
+          relDist,
+          { dt: 1000, numSteps: STEPS_PER_MOVE, playerRadius: PLAYER_WALL_CLEARANCE_CLIENT_UNITS });
+        // CLEAR MEANS WALKABLE, AND THE TRACE ONLY ANSWERS ABOUT WALLS. The pre-fix clause tested
+        // the trace alone and released on `!blocked`; the rigs that caught that are the five fan
+        // tests, which put a clear trace over a FLOORLESS square (standable false, `voidSlideGeo`)
+        // and watch whether the mover steps into it. A wall and a hole are different refusals and
+        // the fan exists for both: this file's own fan-aiming comment says 'wandering void is how
+        // characters get lost and die'. So the release requires the destination square to be
+        // standable as well as the path to be unblocked — releasing into a void is worse than not
+        // releasing, because the fan was the thing trying to get out of it.
+        // RELEASE ONLY IF THE FAN IS FINISHED WITH, NOT MERELY BECAUSE THE AIM IS REACHABLE.
+        //
+        // The pre-fix clause tested the trace to the AIM and released on `!blocked`. That is the
+        // whole of its defect and the rigs prove it: `voidSlideGeo` voids square (4,2), which is
+        // where a fan HEADING stride-extends, while the trace to the aim is clear and the aim's own
+        // square is fine. A release keyed on the aim therefore fires on every one of those ticks,
+        // the fan is discarded, and the mover walks into the hole the fan was about to step around
+        // — or, with every heading void, never reaches `stuck` and so never reaches blink. Exhausting
+        // the fan is the only route out of a pocket, and a release that pre-empts it is not a
+        // convenience, it is a dead end with better manners.
+        //
+        // So the release is keyed on the heading the fan is ABOUT to try. If that heading is
+        // walkable, the fan has found its way and there is nothing left to escape: release and let
+        // the direct declaration resume. If it is not, keep fanning.
+        const FAN_ANGLES = [0, -0.35, 0.35, -0.75, 0.75, -1.2, 1.2, -1.7, 1.7];
+        const nextAngle = FAN_ANGLES[(this._fanIndex ?? 0) % FAN_ANGLES.length];
+        const baseAngle = Math.atan2(aimY - myProtoY, aimX - myProtoX);
+        const probe = this._integrateToward(geo, myProtoX, myProtoY,
+          myProtoX + Math.cos(baseAngle + nextAngle) * strideNow,
+          myProtoY + Math.sin(baseAngle + nextAngle) * strideNow,
+          strideNow, { dt: 1000, numSteps: STEPS_PER_MOVE, playerRadius: PLAYER_WALL_CLEARANCE_CLIENT_UNITS });
+        const nextCol = Math.floor(probe.x / KOD_FINENESS), nextRow = Math.floor(probe.y / KOD_FINENESS);
+        const nextGrounded = geo.standable ? geo.standable(nextRow, nextCol) !== false : true;
+        const aimClear = rel.stopped == null && rel.moved >= relDist - 1;
+        const headingWalkable = probe.stopped == null && nextGrounded;
+        // NOT ON THE TICK THE FAN WAS BORN. The escape fan is fired earlier in this same tick by
+        // the leafless-point / no-floor detector, which deliberately does not return so the gate
+        // can send immediately. A release that runs on that tick cancels the fan the tick that
+        // created it and the mover walks into the hole it was escaping — which is what the
+        // leafless-point rig caught. 'The corner was rounded' is a statement about a slide that
+        // has happened, and on the tick of creation nothing has happened yet.
+        // NOT ON THE TICK THE FAN WAS BORN. The escape fan is fired earlier in this same tick by
+        // the leafless-point / no-floor detector, which deliberately does not return so the gate
+        // can send on the tick of creation. A release that runs there cancels the fan the tick that
+        // made it and the mover walks into the hole it was escaping. Keyed on the tick's own start
+        // time rather than a per-creation counter, because there are four sites that create a fan
+        // and a counter has to be incremented at all four and at the fifth someone adds; a fan with
+        // no counter read as 'no history' is a mover that never releases, which is the failure this
+        // whole goal is about. Comparing against the tick's start time needs no cooperation.
+        const fanHasHistory = this._fanFiredAt == null || this._fanFiredAt < this._tickStartedAt;
+        if (aimClear && headingWalkable && fanHasHistory) {
+          this._fanIndex = null;
+          this._fanTarget = null;
+          this._fanFrom = null;
+          this._fanSentAt = null;
+          try { console.error(`[movedbg] fan released: direct path to aim clear (${Math.round(rel.moved)} units clear)`); } catch {}
+        }
+      }
     }
 
     // If the fan is active (we were in raw-move fallback), fire the next heading.
