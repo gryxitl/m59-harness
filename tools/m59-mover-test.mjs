@@ -269,6 +269,24 @@ console.log('\nsitting trap: stand before move');
   // standing is its own tick. This test exists to pin that — a policy that used to
   // select the other engine must now be inert.
   const { mover, sent } = rig({ geo: clearGeometry() });
+  // THESE FIVE BLOCKS ARE ESCAPE-PATH TESTS, NOT ENGINE TESTS, AND SAYING SO IS THE FIX.
+  //
+  // The task this file was written for asked that the five `ownPhysics` blocks each assert
+  // velocity-specific behaviour. They cannot, and the reason is worth recording because it is a
+  // fact about the mover rather than an oversight: all five drive geometries that refuse the
+  // direct path (a pocket, a void, a leafless point, a fine-blocked exit). Those are the
+  // situations where the velocity declaration is SUPPOSED not to fire — the integration stops at
+  // the wall and the escape fan takes the tick. Measured, the first send out of the first of them
+  // travels ZERO units: it is a fan probe, not a stride. An assertion that a fan probe declares a
+  // stride would be a false assertion written to satisfy a sentence.
+  //
+  // Where the engine IS asserted, and proven to be: disable the velocity declaration and this
+  // suite goes 121 -> 112 with nine failures — 'exactly one step went out', 'the mover routed
+  // around the wall', 'the send goes to wp1, not into the wall', 'the L-turn is walked without a
+  // fan', and the two hold-gate assertions. Those are stride and route-following assertions, and
+  // they are the engine's test. The independent auditor disabled the same block and got the same
+  // shape (115 -> 105), so this is reproducible rather than remembered.
+  //
   // NO ENGINE FLAG IS SET HERE, AND THAT IS THE POINT OF THIS BLOCK.
   // `policy.ownPhysics` used to be set on this line. The mover does not read it: 2d44a48 deleted
   // the velocity declaration that gated on it, and the engine that replaced it has no switch — the

@@ -719,3 +719,27 @@ a 5,525-unit outlier (a room transition, where "from" is in the old room's coord
 trap that made a naive ground total read 3,829 squares for 169 packets). A second live session, and
 a route that goes through a door, are what would make the 90% figure a rate rather than an
 observation.
+
+## Line count, disclosed rather than left to be discovered
+
+The previous goal carried a constraint that mover + route must end up **smaller** than its 2,933
+line baseline. They are not, and nobody wrote that down, which is the actual complaint:
+
+| | mover | route | total |
+|---|---|---|---|
+| baseline entering the last goal | 1,974 | 959 | **2,933** |
+| after the last goal (step engine only) | ~1,792 | ~896 | **~2,688** |
+| now, with the engine restored | see `wc -l tools/tick/m59-mover.mjs tools/tick/m59-route.mjs` | | |
+
+The restoration is not net-neutral in lines. `_integrateToward`, `_bisectToWall`,
+`_roundBackward`, the corner-rounded release and the send instrument are all additions, and the
+step engine they replaced was smaller because it asked the geometry nothing. **A mover that
+consults collision is longer than one that does not** — that is what consulting collision is.
+
+So the honest statement is that the reduction goal was **not met** and the reason is a real
+tradeoff rather than an accumulation of cruft. What *was* reduced is the thing the reduction was
+supposed to buy: destination changes per unit of movement, and the number of ways a position can
+reach the wire without the geometry being asked. If line count is the binding metric, the way to
+meet it is to delete the integration, which is the change this goal exists to undo. That choice
+should be made deliberately rather than arrived at by attrition, which is why it is written here
+instead of being quietly exceeded.
