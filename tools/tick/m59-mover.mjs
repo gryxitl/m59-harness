@@ -434,6 +434,12 @@ export class Mover {
       try { console.error(`[movedbg] ${this.logName} to() -> ${col},${row} (was ${this.dest ? this.dest.col + ',' + this.dest.row : 'none'}) by=${by ?? '?'}`); } catch {}
     }
     this.dest = { col, row };
+    // WHO OWNS THE DESTINATION, RECORDED AT THE ONLY PLACE IT IS EVER SET.
+    // The DEFERRAL side of the ownership guard was logged and the ACCEPTANCE side was not, so a
+    // destination that changed to something the router never asked for was undiagnosable: the
+    // router logged `aim=(50,85)` every tick while the mover's heartbeat reported `dest=6,36`,
+    // and nothing in between said who made it 6,36. One line per ACCEPTED change of owner or
+    // square -- not per tick, which would be the new flood.
     // PHASE 2: the stand_on flag. When true, the destination is an exit square
     // (stand_on) — a square the character is meant to stand on to trigger a
     // transition. The geometry's "no floor" answer is wrong for that square;
@@ -446,6 +452,13 @@ export class Mover {
     // the safe direction to be wrong (we avoid doors we might have wanted) but would seal
     // a room whose only exit is a corner. The router always passes it now.
     this._wantRoom = wantRoom ?? null;
+    if (this._lastToLog !== `${by}|${col},${row}`) {
+      this._lastToLog = `${by}|${col},${row}`;
+      try {
+        console.error(`[to-accepted] ${this.logName} by=${by} -> (${col},${row}) `
+          + `wantRoom=${wantRoom ?? 'null'} standOn=${standOn === true}`);
+      } catch { /* a diagnostic must never break a move */ }
+    }
     // PHASE 2: the edge target. The square beyond the boundary (in the other
     // room). Used to compute the edge direction for the walk-past-boundary
     // check. The direction from the stand_on square to the edgeTarget is the
