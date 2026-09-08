@@ -573,6 +573,47 @@ export class Mover {
    *
    * @param {object} [posOverride] - { col, row, x, y } to use instead of client.self.
    */
+  // THE ONE LOG THAT CANNOT DRIFT FROM THE CODE.
+  //
+  // The fleet's rate has been unanswerable all evening, and the reason is not the locomotion
+  // model: in the window where the echo says the character moved one square per thirty seconds,
+  // the mover sent SEVEN packets and then said nothing for three minutes while the tick ran 181
+  // times. `tick()` is 1,430 lines with 32 exits, 29 of which log nothing at all. Every question
+  // about why the character is standing still therefore has no answer in the log, and I spent
+  // the evening answering it by inference from positions — which produced four confident,
+  // mutually contradictory conclusions, each of which turned out to be an artefact of the
+  // instrument (sampling srv= at send time; dividing by the frame period; reading client units as
+  // square indices; differencing a quantised echo).
+  //
+  // So this wrapper logs the state every tick actually returned, with the send count and the age
+  // of the send gate, on ONE line, at the single place all 32 exits pass through. Placing it by
+  // hand at each return would drift the first time someone added an exit; wrapping cannot,
+  // because a return that skips the wrapper does not exist. It is rate-limited to changes of
+  // state plus one line per 15 s so a 10 Hz tick does not drown the log the way the per-tick
+  // diagnostics already do.
+  tickLogged(posOverride) {
+    let r;
+    try {
+      r = this.tick(posOverride);
+    } catch (e) {
+      try { console.error(`[tick-state] ${this.name ?? '?'} THREW ${e.message}`); } catch {}
+      throw e;
+    }
+    try {
+      const st = r && r.state ? r.state : 'undefined';
+      const now = Date.now();
+      if (st !== this._lastTickState || now - (this._lastTickStateAt ?? 0) > 15000) {
+        this._lastTickState = st; this._lastTickStateAt = now;
+        console.error(`[tick-state] ${this.name ?? '?'} state=${st}` +
+          `${r && r.why ? ' why=' + r.why : ''}${r && r.hold ? ' hold=1' : ''}` +
+          ` sends=${this._sendCount ?? 0} gateAge=${now - (this._lastReportAt ?? 0)}` +
+          ` path=${this.path ? this.pathIdx + '/' + this.path.length : 'null'}` +
+          ` stuck=${this.stuckTicks}`);
+      }
+    } catch {}
+    return r;
+  }
+
   tick(posOverride) {
     // When this tick began, for the corner-rounded release below. Captured first because every
     // later `Date.now()` in a 2,000-line function can drift past a millisecond boundary and make

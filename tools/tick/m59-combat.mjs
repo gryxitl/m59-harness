@@ -674,7 +674,7 @@ export class CombatController {
         this._walkDest = { col: dest.col, row: dest.row };
         mover.to(dest.col, dest.row, { by: 'combat' });
       }
-      const r = mover.tick(me ? { col: me.col, row: me.row, x: me.x, y: me.y } : undefined);
+      const r = mover.tickLogged(me ? { col: me.col, row: me.row, x: me.x, y: me.y } : undefined);
       if (r.state === 'arrived') {
         this._walkDest = null;
         return { kind: 'walk', what: what + ' (arrived)' };

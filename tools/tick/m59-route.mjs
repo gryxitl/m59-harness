@@ -893,7 +893,10 @@ export class Router {
       } catch {}
     }
     this.mover.to(aimCol, aimRow, { standOn: isStandOn, edgeTarget: this.leg.edgeTarget, by: 'router' });
-    const mr = this.mover.tick({ col: me.col, row: me.row, x: me.x, y: me.y });
+    // tickLogged, not tick: the 1,430-line tick() has 29 exits that log nothing, so a character
+    // standing still for three minutes is undiagnosable from the log. The wrapper is the only
+    // place that sees every return, and it cannot drift from the code.
+    const mr = this.mover.tickLogged({ col: me.col, row: me.row, x: me.x, y: me.y });
     if (mr.state === 'blocked')
       return this._say('blocked', { why: mr.why, next: this.leg.next });
     if (mr.state === 'standing')

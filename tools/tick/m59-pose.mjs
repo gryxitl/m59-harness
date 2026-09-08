@@ -66,7 +66,13 @@ export class Pose {
         if (this.server && Number.isFinite(obj.x) && Number.isFinite(obj.y)) {
           const moved = Math.hypot(obj.x - this.server.x, obj.y - this.server.y);
           if (moved >= 1) {
-            const since = this.updatedAt ? (Date.now() - this.updatedAt) / 1000 : 0;
+            // THE DENOMINATOR MUST BE THE TIME SINCE THE LAST POSITION CHANGE, NOT since the last
+            // echo of any kind. `updatedAt` is refreshed on every updateServer call, including the
+            // ones that log nothing because the position was unchanged, so it is the frame period
+            // (~0.10 s) and dividing by it reported 49 squares/second for a 5-square move. That is
+            // the same mistake as sampling srv= at send time, made in the denominator instead of
+            // the numerator. lastMovedAt is set only when this branch fires.
+            const since = this.lastMovedAt ? (Date.now() - this.lastMovedAt) / 1000 : 0;
             const dec = this.lastDeclared;
             const toward = dec
               ? Math.sign((obj.x - dec.x) * (dec.x - this.server.x) + (obj.y - dec.y) * (dec.y - this.server.y))
@@ -77,6 +83,7 @@ export class Pose {
               `(${(moved / 64).toFixed(2)} sq) in ${since.toFixed(2)}s = ` +
               `${since > 0 ? (moved / 64 / since).toFixed(2) : 'n/a'} sq/s ` +
               `declared=${dec ? Math.round(dec.x) + ',' + Math.round(dec.y) : 'none'} toward=${toward}`);
+            this.lastMovedAt = Date.now();
           }
         }
       } catch {}
