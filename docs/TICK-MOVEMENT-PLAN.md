@@ -743,3 +743,15 @@ reach the wire without the geometry being asked. If line count is the binding me
 meet it is to delete the integration, which is the change this goal exists to undo. That choice
 should be made deliberately rather than arrived at by attrition, which is why it is written here
 instead of being quietly exceeded.
+
+## m59-which-test fails 13/3 in this environment, and did before any of this work
+
+Reported rather than tidied away, because a suite that fails looks like a regression and the
+honest answer is that it is not one: checking out `90643c9` — before every change in this
+session — and running `node tools/m59-which-test.mjs` in a clean worktree gives the same
+`13 passed, 3 failed`.
+
+The three are broker-lock assertions that read real lock files from the machine, and this
+checkout has a live fleet that writes them. It is an environment dependency in a suite
+advertised as offline, which is worth fixing on its own terms: a test that reads `substrate/`
+is not offline, and the fix is a fixture directory rather than a change to `m59-which.mjs`.
