@@ -1158,3 +1158,69 @@ One test assertion was written wrong and then corrected in place: the first vers
 60 s standstill contribute **no** seconds, which would have made the figure a rate "while moving".
 A player who is sitting down is slow, and the fleet's speed is what a player experiences.
 Conflating the two is what made this repository's numbers look irreproducible for a day.
+
+---
+
+# The fleet does not move at all, and no per-packet rate describes it
+
+A later build, with the instruments finally trustworthy — corroboration, `noteGround`, `tick-state`
+carrying the real session name — reports this for all five characters:
+
+```
+move-sent packets this session, all five: 0
+tick-state lines, all five:               0
+destination sets (`to() ->`), all five:   0
+```
+
+What the five are doing instead:
+
+| | the decider's own line |
+|---|---|
+| t1 | `armed -> buy` — smith unreachable recently; hunting unarmed |
+| t2 | `unstuck -> travel` — stuck 9x in room 734; leaving for hunt room 562 |
+| t3 | `!in_underworld -> escape_underworld`, while `uwdbg` prints `in_underworld=true` |
+| t4 | `armed -> buy` — traveling to the smith (room 1013) |
+| t5 | `armed -> buy` — traveling to the smith (room 1013) |
+
+and behind t4/t5, every fifteen seconds:
+
+```
+[routedbg] dest=1013 rstate=no-route why=no route from 106 to 1013
+```
+
+**The mover is never asked to go anywhere.** The destination is never set, so there is no stride, no
+packet, and no rate. The loop is: the decider asks the router for room 1013, the router answers
+`no-route`, the decider reads that as being stuck, and picks a different goal — then asks again.
+
+This is the honest answer to the goal's question. The premise was that the fleet crawls because the
+step engine reports one square per packet. The stride engine is restored and is 2x the step engine
+per packet on identical geometry, and the fleet's speed is zero, so no per-packet figure describes
+it. Measuring locomotion was measuring the wrong layer.
+
+## Two separate defects, both above the mover
+
+1. **A routing-graph gap.** Room 1013 is unreachable from 106, 201 and 534 — three different
+   characters in three different rooms, all asking for the same destination. The decider has no
+   handling for `no-route` other than to try again and then treat it as being stuck.
+   *Not diagnosable offline from this repository:* `tools/rooms.json` is a room-name catalogue
+   (282 entries of `file`/`class`/`room_name`/`rid`) and carries no room numbers and no connections,
+   so it cannot say whether 1013 is absent from the graph or merely unconnected.
+2. **A predicate that disagrees with its own diagnostic.** t3 fires `!in_underworld ->
+   escape_underworld` while `uwdbg` on the next line prints `in_underworld=true`, with
+   `clientRoomNum=null` in the same record. Two readers of one state, one of which sees null.
+
+## What the instruments earned
+
+`corroboration()` caught the divergence guard erasing its own evidence, which had been written down
+as a finding since the frame fix and never addressed:
+
+```
+send 0  declared x=1120  after echo sim x=1120  div=320  pending=2
+send 1  declared x=1440  after echo sim x=800   div=0    pending=4    <- guard fired
+send 2  declared x=1760  after echo sim x=800   div=0    pending=6    <- guard fired
+```
+
+The guard fires every second and reports success by construction, because what it does to fix
+divergence is move the track to the server's position, which erases the distance it just measured.
+It cannot accumulate a signal. The only number that grows is the count of declarations nobody
+confirmed.
