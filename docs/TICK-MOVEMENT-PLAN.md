@@ -901,9 +901,31 @@ and this work did not achieve it.** The measurement that was supposed to prove o
 the wrong denominator, and correcting it makes the gap larger, not smaller.
 ## The model question is settled by live evidence, and the rate tripled
 
-**Model A is true: the server adopts the declared position.** This was the open question the whole
-step-vs-velocity argument rested on, and it could not be answered from source because the server's
-C++ is not in this tree. It is now answered from the live server, by the `srvXY` instrument added
+**Model A is *mostly* true, and the claim as first written here was an overclaim.** The open
+question the whole step-vs-velocity argument rested on was whether the server adopts a declared
+position outright or walks the character toward it. The evidence I cited was one sequence where a
+declaration of (3296,480) was followed by the server's position becoming (3296,480) — and that is
+real, the server does accept strides of 256 units. But it is not unconditional, and a later
+reading of the same log shows the opposite case, three packets running:
+
+```
+declare (1783,1257) ground=320 stopped=clear  srvXY=(2080,1376)  prevDecl=(1783,1257)
+   packet 1: srvXY (2080,1376)
+   packet 2: srvXY (2080,1376)
+   packet 3: srvXY (2080,1376)      <- the server never moved
+```
+
+Same mover, same instrument, opposite verdict. So the correct statement is **the server accepts
+declared positions but REFUSES some of them**, and the refusal is invisible to us: our own trace
+reports `stopped=clear` and the server disagrees. That is a predicate disagreement between this
+repository's geometry model and the server's, in the same class as the 16-unit-probe-authorises-320
+defect — our model being more permissive than the server's — and it is now the leading candidate
+for the remaining rate gap, because a rejected packet is a second of progress for nothing.
+
+Note the shape of the rejected case: `idx=0/1`. The path had ONE waypoint 320 units away, so the
+mover was beelining at a distant point across ground the fine model never validated square by
+square. The accepted case had `idx=3/14`, mid-route. That is a concrete, checkable difference and
+the first place to look. It is now answered from the live server, by the `srvXY` instrument added
 for the purpose:
 
 ```

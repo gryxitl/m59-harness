@@ -137,6 +137,57 @@ if (seconds && seconds > 0) {
   console.log('                        per-second rate is reported. Ground alone is not a rate.');
 }
 console.log(`  ground per packet     ${(squares / Math.max(1, packets)).toFixed(2)} squares (client stride: 2.5 walk / 5.0 run)`);
+
+// ---------------------------------------------------------------- moving windows
+// THE NUMBER THE GOAL ASKS FOR IS THE RATE WHILE MOVING, not the average over a life.
+//
+// Every figure this tool has printed varied by 3x between runs on identical code, and the
+// reason is in the decider, not the mover: `healthy -> rest` accounts for a large share of the
+// sampled ticks, the character sits down to recover vigor, the mover returns `resting` and
+// sends nothing. A rate taken across a resting window is the rate of a character that was
+// sitting down. 0.81 squares/s was a walking stretch and 0.33 a resting one; neither reading
+// was wrong and neither answered the question.
+//
+// So split the timeline wherever the SENDING stops for longer than the client's own report
+// interval — that boundary is a rest, a room transition, or a stop, and it is visible without
+// knowing why — and report the contiguous stretches separately. The median of those is the
+// figure comparable to the client's 2.5 squares/s.
+{
+  const events = [];
+  for (const m of txt.matchAll(/^(\d{4}-\d\d-\d\dT[\d:.]+Z) \[move-sent\][^\n]*?at=([-\d]+),([-\d]+)[^\n]*?srv=([-\d]+),([-\d]+)/gm)) {
+    events.push({ t: Date.parse(m[1]), at: [+m[2], +m[3]], srv: [+m[4], +m[5]] });
+  }
+  const GAP_MS = 3000;   // three report intervals: past this the character was not walking
+  const runs = [];
+  let cur = [];
+  for (let i = 0; i < events.length; i++) {
+    if (i > 0 && events[i].t - events[i - 1].t > GAP_MS) { runs.push(cur); cur = []; }
+    cur.push(events[i]);
+  }
+  if (cur.length) runs.push(cur);
+  const stats = [];
+  for (const r of runs) {
+    if (r.length < 3) continue;
+    let g = 0, dur = r[r.length - 1].t - r[0].t;
+    for (let i = 1; i < r.length; i++) {
+      const d = Math.hypot(r[i].srv[0] - r[i - 1].srv[0], r[i].srv[1] - r[i - 1].srv[1]);
+      if (d < TRANSITION_CUTOFF) g += d;
+    }
+    if (dur > 0) stats.push({ pk: r.length, sq: g / KOD, sec: dur / 1000, rate: g / KOD / (dur / 1000) });
+  }
+  if (stats.length) {
+    const rates = stats.map(x => x.rate).sort((a, b) => a - b);
+    const med = rates[Math.floor(rates.length / 2)];
+    console.log('  contiguous MOVE windows (gaps over ' + GAP_MS + ' ms split them):');
+    for (const x of stats.slice(-6))
+      console.log(`    ${String(x.pk).padStart(4)} packets, ${x.sq.toFixed(1).padStart(6)} squares in ${x.sec.toFixed(0).padStart(4)} s = ${x.rate.toFixed(2)} sq/s (${(x.rate / CLIENT_WALK * 100).toFixed(0)}% of walk)`);
+    console.log(`  MEDIAN MOVING RATE    ${med.toFixed(2)} squares/s = ${(med / CLIENT_WALK * 100).toFixed(0)}% of the client's walk, ${rates[rates.length - 1].toFixed(2)} best`);
+    console.log('  (the session-wide figure above averages in the time the character spent');
+    console.log('   resting, which is a decision of the decider and not a limit of the mover.)');
+  } else {
+    console.log('  no contiguous move window long enough to measure (need 3+ packets per window).');
+  }
+}
 if (bySite.size) {
   console.log('  packets by send site:');
   for (const [k, v] of [...bySite].sort((a, b) => b[1] - a[1]))
