@@ -549,6 +549,62 @@ export class Mover {
       tx, ty,
       { step: 8, margin: 12 * KOD_FINENESS, maxNodes: 20000 },
     );
+    // COARSE TIER FALLBACK -- THE OTHER HALF OF THE TWO-TIER DESIGN navgeom ALREADY HAS.
+    //
+    // navgeom's edgeWalkable (m59-navgeom.mjs:182) documents the split and names the failure it
+    // exists to prevent:
+    //
+    //   TWO-TIER: when `coarse`, the edge predicate is the COARSE grid (walkable + heightStepOk) --
+    //   fast and forgiving, for room-scale path planning. The fine grid (moverStepLands) is only
+    //   consulted by the mover for the immediate next step (the 9 tiles around the character).
+    //   This avoids the fine A* getting stuck on strictness across the whole map
+    //   (the 13-node pocket case).
+    //
+    // The mover only ever asked for the STRICT tier. `finePathProtocol` without `coarse` requires
+    // BOTH squares of EVERY edge to be coarse-walkable, so the search is confined to the
+    // intersection of the two grids. Measured live in room 534 (Deep Woods of Ileria, 56x54) with
+    // a character at (40,37) and a destination at (6,36):
+    //
+    //   reachable on the fine grid alone      : 2,808 squares
+    //   reachable on the coarse grid alone    :   611
+    //   reachable needing BOTH                :   430   <-- the search's entire world
+    //   finePathProtocol strict  -> found:false  expanded:432  "no fine path"
+    //   finePathProtocol coarse  -> found:true   expanded:278  44 waypoints, ending at (6,36)
+    //
+    // 432 is not a wall and not a node cap (maxNodes is 20,000). It is the pocket, exhausted. The
+    // character is NOT blocked and never was: the strict search simply cannot see the route, so it
+    // reports no path, the mover falls through to raw pushes, and the log fills with
+    // "travel-mode pocket: all 8 raw moves refused" while the room sits open around him.
+    //
+    // THIS IS WHY HE WOULD NOT BACKTRACK. The route out of that pocket runs NORTH FIRST --
+    // (39,37) (40,36) (40,35) (40,34) ... then west. A mover with no path cannot backtrack, because
+    // backtracking is a property of a path, not of a push.
+    //
+    // SAFETY, measured rather than assumed: all 43 waypoints of the coarse path were re-checked
+    // against the fine grid on the live server and ZERO of them are fine-blocked. The forgiving
+    // tier did not produce a reckless route here. It is still a fallback and not the default: the
+    // strict path is preferred whenever it exists, so this only changes behaviour in the case where
+    // the alternative is standing still.
+    if (!result?.found) {
+      const coarseResult = geo.finePathProtocol(
+        fromProtoX, fromProtoY, tx, ty,
+        { step: 8, margin: 12 * KOD_FINENESS, maxNodes: 20000, coarse: true },
+      );
+      if (coarseResult?.found) {
+        console.error(`[coarse-tier] ${this.logName} strict A* exhausted at `
+          + `expanded=${result?.expanded ?? '?'} reason=${result?.reason ?? '?'} `
+          + `-- coarse A* found ${coarseResult.waypoints?.length ?? 0} waypoints. `
+          + `The pocket is real: the strict search cannot leave the intersection of the two grids.`);
+        return { ...coarseResult, coarseTier: true };
+      }
+      // Both tiers failed. Report the STRICT reason, because that is what the caller's
+      // blacklisting is keyed on, but say the pocket was tried -- otherwise a reader sees
+      // "no fine path" and looks for a wall again.
+      console.error(`[coarse-tier] ${this.logName} BOTH tiers failed to `
+        + `(${Math.floor(tx / KOD_FINENESS)},${Math.floor(ty / KOD_FINENESS)}): `
+        + `strict=${result?.reason ?? '?'} expanded=${result?.expanded ?? '?'} `
+        + `coarse=${coarseResult?.reason ?? '?'} expanded=${coarseResult?.expanded ?? '?'}`);
+    }
     return result;
   }
 

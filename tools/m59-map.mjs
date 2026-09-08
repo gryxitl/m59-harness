@@ -98,6 +98,20 @@ const SYNTHETIC_EDGE_EXITS = Object.freeze({
     Object.freeze({ leave: LEAVE.SOUTH, leaveName: 'south', to: 598,
       arriveRow: null, arriveCol: null, synthetic: true, dynamic: true }),
   ]),
+  // MARION (200) WAS CHECKED FOR A MISSING EDGE ON 2026-09-09 AND HAS NONE. Recorded here so
+  // nobody re-does this search. Marion's outdoor borders ARE hand-written corner tests inside
+  // SomethingMoved (marion.kod:150; new_row<32 && new_col>66 -> RID_C4 at 34,5 and new_row>83 &&
+  // new_col>48 -> RID_C5 at 3,23), and `plEdge_Exits` is genuinely empty for it -- so this table
+  // LOOKS like the right place for them. It is not: the baker already captures both transfers,
+  // through the REGION-exit mechanism rather than the edge-exit one, and findPath(534,535) returns
+  // 534 ->200[region: row>35,col<9]-> 535 ->200[region: row>83,col>48]-> 535[region] with no
+  // change at all when an edge entry is added. Adding it here would only create a second
+  // description of one physical action, which is the thing the note above warns about.
+  //
+  // The asymmetry is real and must not be "fixed": 534's kod (c4.kod:70) transfers to Marion, and
+  // 534 has NO edge exit to Marion (c4.kod:95-96 are east->544 and north->533 only). Walking east
+  // out of 534 does not get you to town; walking into its south-west CORNER does.
+
 });
 
 export function edgeExitsOf(room) {
