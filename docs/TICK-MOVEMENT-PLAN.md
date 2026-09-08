@@ -1424,3 +1424,34 @@ And two of the assertions written *while writing these very tests* were themselv
 
 A test that cannot fail is not a test, and this session has now demonstrated that three separate
 ways.
+
+## The fleet is in the world again, and what that does and does not prove
+
+After the cast fix, Kage (t2) walked out of the Brownestone Inn — where it had stood at square
+(12,18) for seventy minutes with `ground=0.0sq` — and travelled to West Jasper, room 382, then
+headed for hunting room 547.
+
+```
+t2  ground=177.0sq/619s   8 room transitions   213 sends
+    MEDIAN MOVING RATE  0.84 squares/s = 34% of the client's walk
+    sends by site: 105 stride-declaration, 53 raw-move-push, 24 no-path-stride,
+                   16 escape-fan-probe, 11 walk-past-boundary, 3 send-waypoint-helper, 1 waypoint-step
+t3  MEDIAN MOVING RATE  0.17 squares/s
+```
+
+**`stride-declaration` is now the largest send site**, which is the first time in this project
+that the velocity engine is the thing actually moving a character rather than being outvoted by
+the escape machinery.
+
+What this does **not** establish, stated before anyone builds on it:
+
+- **0.84 sq/s is not 2.5 sq/s.** It is 34% of the client's walk. The stride engine was measured
+  earlier at 2.00 squares per packet against the step engine's 1.00 on identical geometry, so the
+  per-packet claim holds; the end-to-end rate is lower for reasons not yet isolated — room
+  transitions, escape detours, and the decider stopping to rest all divide it down.
+- **A room change is not a rate measurement.** `trans=8` is counted deliberately *out* of the
+  ground accumulator, because a teleport-sized jump would otherwise read as a stride.
+- **The earlier "0.00 sq/s for 70 minutes" was not a locomotion result at all.** It was a
+  character with no destination, then a character holding 20 s at a time on a blink the server had
+  refused for mana. Two different causes, both outside the mover, and both were found by reading
+  the instrument rather than the movement code.
