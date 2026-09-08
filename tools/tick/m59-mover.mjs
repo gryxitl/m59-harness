@@ -319,6 +319,7 @@ export class Mover {
         // server positions that appear on some packets and not others is a rate taken across
         // an irregular sample, which is why the fleet's squares-per-second has been a range
         // (0.09, 0.34, 0.39) all evening instead of a number.
+        try { this.session?._pose?.noteDeclared?.(atX, atY); } catch {}
         console.error(`[move-sent] n=${this._sendCount} site=${site} at=${Math.round(atX)},${Math.round(atY)} aim=${Math.round(keyX)},${Math.round(keyY)} from=${Math.round(posX)},${Math.round(posY)} srv=${Math.round(this.session?._pose?.server?.x ?? -1)},${Math.round(this.session?._pose?.server?.y ?? -1)} simSrc=${this.session?._pose?.sim == null ? 'SEEDED (clamped to one square)' : 'tracked'}`);
     } catch {}
   }

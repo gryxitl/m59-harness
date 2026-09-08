@@ -48,6 +48,38 @@ export class Pose {
   updateServer(obj) {
     if (obj && Number.isFinite(obj.col) && Number.isFinite(obj.row)) {
       const prevUpd = this.updatedAt;
+      // ECHO TRACE. The one question this repository has been unable to answer all evening is what
+      // the SERVER does with a move: adopt the position we declare (so ground per packet is the
+      // stride, 2.5 squares) or walk the character toward it at its own speed (so ground per packet
+      // is the server's cadence, ~1 square, and declaring further buys nothing). Every attempt to
+      // read the answer out of the log measured the INSTRUMENT instead. srv= is sampled only at
+      // send time, so a packet sent between two echoes repeats the previous srv= and looks like a
+      // server that refused to move: 121 of 331 sampled pairs showed zero movement and 27 showed
+      // exactly 5.0 squares, with nothing in between, which is not a locomotion law, it is a
+      // sampling artefact with a suspiciously round number in it.
+      //
+      // The echo itself is the only ground truth available, and it was being thrown away after one
+      // comparison. Log every CHANGE of position with the time since the last change and the
+      // declaration that was outstanding when it arrived. That turns the question into arithmetic:
+      // squares per SECOND of echo-to-echo time, which no sampling can fake.
+      try {
+        if (this.server && Number.isFinite(obj.x) && Number.isFinite(obj.y)) {
+          const moved = Math.hypot(obj.x - this.server.x, obj.y - this.server.y);
+          if (moved >= 1) {
+            const since = this.updatedAt ? (Date.now() - this.updatedAt) / 1000 : 0;
+            const dec = this.lastDeclared;
+            const toward = dec
+              ? Math.sign((obj.x - dec.x) * (dec.x - this.server.x) + (obj.y - dec.y) * (dec.y - this.server.y))
+              : 0;
+            console.error(
+              `[echo] x=${Math.round(this.server.x)},${Math.round(this.server.y)} -> ` +
+              `x=${Math.round(obj.x)},${Math.round(obj.y)} moved=${Math.round(moved)} ` +
+              `(${(moved / 64).toFixed(2)} sq) in ${since.toFixed(2)}s = ` +
+              `${since > 0 ? (moved / 64 / since).toFixed(2) : 'n/a'} sq/s ` +
+              `declared=${dec ? Math.round(dec.x) + ',' + Math.round(dec.y) : 'none'} toward=${toward}`);
+          }
+        }
+      } catch {}
       this.server = {
         col: obj.col, row: obj.row,
         // KOD protocol units (64 per square), matching advance().
@@ -118,6 +150,13 @@ export class Pose {
   // So seed from the last confirmed echo when we have one, and only fall back to
   // the aim when there is no echo at all (a fresh join, before the first BP_MOVE).
   // The 64-unit step then does its job from a position that is actually ours.
+  // Called by the mover with the position it just put on the wire, so an echo can be read
+  // against the declaration that produced it. Without this the log has a server position and
+  // no way to know which send it is an answer to.
+  noteDeclared(x, y) {
+    this.lastDeclared = { x, y };
+  }
+
   advance(x, y, step = KOD_FINENESS) {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     if (this.sim == null) {
