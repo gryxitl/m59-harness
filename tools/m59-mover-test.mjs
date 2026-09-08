@@ -269,7 +269,14 @@ console.log('\nsitting trap: stand before move');
   // standing is its own tick. This test exists to pin that — a policy that used to
   // select the other engine must now be inert.
   const { mover, sent } = rig({ geo: clearGeometry() });
-  mover.session.policy = { ownPhysics: true };
+  // NO ENGINE FLAG IS SET HERE, AND THAT IS THE POINT OF THIS BLOCK.
+  // `policy.ownPhysics` used to be set on this line. The mover does not read it: 2d44a48 deleted
+  // the velocity declaration that gated on it, and the engine that replaced it has no switch — the
+  // stride is unconditional. Setting a field nothing reads makes a test look like it is selecting
+  // an engine when it is selecting nothing, which is how five tests in this file came to be
+  // vacuous. Proven, not argued: deleting the field from all seven sites leaves 115/115 passing,
+  // so not one of them ever depended on it. See m59-locomotion-test.mjs for the engine A/B, which
+  // uses two real mover classes rather than a flag that does nothing.
   mover.to(4, 2);
   mover.markSitting();
   const r = mover.tick();
@@ -388,7 +395,14 @@ console.log('\nPHASE 0a: NO hold gate (ownPhysics on)');
   // re-aims forever with a static position. Instead the mover keeps sending
   // (so stuckTicks can accumulate and the fan/blink escalate).
   const { mover, sent, session } = rig({ geo: clearGeometry() });
-  mover.session.policy = { ownPhysics: true };
+  // NO ENGINE FLAG IS SET HERE, AND THAT IS THE POINT OF THIS BLOCK.
+  // `policy.ownPhysics` used to be set on this line. The mover does not read it: 2d44a48 deleted
+  // the velocity declaration that gated on it, and the engine that replaced it has no switch — the
+  // stride is unconditional. Setting a field nothing reads makes a test look like it is selecting
+  // an engine when it is selecting nothing, which is how five tests in this file came to be
+  // vacuous. Proven, not argued: deleting the field from all seven sites leaves 115/115 passing,
+  // so not one of them ever depended on it. See m59-locomotion-test.mjs for the engine A/B, which
+  // uses two real mover classes rather than a flag that does nothing.
   mover.to(4, 2); // 2 squares away
   mover.tick(); // send 1 (server refuses: self never advances)
   sent.length = 0;
@@ -503,7 +517,14 @@ console.log('\nTHE 5s ANTI-DEADLOCK FLOOR (the gate/fan stall fix)');
     fineWalkable() { return false; },  // the start square is not walkable => escape fan
   };
   const { mover, sent } = rig({ geo: wallGeo });
-  mover.session.policy = { ownPhysics: true };
+  // NO ENGINE FLAG IS SET HERE, AND THAT IS THE POINT OF THIS BLOCK.
+  // `policy.ownPhysics` used to be set on this line. The mover does not read it: 2d44a48 deleted
+  // the velocity declaration that gated on it, and the engine that replaced it has no switch — the
+  // stride is unconditional. Setting a field nothing reads makes a test look like it is selecting
+  // an engine when it is selecting nothing, which is how five tests in this file came to be
+  // vacuous. Proven, not argued: deleting the field from all seven sites leaves 115/115 passing,
+  // so not one of them ever depended on it. See m59-locomotion-test.mjs for the engine A/B, which
+  // uses two real mover classes rather than a flag that does nothing.
   mover.to(4, 2);
   let sendsOut = 0;
   for (let i = 0; i < 12; i++) {
@@ -525,7 +546,14 @@ console.log('\nTHE 5s ANTI-DEADLOCK FLOOR (the gate/fan stall fix)');
     fineWalkable() { return false; },
   };
   const { mover } = rig({ geo: wallGeo });
-  mover.session.policy = { ownPhysics: true };
+  // NO ENGINE FLAG IS SET HERE, AND THAT IS THE POINT OF THIS BLOCK.
+  // `policy.ownPhysics` used to be set on this line. The mover does not read it: 2d44a48 deleted
+  // the velocity declaration that gated on it, and the engine that replaced it has no switch — the
+  // stride is unconditional. Setting a field nothing reads makes a test look like it is selecting
+  // an engine when it is selecting nothing, which is how five tests in this file came to be
+  // vacuous. Proven, not argued: deleting the field from all seven sites leaves 115/115 passing,
+  // so not one of them ever depended on it. See m59-locomotion-test.mjs for the engine A/B, which
+  // uses two real mover classes rather than a flag that does nothing.
   mover.to(4, 2);
   let reachedBlink = false;
   for (let i = 0; i < 40; i++) {
@@ -547,7 +575,14 @@ console.log('\nTHE 5s ANTI-DEADLOCK FLOOR (the gate/fan stall fix)');
     standable() { return false; },
   };
   const { mover } = rig({ geo: voidGeo });
-  mover.session.policy = { ownPhysics: true };
+  // NO ENGINE FLAG IS SET HERE, AND THAT IS THE POINT OF THIS BLOCK.
+  // `policy.ownPhysics` used to be set on this line. The mover does not read it: 2d44a48 deleted
+  // the velocity declaration that gated on it, and the engine that replaced it has no switch — the
+  // stride is unconditional. Setting a field nothing reads makes a test look like it is selecting
+  // an engine when it is selecting nothing, which is how five tests in this file came to be
+  // vacuous. Proven, not argued: deleting the field from all seven sites leaves 115/115 passing,
+  // so not one of them ever depended on it. See m59-locomotion-test.mjs for the engine A/B, which
+  // uses two real mover classes rather than a flag that does nothing.
   mover.to(4, 2);
   const r = mover.tick();
   ok('open void (fine true, standable false) engages the escape fan', r.state === 'raw-move' && mover._fanIndex === 0, `${r.state} ${r.why ?? ''} idx=${mover._fanIndex}`);
@@ -563,7 +598,14 @@ console.log('\nTHE 5s ANTI-DEADLOCK FLOOR (the gate/fan stall fix)');
     standable() { return false; },
   };
   const { mover } = rig({ col: 2, row: 2, geo: exitGeo });
-  mover.session.policy = { ownPhysics: true };
+  // NO ENGINE FLAG IS SET HERE, AND THAT IS THE POINT OF THIS BLOCK.
+  // `policy.ownPhysics` used to be set on this line. The mover does not read it: 2d44a48 deleted
+  // the velocity declaration that gated on it, and the engine that replaced it has no switch — the
+  // stride is unconditional. Setting a field nothing reads makes a test look like it is selecting
+  // an engine when it is selecting nothing, which is how five tests in this file came to be
+  // vacuous. Proven, not argued: deleting the field from all seven sites leaves 115/115 passing,
+  // so not one of them ever depended on it. See m59-locomotion-test.mjs for the engine A/B, which
+  // uses two real mover classes rather than a flag that does nothing.
   mover.to(2, 2, { standOn: true });
   const r = mover.tick();
   ok('stand_on exit square does not start an escape fan', r.why !== 'no-floor start: escape fan', `${r.state} ${r.why ?? ''}`);
@@ -582,7 +624,14 @@ console.log('\nTHE 5s ANTI-DEADLOCK FLOOR (the gate/fan stall fix)');
   const { mover, sent, session } = rig({ geo: voidGeo });
   session.client.cast = (id) => sent.push({ cast: id });
   session.client.spells = [{ id: 9, name: 'blink' }];
-  mover.session.policy = { ownPhysics: true };
+  // NO ENGINE FLAG IS SET HERE, AND THAT IS THE POINT OF THIS BLOCK.
+  // `policy.ownPhysics` used to be set on this line. The mover does not read it: 2d44a48 deleted
+  // the velocity declaration that gated on it, and the engine that replaced it has no switch — the
+  // stride is unconditional. Setting a field nothing reads makes a test look like it is selecting
+  // an engine when it is selecting nothing, which is how five tests in this file came to be
+  // vacuous. Proven, not argued: deleting the field from all seven sites leaves 115/115 passing,
+  // so not one of them ever depended on it. See m59-locomotion-test.mjs for the engine A/B, which
+  // uses two real mover classes rather than a flag that does nothing.
   mover.to(4, 2);
   const r = mover.tick();
   ok('open void blinks out instead of sliding', r.state === 'blink' && /void/.test(r.why ?? ''), `${r.state} ${r.why ?? ''}`);

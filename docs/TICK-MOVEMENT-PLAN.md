@@ -639,3 +639,37 @@ finding: 292 lines and 12 `return`s sit between them, and the code below assumes
 has *not* yet run. The branch order in `tick()` is load-bearing and undocumented. Fixing the send
 sites in place is the correct move; reordering is a restructuring that has to be its own task with
 its own evidence, and it is the shape of the 1,300-line function that Step 6 should take on.
+
+## Sends per square, measured (step 5)
+
+The plan carried "~40% of the official walk rate" for the step engine since the retraction, taken
+from the mover's own header. That header was wrong — see the speed-budget correction above — so the
+figure was an assumption resting on a document that had divided the client's rate by ten. Measured
+instead, both engines on one geometry (20 squares in a straight line, one waypoint per square,
+`finePathProtocol` returning the same waypoints, same Pose, same 1050 ms tick):
+
+| engine | ground declared per packet | squares per send | vs the client |
+|---|---|---|---|
+| official client (`move.c:49/57`, `draw3d.h:53`) | 160 protocol units | **2.50** | — |
+| restored engine (current `m59-mover.mjs`) | 160 protocol units | **2.50** | **1.00x** |
+| step engine (pre-fix mover, engine flag off) | 64 protocol units | **1.00** | **0.40x** |
+
+The restored engine declares exactly the client's distance per packet. The step engine declares one
+square, which is 40% of it — so the assumed figure turned out to be right, for a reason that was
+not the one written down.
+
+**How the first attempt at this measurement lied, because the method matters more than the number.**
+The first rig drove both engines through a fake server that moved the character onto whatever
+position had just been sent. Both engines then advanced 64 units per tick and reported 1.00 squares
+per send, identically, and the run looked like proof that the restored engine was no faster. It was
+proof about the rig. A server that adopts the declared position wholesale gives the mover credit
+for ground it only asked for, so the rig measures its own clamping and not the mover. The number
+that means something is the **distance the mover declares in one packet**, which is the only part
+of the rate the mover controls; how fast the server covers it is the server's, and the client's own
+answer to that is `MOVEUNITS` per `MOVE_DELAY`.
+
+**What this does not settle.** It measures an unobstructed straight line, where the stride is never
+cut short by a wall. In a maze the restored engine's stride is shortened by the integration, and
+the honest expectation is that it will sometimes fall below the step engine's one square — a stride
+that stops at a wall covers less than a stride that never tries. Step 6 is where that shows up, and
+if the fleet is not faster in game, the straight-line number above is not a defence.

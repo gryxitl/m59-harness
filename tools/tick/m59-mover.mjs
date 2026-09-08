@@ -1,25 +1,44 @@
 #!/usr/bin/env node
-// m59-mover.mjs -- THE FINE-MODEL MOVER: one legal step per tick.
+// m59-mover.mjs -- THE FINE-MODEL MOVER: one legal STRIDE per tick, integrated.
 //
 // The server is client-authoritative for movement: it does not check geometry,
 // it records what we say. Collision is entirely our responsibility, and it must
 // be the FINE model: standable() reads the coarse grid and is blind to wall
 // segments (0 non-standable squares in Raza, 280 of 1792 fine cells blocked).
 //
-// THE SPEED BUDGET
+// THE SPEED BUDGET — AND THE ERROR THAT MADE THE FLEET CRAWL
 //
-// From the game's own client source (clientd3d/move.c):
-//   MOVEUNITS  = FINENESS >> 2 = 256 client units
-//   MOVE_DELAY = 100 ms
-// So the real client moves 256 client units per 100ms tick.
-// In protocol units: 256 / 16 = 16 units per tick (0.25 squares).
+// This header used to read, in capitals, 'ONE TICK = ONE STEP OF AT MOST MOVEUNITS. No more, no
+// less', and derived 16 protocol units from the client source. Every line of that derivation was
+// arithmetically correct and the conclusion was off by ten, because it attached MOVEUNITS to the
+// wrong clock. From the source, with the three constants in their own words:
 //
-// ONE TICK = ONE STEP OF AT MOST MOVEUNITS. No more, no less.
+//   draw3d.h:53    #define MOVEUNITS (FINENESS >> 2)          = 256 client units
+//   drawdefs.h:42  #define FINENESS  1024L                    (a square, in the client's space)
+//   move.c:49      #define MOVE_DELAY 100   // ms between moving MOVEUNITS
+//   move.c:57      #define MOVE_INTERVAL 1000 // Inform server at most once per this many ms
+//   move.c:187     default: move_distance = MOVEUNITS         (2*MOVEUNITS for the FAST actions)
+//
+// MOVEUNITS is the distance per MOVE_DELAY — one hundred milliseconds. A tick, which is what this
+// mover runs on, is MOVE_INTERVAL: one thousand. Ten MOVE_DELAYs fit in one tick. So the distance
+// a real client covers between two reports is 10 * 256 = 2560 client units = 2.5 SQUARES, and the
+// 16 protocol units this header computed is the distance covered in a TENTH of a tick.
+//
+// 'ONE TICK = ONE STEP OF AT MOST MOVEUNITS' is not a conservative reading of the client. It is
+// the client's own rate divided by ten and then defended as a law. The fleet has been moving at
+// that since the header was written, which is why it crawls and why the real client, watched in
+// the same room, walks away from it.
+//
+// The stride this file uses is therefore WALK_STRIDE_PROTO = 160 protocol units = 2.5 squares,
+// with RUN_STRIDE_PROTO for the fast actions, and it is covered by INTEGRATION over the tick —
+// sub-stepped and collision-checked per move.c:266 and move.c:374 — not by a single declaration
+// of a far point. The reporting rate is unchanged and still matches the client: at most one packet
+// per MOVE_INTERVAL.
 //
 // PLANNING
 //
 // The mover uses finePathProtocol (a bounded A* on the fine model) to plan
-// a path around walls. It follows the waypoints one step per tick. If the
+// a path around walls. It follows the waypoints one stride per tick. If the
 // path is blocked mid-way (stale geometry, a new wall appeared), it replans
 // from the current position. If finePathProtocol reports "no fine path", the
 // mover reports "no-route". If it reports "search budget exhausted", the
