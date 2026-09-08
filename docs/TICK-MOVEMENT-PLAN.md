@@ -982,3 +982,51 @@ about the client's rate.
 whenever a `vel-tick` line happens to be emitted — the echo is available on every tick and is
 only logged on some of them. That is a one-field change at the single send site, and it is the
 next thing, ahead of any further engine work."
+
+## The rate, measured densely: 0.81 squares per second, 32% of the client's walk
+
+`[move-sent]` now carries `srv=`, the server's position at that packet, read at the single place
+every send passes through. Before that the server position appeared only on `vel-tick` lines —
+some packets, not others — so ground was differenced across an irregular sample and the
+fleet's squares-per-second came out as a moving guess (0.09, 0.34, 0.39) rather than a number.
+That is the whole story of the measurement trouble in this document: not a disputed method, a
+missing field.
+
+```
+server positions      39 distinct (1 room transition excluded) [dense: one per packet]
+packets sent          153  (118 from the stride declaration)
+GROUND (server truth) 154.33 squares
+window                190 s
+RATE                  0.81 squares/s
+vs the client         32% of walk (2.5/s), 16% of run (5/s)
+packets per second    0.80 (the client reports ~1/s)
+ground per packet     1.01 squares (client stride: 2.5 walk / 5.0 run)
+packets by send site:
+     118  stride-declaration
+      12  walk-past-boundary
+       8  no-path-stride
+       5  raw-move-push
+       4  waypoint-step
+       4  send-waypoint-helper
+       2  escape-fan-probe
+```
+
+**Progress on one metric, same instrument, same units:**
+
+| | squares/s | vs client walk |
+|---|---|---|
+| before the branch-ordering fix | 0.09 | 3.6% |
+| after it, sparse sample | 0.39 | 16% |
+| now, dense sample | **0.81** | **32%** |
+
+**Where the remaining 68% is.** 0.80 packets/s × 1.01 squares/packet = 0.81. The cadence is at
+80% of the client's — close enough that it is not the bottleneck. The ground per packet is: 1.01
+against a 2.5-square walk stride, and the mover is running at the *run* stride of 320 and being
+stopped short by geometry. 77% of packets come from the stride declaration, so the engine is
+doing most of the work now; the step branch and the fan are down to 35 packets between them.
+
+**What is NOT claimed.** This is not the client's rate. It is a third of it, measured from the
+server's position, and the measurement is only as good as the sample — 39 distinct server
+positions in 190 s means the server's position is reported roughly every fifth packet, so even
+the dense sample is quantised. Tightening it further means reading the echo on every tick rather
+than every packet, which is a sensor change and is the next thing before any further engine work.
