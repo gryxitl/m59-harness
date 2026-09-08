@@ -324,7 +324,7 @@ it sets `M59_ROOT`. Do not switch trees to "fix" an unrelated problem.
 not mean anything can be built. If the daemon is down, say so and ask the user to
 start Docker Desktop; do not try to start it yourself unless they ask.
 
-## Movement rate and stride — read this first and stride — read this first
+## Movement rate and stride — read this first
 
 **`docs/MOVEMENT-ENVELOPE.md` before touching mover rate, stride, or speed.** We spent weeks on this
 and most of the time was spent on measurement bugs of our own. The short version:
