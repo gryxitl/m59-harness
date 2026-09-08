@@ -50,6 +50,7 @@ import * as watchdog from './m59-watchdog.mjs';
   console.log = (...a) => _ol(stamp(), ...a);
 }
 import './m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
+import { installCastWatch } from './tick/m59-cast.mjs';
 
 // ---------------------------------------------------------------- args
 
@@ -123,6 +124,14 @@ async function join() {
     });
     inGame = true;
     console.error(`[keeper] ${agent} joined as ${session.client?.me?.name ?? character}`);
+
+    // OBSERVE CASTS FROM THE SERVER'S TEXT. Installed here, after join, because joinOnce
+    // assigns client.onEvent itself (m59-game.mjs:1407) and a wrapper installed before login
+    // is silently overwritten — which is the same shape of bug this file exists to fix.
+    // It wraps and chains, so the legacy consumers (raw recorder, banker, combat, loyalty)
+    // still receive every event. See tools/tick/m59-cast.mjs for why text is the only
+    // reliable cast-completion signal there is.
+    try { installCastWatch(session); } catch (e) { console.error(`[keeper] cast watch failed: ${e?.message}`); }
 
     // Start the autopilot: GOAP (default) or tick driver
     if (mode === 'tick') {

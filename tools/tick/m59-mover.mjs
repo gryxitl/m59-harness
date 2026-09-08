@@ -741,6 +741,60 @@ export class Mover {
     if (this._blinkPending) {
       const curX = protocolToClient(me.x ?? (me.col * KOD_FINENESS + HALF));
       const curY = protocolToClient(me.y ?? (me.row * KOD_FINENESS + HALF));
+
+      // THE SERVER'S WORD IS THE PRIMARY RELEASE, NOT THE DISTANCE.
+      //
+      // The test below asks whether the character moved more than 8 CLIENT units — one
+      // eighth of a square. That is a very small number to hang a spell's outcome on, and
+      // blink picks its destination: a blink that lands inside the same square as the
+      // square it left is a legal outcome in a 21x20 room, and under the distance test it
+      // is indistinguishable from a cast that never happened. The character then stands
+      // still for the whole 20 s backstop, and the mover concludes the spell did nothing.
+      //
+      // The server says, in as many words, whether the cast worked:
+      //   "You find yourself realigned with your surroundings."   it worked
+      //   "Your concentration is broken and the blink spell fizzles."  it did not
+      // Those lines arrive on the event stream, and are now observed by CastWatch
+      // (tools/tick/m59-cast.mjs). A landed/fizzle verdict is TERMINAL and definitive, so
+      // it ends the hold immediately in both directions — which also means a fizzled cast
+      // no longer costs 20 s of standing still before the next thing can be tried.
+      //
+      // The distance check stays as the fallback for the case the text cannot cover: a
+      // server that moved us without saying so, or a build whose spell text changed.
+      const _cw = this.session?._castWatch;
+      if (_cw && _cw.state !== 'casting') {
+        if (_cw.phase === 'landed') {
+          this._blinkPending = false;
+          this._blinkFrom = null;
+          this._lastWpKey = null;
+          this._simX = null; this._simY = null; this._simAt = 0;
+          try { this.session?._pose?.reset(); } catch {}
+          this.stuckTicks = 0;
+          this.path = null;   // replan from wherever the blink actually put us
+          // DELIBERATELY DOES NOT REPORT curX/curY. The server sends the completion text
+          // and the position packet as two separate packets, and nothing in this
+          // repository establishes which arrives first — there is no capture of a blink
+          // in the raw stream, and the spell text is server data with no ordering
+          // guarantee in the source. Reading the position on THIS tick could therefore
+          // replan from the position we left while the character is already somewhere
+          // else, which is a worse failure than the one being fixed: a stale position
+          // with a confident 'blinked' verdict. Releasing the hold is safe and immediate;
+          // the position is read next tick, by which point both packets have landed.
+          // The cost is one 0.30 s tick.
+          return { state: 'blinked', why: `blink confirmed by server text (${_cw.elapsed()}ms)` };
+        }
+        if (_cw.phase === 'fizzle' || _cw.phase === 'lost') {
+          this._blinkPending = false;
+          this._blinkFrom = null;
+          this.stuckTicks++;
+          // Do NOT fall through into the escape fan on the same tick: the fizzle is
+          // evidence that something moved during the cast, and if that something was us,
+          // the next move packet will fizzle the retry for the same reason. The fan's own
+          // gate paces the next attempt.
+          return { state: 'blink-fizzled', why: `blink cancelled (${_cw.phase}) — movement during concentration` };
+        }
+      }
+
       if (this._blinkFrom != null) {
         if (Math.hypot(curX - this._blinkFrom.x, curY - this._blinkFrom.y) > 8) {
           this.drX = curX;
@@ -2517,18 +2571,58 @@ export class Mover {
     });
     if (!blink) return false;
     try {
+      // ARM THE HOLD BEFORE ANYTHING IS SUBMITTED, not after.
+      //
+      // This is the fix, and the previous version had it exactly backwards. It armed
+      // _blinkPending inside a setTimeout(2000) — the wait for STAND to be processed —
+      // which meant the hold did not exist for the first 2,000 ms of a cast. The mover
+      // ticks every 0.30 s (measured, keeper-t2.log, n=695), so SIX unconstrained ticks
+      // ran in that window, each free to send an escape-fan move packet. Blink requires
+      // concentration; a move packet breaks it. The server then answered
+      //
+      //   "Your concentration is broken and the blink spell fizzles."
+      //
+      // We were cancelling our own blink, and could not see it happening: over 106 blinks
+      // exactly one was followed by a position change, and a never-sent cast, a fizzled
+      // cast and a cast that landed inside the 8-unit threshold were indistinguishable
+      // from in here. The three server texts are now observed (tools/tick/m59-cast.mjs),
+      // which is what turned "the geometry refuses all eight directions" into "we fizzle
+      // the only spell that could have gotten us out".
+      //
+      // Arming here is safe against a failed submit: the hold is released by the cast
+      // lines (landed/fizzle) or by CastWatch's own lost-timeout, and _blinkAt still
+      // bounds it from below, so a submit that throws cannot wedge the mover forever.
+      this._blinkPending = true;
+      this._blinkAt = Date.now();
+
       // STAND BEFORE BLINK: a resting character has PFLAG_NO_MAGIC set
       // (player.kod:1166) and the server refuses the cast whole. UC_STAND ->
-      // StopResting() -> ResetPlayerFlagList() clears the flag; wait 2s for
-      // the server to process it before the cast begins.
+      // StopResting() -> ResetPlayerFlagList() clears the flag.
       this.session.pacer.submit('stand', () => c.stand?.()).catch(() => {});
-      setTimeout(() => {
-        const rec = this.session.pacer.submit('blink', () => c.cast(blink.id, []), 1500);
-        Promise.resolve(rec).catch(() => {});
-        this._blinkPending = true;
-        this._blinkAt = Date.now();
-      }, 2000);
+
+      // SUBMIT THE CAST NOW, UNDER THE URGENT KIND.
+      //
+      // Two changes from `submit('blink', fn, 1500)`, both from reading submit() rather
+      // than assuming:
+      //
+      //   * kind `'blink'` is NOT on the pacer's priority list — `isUrgent = kind ===
+      //     'attack' || kind === 'cast'` (m59-game.mjs:526). A blink cast queued under
+      //     'blink' waits BEHIND the move packets, which is the last thing a cast that
+      //     must not be interrupted can tolerate. `'cast'` jumps them.
+      //   * the third argument is `minGapForKind`, a rate LIMIT, not a staleness deadline.
+      //     The 1500 there was delaying our own cast by 1.5 s after we had already waited
+      //     2 s. It is dropped.
+      //
+      // The 2 s wait for STAND is gone because it was never about time. It existed to
+      // avoid submitting a cast that the server would refuse while the character was
+      // still flagged as resting; the pacer sends in order, so the stand is processed
+      // before the cast without us guessing how long that takes.
+      const rec = this.session.pacer.submit('cast', () => c.cast(blink.id, []));
+      Promise.resolve(rec).catch(() => {});
       return true;
-    } catch { return false; }
+    } catch {
+      this._blinkPending = false;   // never hold for a cast that was never submitted
+      return false;
+    }
   }
 }

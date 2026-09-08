@@ -11,6 +11,8 @@
 import { Mover, MOVEUNITS_PROTO } from './tick/m59-mover.mjs';
 import { readFileSync } from 'node:fs';
 import { Pose } from './tick/m59-pose.mjs';
+import { CastWatch } from './tick/m59-cast.mjs';
+import { protocolToClient } from './m59-roo.mjs';
 
 let pass = 0, fail = 0;
 const ok = (what, cond, detail) => {
@@ -1394,6 +1396,139 @@ console.log('\nOWNERSHIP: an abandoned owner does not freeze movement');
   ok('no console.error template bakes a character name', baked.length === 0,
      `found ${baked.length}: ` +
      baked.slice(0, 3).map(([n, l]) => n + ':' + l.trim().slice(0, 40)).join(' | '));
+}
+
+// ---------------------------------------------------------------- BLINK CAST OBSERVATION
+// The three server texts are the only signal that a blink actually happened. Before
+// tools/tick/m59-cast.mjs the mover held on a timer and guessed, and the guess was wrong in
+// a specific expensive way: the hold was armed INSIDE a setTimeout(2000), so six ticks of the
+// escape fan sent move packets during the concentration window and the server answered
+// "Your concentration is broken and the blink spell fizzles." 105 times out of 106.
+// These tests need a rig that can blink at all — the default rig has no `cast` and no
+// `spells`, which is precisely why none of this was ever covered.
+
+// _blinkFrom is stored in the CLIENT frame (production writes protocolToClient(myProtoX)),
+// while tick() reads protocolToClient(me.x). A rig that writes a raw client-unit literal
+// into _blinkFrom puts the two operands of the distance test in different frames, and the
+// test then passes or fails for the wrong reason. Derive it the way production does.
+function blinkFrom(col, row) {
+  return { x: protocolToClient(col * 64 + 32), y: protocolToClient(row * 64 + 32) };
+}
+
+const CAST_BEGIN  = 'You focus your whole will on casting blink.';
+const CAST_FIZZLE = 'Your concentration is broken and the blink spell fizzles.';
+const CAST_LANDED = 'You find yourself realigned with your surroundings.';
+
+function blinkRig({ col = 3, row = 5 } = {}) {
+  const sent = [];
+  const session = {
+    name: 'test', live: true,
+    client: {
+      state: 'game',
+      self: { col, row, x: col * 64 + 32, y: row * 64 + 32 },
+      moveTo: (x, y) => { sent.push(['move', x, y]); },
+      moveToSquare: (c, r) => { sent.push(['move', c * 64 + 32, r * 64 + 32]); },
+      moveSpeed: () => 1,
+      room: { id: 1 },
+      stand: () => { sent.push(['stand']); },
+      cast: (id) => { sent.push(['cast', id]); },
+      spells: [{ id: 77, name: 'blink' }],
+    },
+    // Synchronous pacer: submit runs the function immediately, so a cast is on the wire
+    // before _tryBlink returns. That is what makes the ordering assertions below real.
+    pacer: { depth: 0, submit: (k, fn) => { sent.push(['submit', k]); fn(); return Promise.resolve(); } },
+    world: { geometry: wallGeometry() },
+  };
+  const mover = new Mover(session, { reportIntervalMs: 0, moveCapMs: 0 });
+  session._castWatch = new CastWatch({ log: () => {} });
+  // `active` is a GETTER — `get active() { return this.dest != null }` — so tick() returns
+  // {state:'idle'} at its very first line unless a destination exists. A rig that forgets
+  // this cannot fail: every assertion about the blink hold would read state 'idle' and be
+  // compared against a string that is not 'idle'. Asserted below rather than assumed.
+  mover.to(col + 4, row);
+  mover._blinkPending = false;   // to() may have set fan/stuck state we do not want
+  mover._fanIndex = null;
+  ok('the blink rig is actually active', mover.active === true,
+     'an inactive rig makes every blink assertion vacuous');
+  return { mover, session, sent };
+}
+
+{
+  const { mover, session, sent } = blinkRig();
+  mover.stuckTicks = 3;                       // stalled, so blink is permitted
+  mover._blinkFrom = blinkFrom(3, 5);
+  const r = mover._tryBlink();
+  ok('_tryBlink returns true when stalled and blink is known', r === true);
+  ok('THE HOLD IS ARMED BEFORE THE CAST RESOLVES', mover._blinkPending === true,
+     'the defect that fizzled 105 of 106 blinks was arming this inside setTimeout(2000)');
+  ok('the cast is submitted under the URGENT kind', sent.some(s => s[0] === 'submit' && s[1] === 'cast'),
+     'pacer isUrgent is attack|cast; kind blink queued behind move packets');
+  ok('no setTimeout is involved — the cast is already submitted', sent.some(s => s[0] === 'cast'),
+     'the cast must be on the wire synchronously, not 2s later');
+}
+
+{
+  // A blink that lands inside the same square is a legal outcome in a 21x20 room. The old
+  // release test was hypot(cur, from) > 8 CLIENT units = 0.125 squares, so it read that as
+  // a cast that never happened and stood still for the full 20s backstop.
+  const { mover, session } = blinkRig();
+  mover.stuckTicks = 3;
+  mover._blinkPending = true;
+  mover._blinkAt = clock();
+  mover._blinkFrom = blinkFrom(3, 5);
+  session._castWatch.note({ kind: 'message', text: CAST_BEGIN });
+  session._castWatch.note({ kind: 'message', text: CAST_LANDED });
+  // Position UNCHANGED — the whole point of the case.
+  const r = mover.tick();
+  ok('server text releases the hold with ZERO displacement', r.state === 'blinked',
+     JSON.stringify(r));
+  ok('the hold is cleared', mover._blinkPending === false);
+  ok('the mover replans', mover.path === null);
+}
+
+{
+  // A fizzled cast must stop holding at once. Under the timer it cost 20s of standing still
+  // before anything else could be tried, on a spell the server already told us is dead.
+  const { mover, session } = blinkRig();
+  mover.stuckTicks = 3;
+  mover._blinkPending = true;
+  mover._blinkAt = clock();
+  mover._blinkFrom = blinkFrom(3, 5);
+  session._castWatch.note({ kind: 'message', text: CAST_BEGIN });
+  session._castWatch.note({ kind: 'message', text: CAST_FIZZLE });
+  const r = mover.tick();
+  ok('a fizzle ends the hold immediately', r.state === 'blink-fizzled', JSON.stringify(r));
+  ok('the hold is cleared', mover._blinkPending === false);
+  ok('stuckTicks advances so the escape machinery still sees a stall', mover.stuckTicks === 4);
+}
+
+{
+  // Landed and fizzle must not be conflated anywhere in the mover. This is the assertion
+  // that would have failed for the entire life of this project.
+  const a = blinkRig(); a.mover.stuckTicks = 3; a.mover._blinkPending = true;
+  a.mover._blinkAt = clock(); a.mover._blinkFrom = blinkFrom(3, 5);
+  a.session._castWatch.note({ kind: 'message', text: CAST_LANDED });
+  const b = blinkRig(); b.mover.stuckTicks = 3; b.mover._blinkPending = true;
+  b.mover._blinkAt = clock(); b.mover._blinkFrom = blinkFrom(3, 5);
+  b.session._castWatch.note({ kind: 'message', text: CAST_FIZZLE });
+  const ra = a.mover.tick(), rb = b.mover.tick();
+  ok('landed and fizzle give DIFFERENT mover states', ra.state !== rb.state, `${ra.state} vs ${rb.state}`);
+}
+
+{
+  // While a cast is genuinely in flight the mover must send NOTHING. This is the property
+  // the six-tick window violated.
+  const { mover, session, sent } = blinkRig();
+  mover.stuckTicks = 3;
+  mover._blinkPending = true;
+  mover._blinkAt = clock();
+  mover._blinkFrom = blinkFrom(3, 5);
+  session._castWatch.note({ kind: 'message', text: CAST_BEGIN });
+  const before = sent.length;
+  const r = mover.tick();
+  ok('an outstanding cast holds the mover', r.state === 'blinking', JSON.stringify(r));
+  ok('and it sends no move packet while the cast is in flight',
+     sent.filter(s => s[0] === 'move').length === 0, JSON.stringify(sent.slice(before)));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
