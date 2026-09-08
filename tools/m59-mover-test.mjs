@@ -1003,6 +1003,48 @@ console.log('\nEXACT-POINT VOID (square floored, body point leafless)');
   void sent;
 }
 
+console.log('\nA STRIDE THAT INTEGRATES TO NOTHING MUST NOT REPORT MOVING');
+{
+  // THE LIVE FAILURE THIS ASSERTION EXISTS FOR. After the integration was restored, keeper-t3.log
+  // showed 2,180 consecutive ticks of `plan from=(12,3) dest=8,2 found=true wp=1` with sends=0 and
+  // stuck=1747 climbing with no ceiling. The mover was reporting `state: 'moving'` while putting
+  // nothing on the wire, and because it RETURNED, it never reached the escape fan below — the fan
+  // being the only thing in the file that knows how to leave a pocket. A counter that climbs for
+  // ever while nothing is sent is not a stuck detector, it is a diary.
+  //
+  // The step engine could not reach this state: it named an adjacent square and declared its
+  // centre without consulting the geometry, so it always had somewhere to go. The integration can
+  // legitimately return zero ground — the character is in a corner where every heading is walled
+  // within a stride — which is exactly the situation the escape fan was written for.
+  //
+  // THE ASSERTION IS ABOUT THE WIRE, NOT THE RETURN VALUE. 'state === moving' is whatever the
+  // branch says it is; a test that reads it back proves nothing, and the first draft of this one
+  // did. So it counts SENDS over thirty ticks and requires the mover to escalate rather than
+  // tick quietly forever.
+  const cornerGeo = {
+    collisionReady: true,
+    fineWalkable: () => true,
+    standable: () => true,
+    traceFineMoveClient: () => ({ blocked: true, moved: false, arrived: false }),
+    finePathProtocol: () => ({ found: true, waypoints: [{ x: 9 * 64 + 32, y: 2 * 64 + 32 }] }),
+  };
+  const { mover, sent } = rig({ col: 12, row: 3, geo: cornerGeo });
+  mover.to(8, 2, { by: 'router' });
+  let escalated = false, quietTicks = 0;
+  for (let i = 0; i < 30; i++) {
+    clock(1050);
+    const before = sent.length;
+    const r = mover.tick();
+    if (sent.length === before) quietTicks++;
+    if (r.state === 'raw-move' || r.state === 'stuck' || r.state === 'blink') { escalated = true; break; }
+  }
+  ok('a mover whose stride integrates to nothing escalates rather than ticking quietly',
+     escalated, `${quietTicks} quiet ticks of ${30}, stuck=${mover.stuckTicks}`);
+  // And the counter that the fan reads must actually advance, or escalation can never happen.
+  ok('and stuckTicks advances while nothing is sent (the fan reads it)', mover.stuckTicks > 0,
+     `stuck=${mover.stuckTicks}`);
+}
+
 console.log('\nDESTINATION OWNERSHIP: the owner may re-aim its own destination');
 {
   // THE GUARD EXISTS TO STOP A LOWER CALLER STEALING A ROUTE. It was written as

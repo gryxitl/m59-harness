@@ -30,6 +30,17 @@ let txt;
 try { txt = readFileSync(file, 'utf8'); }
 catch (e) { console.error(`cannot read ${file}: ${e.message}`); process.exit(1); }
 
+// THE CURRENT SESSION ONLY. A keeper log spans every restart it has survived, and the mover's
+// send counter restarts at 1 with each one. Measuring across sessions mixes code versions — which
+// is precisely how a rate figure came to be quoted against a baseline produced by different
+// software, and how '634 packets' was reported for a session that had sent 40.
+const _starts = [...txt.matchAll(/\[keeper\] \S+ starting on port/g)];
+if (_starts.length > 1) {
+  const before = txt.length;
+  txt = txt.slice(_starts[_starts.length - 1].index);
+  console.log(`(window: the current session only — ${_starts.length} sessions in the file, ${before - txt.length} bytes of earlier code excluded)`);
+}
+
 const sends = [];
 for (const m of txt.matchAll(/\[move-sent\] n=(\d+) aim=([-\d.]+),([-\d.]+) from=([-\d.]+),([-\d.]+)/g)) {
   const [, n, ax, ay, fx, fy] = m;

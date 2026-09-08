@@ -1772,8 +1772,26 @@ export class Mover {
         }
         return { state: 'moving', velocity: true, speed, stopped: moved.stopped };
       }
+      // A STRIDE THAT INTEGRATES TO NOTHING IS STUCK, NOT 'MOVING'.
+      //
+      // This used to increment stuckTicks and RETURN `state: 'moving'`. That is a deadlock, and
+      // it is what the live fleet was actually doing: keeper-t3.log after the restart shows
+      // `plan from=(12,3) dest=8,2 found=true wp=1` on 2,180 consecutive ticks, sends=0, and
+      // stuck=1747 climbing with no ceiling. The mover was reporting that it was moving while
+      // putting nothing on the wire, and because it returned, it never reached the escape fan
+      // below — the fan being the only thing in this file that knows how to leave a pocket.
+      //
+      // The step engine never reached this line, because a step always had somewhere to go: it
+      // named an adjacent square and declared its centre without asking the geometry. The
+      // integration can legitimately return zero — the character is in a corner where every
+      // heading is walled within a stride — and that is precisely the situation the escape fan
+      // was written for. Falling through is the whole point of having one.
+      //
+      // `stuckTicks` is kept and incremented: it is the counter the fan's own engagement reads,
+      // and zeroing it here would mean a character in a pocket never accumulates the three ticks
+      // the fan asks for.
       this.stuckTicks++;
-      return { state: 'moving', velocity: true, speed, why: 'stride integrates to nothing at my feet' };
+      // Deliberately NO return. Fall through to the step search and the escape fan below.
     }
 
     // Walk to the valid adjacent square using the
