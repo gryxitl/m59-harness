@@ -71,6 +71,15 @@ for (const [a, b] of srv.map((p, i) => [p, srv[i + 1]]).filter(([, b]) => b)) {
 const packets = (txt.match(/\[move-sent\]/g) ?? []).length;
 const strides = (txt.match(/vel-tick declare=/g) ?? []).length;
 
+// PER-BRANCH ATTRIBUTION, read from the `site=` field each send site stamps at the single
+// place every packet passes through. Attributing a packet to a branch by which debug line
+// happened to precede it is the same mistake as the historical '244,021 sends', which counted
+// the log text of one of nine send sites: a metric taken from whatever was logged rather than
+// from what the code guarantees.
+const bySite = new Map();
+for (const m of txt.matchAll(/\[move-sent\] n=\d+ site=([\w-]+)/g))
+  bySite.set(m[1], (bySite.get(m[1]) ?? 0) + 1);
+
 // Wall-clock window from the log's own timestamps, when it has them.
 const times = [...txt.matchAll(/^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z)/gm)]
   .map(m => Date.parse(m[1])).filter(Number.isFinite);
@@ -92,3 +101,16 @@ if (seconds && seconds > 0) {
   console.log('                        per-second rate is reported. Ground alone is not a rate.');
 }
 console.log(`  ground per packet     ${(squares / Math.max(1, packets)).toFixed(2)} squares (client stride: 2.5 walk / 5.0 run)`);
+if (bySite.size) {
+  console.log('  packets by send site:');
+  for (const [k, v] of [...bySite].sort((a, b) => b[1] - a[1]))
+    console.log(`    ${String(v).padStart(6)}  ${k}`);
+  if (bySite.get('unlabelled'))
+    console.log('    ^ UNLABELLED means a send site was added without naming itself. Every site');
+  console.log('  (ground per site is not reported: the log carries the server position far less');
+  console.log('   often than there are packets, so per-site ground would be an attribution.)');
+} else {
+  console.log('  no site= field in these packets: an older log. Ground per branch is not');
+  console.log('  reportable and guessing it from neighbouring debug lines is how the');
+  console.log("  the '244,021 sends' figure came to exist.");
+}
