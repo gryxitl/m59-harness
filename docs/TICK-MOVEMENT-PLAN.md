@@ -1455,3 +1455,64 @@ What this does **not** establish, stated before anyone builds on it:
   character with no destination, then a character holding 20 s at a time on a blink the server had
   refused for mana. Two different causes, both outside the mover, and both were found by reading
   the instrument rather than the movement code.
+
+## A void in room3d, and the investigation that produced five wrong answers before one right one
+
+Reported from the client: Kage is standing in a void in *The Sweet Grass Prairies* (557, `e7.roo`)
+and it renders strangely. The question — does the harness think a square is walkable that the BSP
+has no floor under? — is a good one and is still open. What this section records is the answer I
+produced for it, because **it was wrong and the way it was wrong is the lesson.**
+
+The claim I reached, with numbers:
+
+```
+room 557 e7.roo: coarse grid says walkable, BSP has NO floor : 967 squares
+                 both agree walkable                         : 276
+MEDIAN across 40 rooms: 78.9% of coarse-walkable squares have no BSP floor
+room 5 cave3.roo: leafAtClient finds NOTHING anywhere in a +-4992 scan
+=> "standable() short-circuits on walkable(); the BSP is never consulted"
+```
+
+Every number in that block is an artefact of **my** coordinate conversion. The trace at the
+coordinate the mover actually passes says:
+
+```
+traceFineMoveClient(28160, 37376, ...) -> { blocked: false, arrived: true }
+```
+
+**There is floor under Kage.** The scan fed the trace `col * 64 + 32` = 1824, where the mover feeds
+`protocolToClient(1824)` = **28160** — 26,336 units away, which is outside the room entirely. Of
+course a scan outside the room finds no leaves: it finds none in *any* room, which is exactly the
+"100% of rooms have no floor" result I reported. A result that identical across unrelated rooms is
+a property of the instrument, and that should have stopped me at the second room, not the fifth.
+
+The five wrong inferences, in order, each of which I stated as a finding:
+
+1. "the .roo is the wrong size — `grid=3268` but the room is 2450 squares" — `grid` is a **base64
+   string**; decoded it is 2450 bytes, exactly right.
+2. "3268 is not a rectangle, so the grid is corrupt" — same cause; it is not an array at all.
+3. "the tiles vary 0%–100%, so the baked collision is unusable" — my filter matched on a key
+   (`roo.sectors`) the baked artifact does not use, so it silently measured nothing.
+4. "my loop walked off a 78x75 room into a 90x65 range" — true, and I said so, then made the same
+   category of error twice more.
+5. "`standable()` short-circuits on the coarse grid and never consults the BSP" — **this one is a
+   real reading of the source** (`m59-roo.mjs:1697` really does `if (this.walkable(...)) return
+   true;` first), but the *evidence* I offered for its consequences was entirely the bad scan. The
+   short-circuit exists; how much it actually matters is unmeasured.
+
+What survives, and is worth keeping:
+
+- **The server is the authority on where a character can stand.** Kage is alive at 27/27 HP in the
+  square in question and walked there under its own power. Whatever `e7.roo`'s BSP does or does not
+  contain, the server placed the character there and honours it.
+- **`_occupiable` samples a 5x5 lattice; my scan sampled one point per square.** Those are different
+  questions, and only the first is what `standable()` answers.
+- **The open question is genuinely open**: whether the room3d void is (a) a real gap in `e7.roo`'s
+  BSP that the coarse grid papers over, or (b) a rendering issue in room3d, or (c) the
+  centre-vs-lattice sampling difference. Answering it needs a scan in the **mover's frame** —
+  `protocolToClient(col*64+32)` — and a comparison against what room3d draws, not against a
+  coordinate I invented.
+
+The rule this turn earned: **when a measurement returns the same extreme value across unrelated
+inputs, the bug is in the measurement.** Check the units before believing the number, and check
+them against the call site rather than against the variable's name.
