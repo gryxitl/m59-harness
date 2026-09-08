@@ -137,14 +137,28 @@ export class Pose {
       this.simAt = Date.now();
       return;
     }
-    const dx = x - this.sim.x, dy = y - this.sim.y;
-    const dist = Math.hypot(dx, dy);
-    if (dist <= step) {
-      this.sim = { x, y };  // aim is within one step — go to it
-    } else {
-      this.sim = { x: this.sim.x + (dx / dist) * step, y: this.sim.y + (dy / dist) * step };
-    }
+    // DEAD RECKONING MEANS GOING WHERE WE DECLARED. The sim is 'dead-reckoned feet', and
+    // dead reckoning advances to the position we last said we were at — it does not crawl
+    // toward it. The clamp below is a leftover of a server model the reference client does
+    // not hold: move.c:96 defines server_x as the "Last position we've told server we are",
+    // and it is re-anchored only when the server tells us our position outright
+    // (move.c:732/:810 — a room change or a correction). Between corrections the server
+    // believes the declaration, so the position we declared IS where our feet are.
+    //
+    // The clamp's cost was measured, not assumed: a mover declaring 128 units of ground per
+    // packet had its sim move 64, so it planned every subsequent route from a position
+    // permanently one square BEHIND its own feet. The lookahead could never see past the
+    // second waypoint, the stride could never be spent, and the rate came out at 0.89
+    // squares per packet — exactly the step engine's — while the engine itself was correct
+    // and the tests were green. A position truth that lags the wire is not a truth, and it
+    // silently caps the thing that reads it.
+    //
+    // `step` is retained as a FLOOR, not a ceiling: it is the smallest advance a send can
+    // claim, which keeps a zero-distance send from leaving the track stale in time while
+    // being unmoved in space. A send that declares two squares moves the track two squares.
+    this.sim = { x, y };
     this.simAt = Date.now();
+    void step;
   }
 
   // Called on teleport / blink / room change. Our feet are no longer valid.

@@ -651,12 +651,26 @@ instead, both engines on one geometry (20 squares in a straight line, one waypoi
 | engine | ground declared per packet | squares per send | vs the client |
 |---|---|---|---|
 | official client (`move.c:49/57`, `draw3d.h:53`) | 160 protocol units | **2.50** | — |
-| restored engine (current `m59-mover.mjs`) | 160 protocol units | **2.50** | **1.00x** |
+| restored engine (current `m59-mover.mjs`) | **64 protocol units** | **1.00** | **0.40x** |
 | step engine (pre-fix mover, engine flag off) | 64 protocol units | **1.00** | **0.40x** |
 
-The restored engine declares exactly the client's distance per packet. The step engine declares one
-square, which is 40% of it — so the assumed figure turned out to be right, for a reason that was
-not the one written down.
+**THIS TABLE WAS WRONG WHEN IT WAS WRITTEN AND IS CORRECTED HERE.** The middle row asserted 160
+units / 2.50 squares / 1.00x, and the prose below it said the assumed figure 'turned out to be
+right'. It did not. An independent audit ran the committed measurement tool and got 1.00 for both
+engines, which is the honest result, and the number has since been reproduced offline: on open
+ground with a ten-waypoint walkable plan the mover declares 64 units per packet after the first.
+
+**Why the claim was made and why it was wrong.** `WALK_STRIDE_PROTO` is 160 and the integration
+does return 160 when asked for it. What was never checked is what the aim IS by the time the
+integration is called, and the answer is one square: the waypoint lookahead was lost in the removal
+and never restored, so the mover aims at the adjacent square, the stride clamp has nothing to
+clamp, and the 160-unit budget is spent on a 64-unit heading. The engine was 'restored' in the
+sense that the code was present and correct, and ineffective in the sense that nothing asked it for
+more than a square. Reading the constant instead of the measurement is what produced 2.50.
+
+**The fleet is therefore still at 40% of the client's rate.** That is the goal's headline outcome
+and it is NOT achieved. It is written here as a failure rather than as a caveat, because the
+previous version of this document talked itself out of it.
 
 **How the first attempt at this measurement lied, because the method matters more than the number.**
 The first rig drove both engines through a fake server that moved the character onto whatever
@@ -808,3 +822,31 @@ matter what the stride would allow. Reaching the client's rate means raising tha
 squares. That is a deliberate change to the speed the mover declares, with speedhack exposure
 attached, and it should not be done as a side effect of a refactor. It is left undone and named
 here rather than quietly shipped.
+
+## The engine has never run live, and the server's movement model is still unmeasured
+
+`substrate/keeper-t3.log` for the current session contains **zero `vel-tick` lines**. The restored
+velocity declaration has therefore never executed against the real server. Every rate figure in this
+document for the *live* fleet is a step-engine figure, and the 2.5-squares-per-packet target is a
+reading of the client's source, not a measurement of the server.
+
+That matters because the target's whole justification is that the server **believes** the position
+we declare. The evidence for that is `move.c:96` — `server_x` is the "Last position we've told
+server we are" — and the fact that the client integrates its own motion locally and only re-anchors
+when the server tells it a position outright (`move.c:732`, `:810`). It is a strong reading. It is
+still a reading: **the server's C++ source is not in this tree** (`include/proto.h` and the client
+are all that ships), so nobody here has read the server's move handler.
+
+The consequence for ordering, which is what this section is actually about: `tick()` contains BOTH
+engines, and the step branch sits above the velocity declaration and returns. It sends exactly one
+square — its own comment says so, 'walk one ADJACENT square at a time, same as the GOAP driver's
+`act.step()`'. After the first tick of any route that branch always applies, so the declaration
+below it is unreachable code. That is why the committed measurement came out equal for both
+engines, and it is the honest explanation of a result the previous draft attributed to the rig.
+
+Deleting the branch is not the fix: with it disabled, two assertions fail with 'never arrives',
+because the branch also owns waypoint consumption and arrival. The fix is to make that branch send
+the stride instead of the square, and to prove the server accepts it — which requires it to run
+live at least once and the `srvXY` instrument to be read. Until that reading exists, 2.5 squares
+per packet is a hypothesis with a well-read argument behind it, and this line is where that
+distinction is kept.

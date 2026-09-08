@@ -97,19 +97,40 @@ function ok(cond, msg) {
   ok(p.divergence() === 256, 'split track reads the gap in proto units');
 }
 
-// 9. server-speed advance: the sim advances one square per call (the send
-// interval is ~1s at speed 18), not to the aim. The divergence guard still
-// fires when the sim drifts >6 squares (matches the client's auto-correction).
+// 9. DEAD RECKONING: THE SIM GOES WHERE THE PACKET SAID.
+//
+// This block used to assert the opposite — 'sim advances one square toward the aim
+// (server-speed)', with the justification 'the send interval is ~1s at speed 18'.
+// That sentence is the STEP ENGINE'S send model, and it is what made the velocity
+// restoration accomplish nothing: the engine declared 128 units of ground per packet
+// while the position truth underneath it moved 64, so every subsequent plan was drawn
+// from a square behind the character's own feet and the rate came out identical to the
+// engine being replaced. An engine can be correct and the thing that reads it can still
+// make it ineffective, which is why the position truth gets asserted here at all.
+//
+// The reference client's law (move.c:96): server_x is the "Last position we've told
+// server we are", re-anchored only when the server tells us our position outright
+// (move.c:732, :810). Between corrections the server believes the declaration, so the
+// declared position is where our feet are and the track goes there.
 {
   const p = new Pose();
   p.updateServer({ col: 10, row: 20, x: 10 * 64 + 32, y: 20 * 64 + 32 });
   p.advance(10 * 64 + 32, 20 * 64 + 32);  // sim null -> seed at (10, 20)
-  // Advance toward (18, 20): one square (64 proto units) per call, not to the aim.
+  // A packet declaring (18,20) puts our feet at (18,20). Not one square short of it.
   p.advance(18 * 64 + 32, 20 * 64 + 32);
-  ok(p.sim.x === 11 * 64 + 32, 'sim advances one square toward the aim (server-speed)');
-  ok(p.divergence() === 64, 'gap is one square (within echo lag)');
-  p.updateServer({ col: 10, row: 20, x: 10 * 64 + 32, y: 20 * 64 + 32 });
-  ok(p.divergenceResets === 0, 'one-square gap is not adopted (echo lag)');
+  ok(p.sim.x === 18 * 64 + 32, 'sim goes to the declared position (dead reckoning)');
+  ok(p.divergence() === 512, 'an eight-square gap between echo and declaration is measured');
+  // A gap WITHIN one stride is echo lag, not drift: at run speed a legitimate declaration
+  // sits 320 units ahead of an echo that has not arrived yet, and adopting that would throw
+  // the track back every second. The guard's threshold is 384 (six squares) precisely because
+  // it must clear the largest legal stride.
+  const q = new Pose();
+  q.updateServer({ col: 10, row: 20, x: 10 * 64 + 32, y: 20 * 64 + 32 });
+  q.advance(10 * 64 + 32, 20 * 64 + 32);
+  q.advance(15 * 64 + 32, 20 * 64 + 32);   // five squares ahead: one run stride of echo lag
+  ok(q.divergence() === 320, 'a stride-sized gap reads as echo lag');
+  q.updateServer({ col: 10, row: 20, x: 10 * 64 + 32, y: 20 * 64 + 32 });
+  ok(q.divergenceResets === 0, 'echo lag within one stride is not adopted');
   // Force a large drift (set the sim 8 squares off the echo) — the guard fires.
   p.sim = { x: 18 * 64 + 32, y: 20 * 64 + 32 };
   ok(p.divergence() === 512, 'drifted sim reads the gap');

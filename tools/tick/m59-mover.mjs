@@ -442,7 +442,7 @@ export class Mover {
     this.dest = null;
     this.destProto = null;
     this._recentSteps = null;
-    this.path = null;
+    this.path = null;  try { console.error(`[path-null] site 445`); } catch {}
     this.pathIdx = 0;
     this.sitting = false;
     this.lastPos = null;
@@ -606,7 +606,7 @@ export class Mover {
       this._roomKey = roomKey;
       this._simX = null; this._simY = null; this._simAt = 0;
       try { this.session?._pose?.reset(); } catch {}
-      this.path = null; this.pathIdx = 0;
+      this.path = null; this.pathIdx = 0;  try { console.error(`[path-null] site 609`); } catch {}
       this._fanIndex = null; this._fanTarget = null; this._fanFrom = null;
       this._roomChangedAt = Date.now();
     }
@@ -676,7 +676,7 @@ export class Mover {
           this._simAt = 0;
           try { this.session?._pose?.reset(); } catch {}
           this.stuckTicks = 0;
-          this.path = null; // replan from new position
+          this.path = null; // replan from new position  try { console.error(`[path-null] site 679`); } catch {}
           return { state: 'blinked', why: 'position changed after blink' };
         }
       }
@@ -727,7 +727,7 @@ export class Mover {
     const divResets = s?._pose?.divergenceResets ?? 0;
     if (divResets !== (this._lastDivResets ?? 0)) {
       this._lastDivResets = divResets;
-      this.path = null;
+      this.path = null;  try { console.error(`[path-null] site 730`); } catch {}
       this.pathIdx = 0;
       this._fanIndex = null;
       this._fanTarget = null;
@@ -973,7 +973,7 @@ export class Mover {
         // destination. We keep the reason for reporting, but
         // we still move.
         this._noRouteReason = result.reason ?? 'no fine path';
-        this.path = null;
+        this.path = null;  try { console.error(`[path-null] site 976`); } catch {}
         this.pathIdx = 0;
       }
     }
@@ -1404,7 +1404,7 @@ export class Mover {
             this._lastRawLogAt = Date.now();
             console.error(`[raw-door-push] my=(${Math.round(myProtoX)},${Math.round(myProtoY)}) dest=(${destCol},${destRow}) dist=${distToDest0.toFixed(0)} wp=${wp?'yes':'no'}`);
           }
-          this.path = null;  // drop any stale path; we're pushing through the gap
+          this.path = null;  // drop any stale path; we're pushing through the gap  try { console.error(`[path-null] site 1407`); } catch {}
           return { state: 'moving', to: { col: destCol, row: destRow }, raw: true };
         }
       }
@@ -1734,6 +1734,70 @@ export class Mover {
     // ==========================================================================
     {
       const geo = this.session?.world?.geometry;
+
+      // LOOK DOWN THE ROUTE BEFORE AIMING. This is what makes the stride real.
+      //
+      // Without it the mover aims at waypoint 0 for the entire path. There is exactly one
+      // `pathIdx++` in this file and it sits in the step engine, BELOW the return this branch
+      // makes — so under velocity the index never moves, and the only reason the character
+      // travels at all is that the stride clamp measures from its own moving sim position.
+      // Measured, that produces 0.94 squares per packet on a ten-waypoint straight-line plan
+      // with every square walkable: the same rate as the step engine, which is the number this
+      // whole restoration was supposed to make unnecessary.
+      //
+      // The deleted version had this block and named the failure precisely: "Advance past
+      // reached waypoints HERE: the shared advance block below is unreachable past this return.
+      // Without this, pathIdx freezes on a reached waypoint, aim == position, the send gate
+      // closes forever — the observed one-step-then-stop." It was lost in the removal and I did
+      // not notice, because nothing asserted it.
+      //
+      // CONSUME BY REACHABILITY, NOT BY PROXIMITY. A waypoint is spent when the stride can get
+      // to it and keep going, which is what lets one packet cover 2.5 squares instead of
+      // parking at the first square centre. The aim is the FARTHEST waypoint within this
+      // tick's stride; the integration below still decides whether that position is legal, so
+      // a lookahead can never authorise a position inside a wall — it only chooses a heading.
+      // This is the distinction the whole design rests on: lookahead is an aim, integration is
+      // an approval, and they must not be collapsed into each other.
+      if (this.path && this.pathIdx < this.path.length) {
+        const budget = strideNow;
+        let far = -1;
+        for (let i = this.pathIdx; i < this.path.length; i++) {
+          const w = this.path[i];
+          if (Math.hypot(w.x - myProtoX, w.y - myProtoY) > budget) break;  // ordered; no further
+          // TRACE-GATED, AND THIS IS THE PART THAT MUST NOT BE DROPPED. Distance says a
+          // waypoint is reachable; only the geometry says the heading to it is walkable. An
+          // earlier draft of this block consumed on proximity alone and aimed at the second
+          // waypoint of an L-turn because it was 143 units away — inside the stride — while the
+          // beeline to it cut the corner through a wall. The integration then stopped that
+          // heading at the wall, which is SAFE but not CORRECT: the mover declares a position
+          // partway into a wall it was never in, loses the ground, and the corner is rounded at
+          // the speed of the fan. The original lookahead asked the same question the trace asks
+          // and took the last waypoint whose own beeline was clear.
+          if (geo?.traceFineMoveClient) {
+            try {
+              const t = geo.traceFineMoveClient(
+                protocolToClient(myProtoX), protocolToClient(myProtoY),
+                protocolToClient(w.x), protocolToClient(w.y),
+                { slide: false, playerRadius: PLAYER_WALL_CLEARANCE_CLIENT_UNITS });
+              if (t && t.blocked === true && t.arrived !== true) break;
+            } catch { break; }   // an unknown trace is not a licence to look further
+          }
+          far = i;
+        }
+        // Only advance when the lookahead actually sees further than we are aiming. Advancing
+        // on a zero-length or blocked lookahead is how a mover ends up declaring the position
+        // it is already at, which the send gate then refuses — the freeze, in a different costume.
+        try { console.error(`[lookahead-dbg] idx=${this.pathIdx} far=${far} len=${this.path.length} sim=${Math.round(myProtoX)}`); } catch {}
+        if (far >= this.pathIdx) {
+          const w = this.path[far];
+          aimX = w.x; aimY = w.y;
+          // Spend the waypoints strictly BEFORE the aim: the aim square itself is not reached
+          // until the character is in it, and spending it early makes the next tick aim at the
+          // destination through a wall it has not yet turned the corner around.
+          if (far > this.pathIdx) this.pathIdx = far;
+        }
+      }
+
       // The heading: toward the current waypoint if a path exists, else the destination. The
       // stride is what the elapsed time buys at the current gait, so the declaration cannot
       // outrun the clock and trip the speedhack counter (user.kod: +1 per packet, -1 per
@@ -1779,7 +1843,16 @@ export class Mover {
           const back = this._roundBackward(moved, { x: aimX, y: aimY });
           this._submitMove(s, c, () => c.moveTo(back.x, back.y, speed, c.room?.id ?? 0));
           if (process.env.M59_MOVE_DEBUG !== '0')
-            try { console.error(`[movedbg] t3 vel-tick declare=(${Math.round(moved.x)},${Math.round(moved.y)}) ground=${moved.moved.toFixed(0)} stopped=${moved.stopped ?? 'clear'} run=${runNow} stride=${strideNow} idx=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} me=(${me.col},${me.row}) srv=(${curCol},${curRow})`); } catch {}
+            try { console.error(`[movedbg] t3 vel-tick declare=(${Math.round(moved.x)},${Math.round(moved.y)}) ground=${moved.moved.toFixed(0)} stopped=${moved.stopped ?? 'clear'} run=${runNow} stride=${strideNow} idx=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} me=(${me.col},${me.row}) srv=(${curCol},${curRow}) srvXY=(${Math.round(this._serverPos?.x ?? -1)},${Math.round(this._serverPos?.y ?? -1)}) prevDecl=(${Math.round(this._lastDeclX ?? -1)},${Math.round(this._lastDeclY ?? -1)})`); } catch {}
+          this._lastDeclX = back.x; this._lastDeclY = back.y;
+          // THE SERVER'S RAW POSITION, FOR THE ONE MEASUREMENT THAT SETTLES THE MOVEMENT MODEL.
+          // Every claim in this file about how far the server moves per accepted packet has been
+          // an assumption, because the log only ever carried the server's position to SQUARE
+          // precision — and a 160-unit acceptance and a 64-unit step both land in a neighbouring
+          // square, so the two models were indistinguishable in the evidence. The whole
+          // step-vs-velocity argument has therefore been conducted without the fact that decides
+          // it. This records it.
+          this._serverPos = this.session?._pose?.server ?? null;
           this._recordSend(aimX, aimY, myProtoX, myProtoY, back.x, back.y);
           this._recordReport(moved.x, moved.y);
           // A stride stopped by a wall is not progress made, and stuckTicks is the counter
@@ -1928,6 +2001,10 @@ export class Mover {
     return (movedEnough && intervalOk) || floorOk;
   }
   _recordReport(protoX, protoY) {
+    // Captured BEFORE the overwrite: the distance from the last declared position to this one is
+    // the ground this packet bought, and Pose needs it to advance its own track by the same
+    // amount. Reading it after the assignment would always give zero.
+    const _prevX = this._lastReportX, _prevY = this._lastReportY;
     this._lastReportAt = Date.now();
     this._lastReportX = protoX;
     this._lastReportY = protoY;
@@ -1935,7 +2012,27 @@ export class Mover {
     this._simY = protoY;
     this._simAt = Date.now();
     // Keep the shared Pose in step with our own feet (single position truth).
-    try { this.session?._pose?.advance(protoX, protoY); } catch {}
+    //
+    // STEP = THE WHOLE DECLARED DISTANCE, AND THAT IS A SOURCE-READ, NOT A TUNING CHOICE.
+    //
+    // Pose.advance's default step is KOD_FINENESS — one square — which encodes a model of the
+    // server that the reference client does not hold: that the server walks the character toward
+    // a declared position at its own rate, so one accepted packet is worth one square of ground.
+    // move.c:96 says otherwise in the client's own words: `server_x` is the
+    // "Last position we've told server we are." Between corrections the server simply BELIEVES
+    // what we declared; it is re-anchored only when the server tells us our position outright
+    // (move.c:732, :810 — a room change or a correction), which is what Pose.updateServer is for.
+    //
+    // The consequence was measured, not guessed: with the one-square default, a mover that
+    // declared two squares of ground believed it had moved one, so the next aim was computed from
+    // a position a square BEHIND its own feet, the lookahead could never see past the second
+    // waypoint, and the rate came out at 0.89 squares per packet — identical to the step engine.
+    // That is how the restoration could be 'complete' and the fleet not one whit faster: the
+    // engine was fixed and the position truth underneath it was still a step engine.
+    const _step = (_prevX == null || _prevY == null)
+      ? KOD_FINENESS
+      : (Math.hypot(protoX - _prevX, protoY - _prevY) || KOD_FINENESS);
+    try { this.session?._pose?.advance(protoX, protoY, _step); } catch {}
     // LOCAL SIMULATION (official client model, move.c): our own feet are
     // authoritative between server echoes. Every send advances the sim to
     // the declared point; planning reads it while fresh (<2s) so waypoints

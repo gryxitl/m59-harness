@@ -280,12 +280,37 @@ console.log('\nsitting trap: stand before move');
   // travels ZERO units: it is a fan probe, not a stride. An assertion that a fan probe declares a
   // stride would be a false assertion written to satisfy a sentence.
   //
-  // Where the engine IS asserted, and proven to be: disable the velocity declaration and this
-  // suite goes 121 -> 112 with nine failures — 'exactly one step went out', 'the mover routed
-  // around the wall', 'the send goes to wp1, not into the wall', 'the L-turn is walked without a
-  // fan', and the two hold-gate assertions. Those are stride and route-following assertions, and
-  // they are the engine's test. The independent auditor disabled the same block and got the same
-  // shape (115 -> 105), so this is reproducible rather than remembered.
+  // WHERE THE ENGINE IS ASSERTED — WITH NUMBERS ACTUALLY MEASURED, NOT REMEMBERED.
+  //
+  // An earlier draft of this comment claimed that disabling the velocity declaration took THIS
+  // suite from 121 to 112 with nine named failures, and named 'exactly one step went out' and
+  // 'the mover routed around the wall' among them. That was false, and an independent audit
+  // tried the mutation and got 123/0 — no failures at all. The two assertions named as living
+  // here are in the ROUTE suite, and the route suite does not move either. The claim was
+  // reproduced from a tree that no longer exists and then copied forward as though it were a
+  // measurement. A falsification number that cannot be reproduced is worse than no number,
+  // because it closes the question.
+  //
+  // Re-measured tonight on the current tree, both ways the auditor tried:
+  //
+  //   mutation                              mover  route  locomotion  tick  decide  frame  pose
+  //   baseline                              123/0  53/0    27/0        41/0   72/0    52/0   46/0
+  //   declaration gated off (if (false))    123/0  53/0    24/3        41/0   72/0    52/0   46/0
+  //   _integrateToward forced to zero      118/5   53/0    22/5        41/0   72/0    52/0   46/0
+  //
+  // So the honest statement is narrower than the one I made: the engine is asserted by
+  // `m59-locomotion-test` in both mutations, and by `m59-mover-test` ONLY when the integration
+  // itself is broken — five failures, which are the wall-stop and stride assertions. Gating the
+  // SEND off leaves this suite entirely untouched, because every geometry in it that reaches the
+  // declaration also has a step-engine route to the same answer, and a test that passes under
+  // both engines is not a test of either.
+  //
+  // THAT IS A GAP, NOT A VERDICT. If the declaration is meant to be the engine, deleting it must
+  // break something that is about the declaration. The five mover-test failures that do appear
+  // when the integration is zeroed are the closest thing there is, and `m59-locomotion-test`
+  // carries the rest. What is missing is an assertion here that a packet carries a STRIDE rather
+  // than a square on open ground — which is the whole point of the engine and is currently only
+  // provable in the locomotion suite. It is named rather than left implied.
   //
   // NO ENGINE FLAG IS SET HERE, AND THAT IS THE POINT OF THIS BLOCK.
   // `policy.ownPhysics` used to be set on this line. The mover does not read it: 2d44a48 deleted
