@@ -269,7 +269,14 @@ export class Mover {
    * character was at (posX, posY). Bookkeeping for teleport-change
    * detection; sends are throttled by the 1/s gate, never held.
    */
-  _recordSend(keyX, keyY, posX, posY) {
+  // keyX/keyY is the DESTINATION (what the mover is heading for), posX/posY is where the mover
+  // thinks it is, and atX/atY is the POSITION THAT WENT ON THE WIRE. Only the last can measure
+  // ground covered, and it can only come from the caller: the nine send sites each compute their
+  // own position (a stride, a fan probe, a rounded-backward wall stop), and there is no way to
+  // recover it afterwards. An earlier draft reached for `this._lastMoveSent`, which is set by one
+  // site out of nine — the same 'one of nine sites logs anything' defect the historical
+  // '244,021 sends' figure was made of, reintroduced while complaining about it.
+  _recordSend(keyX, keyY, posX, posY, atX, atY) {
     this._lastSentKey = `${Math.round(keyX)},${Math.round(keyY)}`;
     this._lastSentPos = { x: posX, y: posY };
     this._sendCount = (this._sendCount ?? 0) + 1;
@@ -289,7 +296,17 @@ export class Mover {
     // guarantee this file has ever had. `sent=` is the packet count; `aim=` is the position the
     // packet declared, which is the quantity the locomotion rate is actually made of.
     try {
-      console.error(`[move-sent] n=${this._sendCount} aim=${Math.round(keyX)},${Math.round(keyY)} from=${Math.round(posX)},${Math.round(posY)}`);
+      // `at=` IS THE PACKET'S PAYLOAD AND IS THE ONLY POSITION THAT MEANS ANYTHING HERE.
+      //
+      // The first version of this line logged only `from=`, which is the mover's SIM position.
+      // Every rate computed from it was wrong, and the wrongness was invisible because the
+      // numbers looked plausible: the sim jumps to wherever the last declaration aimed, so
+      // consecutive `from` values differ by the stride rather than by the ground covered, and a
+      // 'squares per packet' figure came out at 2.24 for a character that was standing still.
+      // The wire carries the position we declared, so that is what gets logged. `aim=` stays
+      // because the freeze diagnostic needs the destination, and the two are only equal by
+      // accident.
+      console.error(`[move-sent] n=${this._sendCount} at=${Math.round(atX)},${Math.round(atY)} aim=${Math.round(keyX)},${Math.round(keyY)} from=${Math.round(posX)},${Math.round(posY)}`);
     } catch {}
   }
 
@@ -1192,7 +1209,7 @@ export class Mover {
       }
       if (this._movementGateOk(fanX, fanY, myProtoX, myProtoY, fServerPX, fServerPY)) {
         this._submitMove(s, c, () => c.moveTo(Math.round(fanX), Math.round(fanY), speed, c.room?.id ?? 0));
-        this._recordSend(aimX, aimY, myProtoX, myProtoY);
+        this._recordSend(aimX, aimY, myProtoX, myProtoY, Math.round(fanX), Math.round(fanY));
         this._recordReport(fanX, fanY);
         this._fanTarget = { x: protocolToClient(fanX), y: protocolToClient(fanY) };
         this._fanSentAt = Date.now();
@@ -1294,7 +1311,7 @@ export class Mover {
         }
         if (this._movementGateOk(pastX, pastY, myProtoX, myProtoY, wServerPX, wServerPY)) {
           this._submitMove(s, c, () => c.moveTo(Math.round(pastX), Math.round(pastY), 18, c.room?.id ?? 0));
-          this._recordSend(pastX, pastY, myProtoX, myProtoY);
+          this._recordSend(pastX, pastY, myProtoX, myProtoY, Math.round(pastX), Math.round(pastY));
           this._recordReport(pastX, pastY);
         }
         return { state: 'crossing', walkPast: true };
@@ -1381,7 +1398,7 @@ export class Mover {
           if (Date.now() - (this._lastRawPushAt ?? 0) >= 500) {
             this._lastRawPushAt = Date.now();
             this._submitMove(s, c, () => s.client.moveTo(rawX, rawY, 18, s.client.room?.id ?? 0));
-            this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
+            this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY, rawX, rawY);
           }
           if (Date.now() - (this._lastRawLogAt ?? 0) > 5000) {
             this._lastRawLogAt = Date.now();
@@ -1445,7 +1462,7 @@ export class Mover {
           if (segOk && this._movementGateOk(sx, sy, myProtoX, myProtoY, srvPX, srvPY)) {
             const npSpeed = runNow ? 36 : 18;
             this._submitMove(s, c, () => c.moveTo(sx, sy, npSpeed, c.room?.id ?? 0));
-            this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
+            this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY, sx, sy);
             this._recordReport(sx, sy);
             // Honest stuck bookkeeping: the stride sends while the server
             // echo sits still for ~1s. Without this the direct-send site
@@ -1520,7 +1537,7 @@ export class Mover {
         // ("goal square has no floor") no longer gates our movement. The server
         // accepts the declared position (server_validate=false for user moves).
         if (this._claimMoveSlot()) Promise.resolve(s.client.moveTo(stepProtoX, stepProtoY, 18, s.client.room?.id ?? 0)).catch(() => {});
-        this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
+        this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY, stepProtoX, stepProtoY);
         this._recordReport(stepProtoX, stepProtoY);
         this._noteServerStatic(curCol, curRow);
       }
@@ -1763,7 +1780,7 @@ export class Mover {
           this._submitMove(s, c, () => c.moveTo(back.x, back.y, speed, c.room?.id ?? 0));
           if (process.env.M59_MOVE_DEBUG !== '0')
             try { console.error(`[movedbg] t3 vel-tick declare=(${Math.round(moved.x)},${Math.round(moved.y)}) ground=${moved.moved.toFixed(0)} stopped=${moved.stopped ?? 'clear'} run=${runNow} stride=${strideNow} idx=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} me=(${me.col},${me.row}) srv=(${curCol},${curRow})`); } catch {}
-          this._recordSend(aimX, aimY, myProtoX, myProtoY);
+          this._recordSend(aimX, aimY, myProtoX, myProtoY, back.x, back.y);
           this._recordReport(moved.x, moved.y);
           // A stride stopped by a wall is not progress made, and stuckTicks is the counter
           // that decides whether the escape fan engages. Counting a walled stride as progress
@@ -1811,7 +1828,7 @@ export class Mover {
           console.error(`[movedbg] t3 gateOK step=(${stepCol},${stepRow}) me=(${me.col},${me.row}) wp=(${wpCol},${wpRow}) idx=${this.pathIdx}/${this.path ? this.path.length : 'null'} stuck=${this.stuckTicks} srv=(${curCol},${curRow}) moveTo sent`); })
         .catch(e => { if (process.env.M59_MOVE_DEBUG !== '0')
           console.error(`[movedbg] t3 gateOK step=(${stepCol},${stepRow}) ERR ${e.message}`); });
-      this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY);
+      this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY, enrProtoX, enrProtoY);
       this._recordReport(enrProtoX, enrProtoY);
       this._noteServerStatic(curCol, curRow);
     } else {
@@ -2140,7 +2157,7 @@ export class Mover {
     if (!this._movementGateOk(protoX, protoY, serverX, serverY, serverX, serverY)) return false;
     const px = Math.round(protoX), py = Math.round(protoY);
     this._submitMove(s, c, () => c.moveTo(px, py, 18, c.room?.id ?? 0));
-    this._recordSend(this.destProto?.x ?? protoX, this.destProto?.y ?? protoY, protoX, protoY);
+    this._recordSend(this.destProto?.x ?? protoX, this.destProto?.y ?? protoY, protoX, protoY, px, py);
     this._recordReport(protoX, protoY);
     return true;
   }

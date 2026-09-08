@@ -41,10 +41,25 @@ if (_starts.length > 1) {
   console.log(`(window: the current session only — ${_starts.length} sessions in the file, ${before - txt.length} bytes of earlier code excluded)`);
 }
 
+// `at=` IS THE POSITION THAT WENT ON THE WIRE, and it is the only one that can measure ground.
+// This file first read `from=`, which is the mover's SIM position: the sim jumps to wherever the
+// last declaration aimed, so consecutive `from` values differ by roughly the STRIDE rather than by
+// the ground covered, and the figure came out at 2.24 squares per packet for a character that was
+// standing still. Older logs have no `at=` at all, in which case there is nothing to measure and
+// this says so rather than falling back to the wrong field and printing a plausible number.
 const sends = [];
-for (const m of txt.matchAll(/\[move-sent\] n=(\d+) aim=([-\d.]+),([-\d.]+) from=([-\d.]+),([-\d.]+)/g)) {
-  const [, n, ax, ay, fx, fy] = m;
-  sends.push({ n: Number(n), aim: [Number(ax), Number(ay)], from: [Number(fx), Number(fy)] });
+for (const m of txt.matchAll(/\[move-sent\] n=(\d+) at=([-\d.]+),([-\d.]+) aim=([-\d.]+),([-\d.]+) from=([-\d.]+),([-\d.]+)/g)) {
+  const [, n, tx, ty, ax, ay, fx, fy] = m;
+  sends.push({ n: Number(n), at: [Number(tx), Number(ty)], aim: [Number(ax), Number(ay)], from: [Number(fx), Number(fy)] });
+}
+if (!sends.length && /\[move-sent\]/.test(txt)) {
+  console.log(file + ': [move-sent] lines exist but carry no at= field.');
+  console.log('That field is the declared position, and it is the only one that measures ground.');
+  console.log('Re-run against a log written by the current mover. Do not substitute the sim');
+  console.log('position for it: a rate computed from the sim is a rate of the estimate, not of');
+  console.log('the character, which is how 2.24 squares per packet got reported for a mover');
+  console.log('that was not moving at all.');
+  process.exit(0);
 }
 if (!sends.length) {
   console.log(`${file}: no [move-sent] lines.`);
@@ -65,9 +80,16 @@ const medWalk = med(walking);
 console.log(`${file}`);
 console.log(`  packets            ${sends.length}`);
 console.log(`  room transitions   ${transitions.length} (over ${TRANSITION_CUTOFF} units — 'from' is in the old room)`);
-console.log(`  median, ALL sends       ${medAll.toFixed(0)} units = ${(medAll / KOD).toFixed(2)} squares/packet = ${(medAll / KOD / CLIENT_SQUARES_PER_PACKET).toFixed(2)}x the client's walk rate`);
-console.log(`  median, WALKING only    ${medWalk.toFixed(0)} units = ${(medWalk / KOD).toFixed(2)} squares/packet = ${(medWalk / KOD / CLIENT_SQUARES_PER_PACKET).toFixed(2)}x the client's walk rate`);
-console.log(`  sends per square (walking): ${(KOD / (medWalk || 1)).toFixed(2)}`);
+console.log(`  STRIDE (declared position vs where we were): median ${medAll.toFixed(0)} units = ${(medAll / KOD).toFixed(2)} squares = ${(medAll / KOD / CLIENT_SQUARES_PER_PACKET).toFixed(2)}x the client's 2.5-square stride`);
+console.log(`  STRIDE, walking only    ${medWalk.toFixed(0)} units = ${(medWalk / KOD).toFixed(2)} squares = ${(medWalk / KOD / CLIENT_SQUARES_PER_PACKET).toFixed(2)}x the client's stride`);
+// THE HONEST LABEL. Stride is what a packet OFFERS; ground is what the character GOT, and the
+// log does not carry the server's position finely enough to compute the second. Reporting a
+// stride under the name 'squares per packet' is what made every figure tonight read well while the
+// fleet stood still, so the quantity gets its real name and the missing one gets named too.
+console.log(`  packets per stride: ${(KOD / (medWalk || 1)).toFixed(2)}  (stride, NOT ground — see above)`);
+console.log(`  ground per packet is NOT derivable from this log: the server position is`);
+console.log(`  logged to square precision only. To measure ground, read the mover's own`);
+console.log(`  [move-sent] at= against a position source that is not the sim.`);
 
 // THE FREEZE CHECK, which is what this mover was actually broken by. A character that declares
 // the same position over and over is not slow, it is stuck, and a rate figure alone hides that:
