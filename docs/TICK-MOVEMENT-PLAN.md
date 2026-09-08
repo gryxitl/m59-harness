@@ -566,3 +566,38 @@ Which is the pattern this whole section should have taught. The velocity engine 
 broken in the way the section above said it was, but it *was* broken, and two of the
 three real defects were only ever observable in it — because it is the engine that
 actually moves, and so the only one that can show you a movement bug.
+
+## The player's clearance, and why it decides who owns a corridor
+
+Step 3's integration asks the geometry whether a position is legal. The answer depends on one
+number that is not in any protocol document: how big a player is. Getting it wrong is what took
+most of this step, and the way it was wrong is worth writing down because it is invisible in the
+code and only shows up as behaviour.
+
+The trace takes its radius in **client units**, where a square is 1024. The mover works in
+**protocol units**, where a square is 64. One protocol unit is sixteen client units
+(`protocolToClient` is `(v - KOD_FINENESS) * 16`). Four drafts of the clearance, all wrong the
+same way — a number copied between the two spaces:
+
+| draft | what it was | what it did |
+|---|---|---|
+| 1 | a point | a point can be placed on a wall line and a player cannot; the mover parked with its nose one client unit from a wall and the test reported that as stopping *at* it |
+| 48 | `move.c:100`'s `min_distance = 48` | `move.c:122` overwrites that two lines later with `player.width / 2`. The initialiser is not the value in force |
+| 256 | a quarter square | right order of magnitude, wrong quantity, arrived at by coincidence with `PLAYER_HEIGHT / 3` |
+| 248 | `m59-roo.mjs:145`'s `PLAYER_RADIUS` | the right quantity in the wrong space — 0.24 squares in the trace's units, 3.875 in the protocol units its own comment is written in |
+
+The client's real clearance, converted into the space the trace uses, is **3968 client units —
+exactly two squares**. Measured: a radius of 3968 stops precisely 2.000 squares short of a wall
+line, and a radius of 248 stops 0.242 short.
+
+That number has a consequence that looks like a regression and is not one. **A four-square
+corridor is not walkable by trace at a clearance of two squares on each side.** The player
+cylinder does not fit. So the trace cannot be the thing that decides where the character walks
+in a maze — the coarse walkable-square graph already does that, and it has to keep doing it. The
+trace owns only the last few units before a wall, which is what an integration needs it for and
+what it is the only mechanism for.
+
+This is the open question the step ends on, and it is a design question rather than a bug: at
+what clearance does the mover stop trusting the trace and start trusting the coarse graph? It
+should be answered before the velocity engine is used in a maze, because at the wrong value the
+mover will refuse rooms it can walk, which is the failure mode this whole task started from.

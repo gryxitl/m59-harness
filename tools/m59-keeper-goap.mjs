@@ -636,6 +636,12 @@ export class GOAPKeeper {
             });
             const blink = blinkSpell ?? blinkSkill;
             if (blink) {
+              // STAND BEFORE BLINK: a resting character has PFLAG_NO_MAGIC set
+              // (player.kod:1166) and the server refuses the cast whole. UC_STAND ->
+              // StopResting() -> ResetPlayerFlagList() clears the flag; wait 2s for
+              // the server to process it before the cast begins.
+              await session.pacer?.submit?.('stand', () => c.stand?.()).catch?.(() => {});
+              await new Promise(res => setTimeout(res, 2000));
               await c.cast(blink.id, []);
               await new Promise(res => setTimeout(res, 1500));
               const newMe = c.self;
@@ -650,9 +656,26 @@ export class GOAPKeeper {
           } catch (e) {
             console.error(`[goap] ${this.policy.agent} blink error: ${e.message}`);
           }
-          // Last resort: the character is truly stuck. Log it and let
-          // the rejoin mechanism handle it (broker will rejoin the session
-          // which resets the position to the last valid saved position).
+          // Last resort before giving up: the escape_pocket atomic. It
+          // stands, freezes the tick loop, casts blink, and waits for the
+          // moved event. The inline blink above is fire-and-forget and
+          // does not wait for the relocation to land, so it can report
+          // "position unchanged" even when the blink worked. The atomic
+          // also handles the no-blink-room case explicitly.
+          try {
+            const { escapePocket } = await import('./m59-act/escape-pocket.mjs');
+            const ep = await escapePocket(c, this.session);
+            if (ep?.sent) {
+              console.error(`[goap] ${this.policy.agent} unstuck by escape_pocket: ${ep.what}`);
+              return { acted: true, action: 'unstuck_pocket', reason: `stuck detection: ${ep.what}` };
+            }
+            console.error(`[goap] ${this.policy.agent} escape_pocket refused: ${ep?.reason ?? 'no reason'}`);
+          } catch (e) {
+            console.error(`[goap] ${this.policy.agent} escape_pocket error: ${e.message}`);
+          }
+          // Truly stuck. Log it and let the rejoin mechanism handle it
+          // (broker will rejoin the session which resets the position to
+          // the last valid saved position).
           console.error(`[goap] ${this.policy.agent} TRULY STUCK at (${me.col},${me.row}) — all unstuck methods failed`);
           return { acted: false, action: null, reason: 'truly stuck: no valid position' };
         }

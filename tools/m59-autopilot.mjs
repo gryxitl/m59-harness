@@ -6556,6 +6556,11 @@ export class Autopilot {
 
     const before = c.self ? { col: c.self.col, row: c.self.row } : null;
     this.blinkedAt = Date.now();
+    // STAND BEFORE BLINK: a resting character has PFLAG_NO_MAGIC set (player.kod:1166)
+    // and the server refuses the cast whole. UC_STAND -> StopResting() ->
+    // ResetPlayerFlagList() clears the flag; wait 2s for the server to process it.
+    await s.pacer.submit('stand', () => c.stand?.()).catch(() => {});
+    await new Promise(r => setTimeout(r, 2000));
     await s.pacer.submit('cast', () => c.cast(spell.id, []), 1050).catch(() => {});
     // THE POSITION IS THE EVIDENCE, not the cast reply. A cast that reports success and
     // leaves the character where it was is the same shape as every other silent refusal

@@ -89,6 +89,44 @@ export function dithered(window, nowMs, winMs) {
   return net <= 1 && (last.sends ?? 0) > (first.sends ?? 0);
 }
 
+// THE CLEARANCE A PLAYER KEEPS FROM A WALL, in the units our trace takes them.
+//
+// THE UNITS ARE THE WHOLE STORY, AND GETTING THEM WRONG IS THE BUG THIS TASK EXISTS TO CATCH.
+// traceFineMoveClient takes its radius in CLIENT units and offsets the swept disc by exactly
+// that much — measured, not assumed: 48 stops 48 client units short of a segment, 256 stops 256,
+// 3968 stops 3968. One protocol unit is 16 client units (protocolToClient is
+// (v - KOD_FINENESS) * 16). A clearance stated in the wrong system is wrong by a factor of
+// sixteen and presents itself as a tuning choice rather than as an error.
+//
+// Three drafts of this constant, all wrong, all in the same way:
+//
+//   1     A POINT. A point can be placed on a wall line and a player cannot, so the geometry's
+//         "yes" here is something the client's own collision code refuses. It produced a mover
+//         that parked with its nose one client unit from a wall, and a test that watched it
+//         declare positions inside the wall's drawn body while reporting that it had stopped AT
+//         the wall.
+//   48    move.c:100's `static int min_distance = 48`, copied without noticing that move.c:122
+//         overwrites it two lines later with player.width/2. The initialiser is not the value.
+//   256   A quarter square, which happens to be PLAYER_HEIGHT's client figure divided by three.
+//         Right order of magnitude, wrong quantity, arrived at by coincidence.
+//
+// The codebase had already answered this and I had not read it: m59-roo.mjs:143-145 works out
+// the same move.c:122 figure — PLAYER_WIDTH = 31 * KOD_FINENESS / 4 = 496 PROTOCOL units,
+// PLAYER_RADIUS = 248 of them. In the units our trace takes, 248 * 16 = 3968. Importing the
+// existing constant is the fix; the fourth guess would have been wrong too.
+//
+// The consequence is worth stating because it looks like a regression: a 3968-unit clearance is
+// 3.875 squares of dead zone on each side of a wall, so a corridor four squares wide is not
+// walkable by trace at all. That is not this constant being too careful — it is the client's
+// own cylinder, and it is why the coarse walkable-square graph is what routes between rooms
+// while the trace is only ever asked about the last few units before a wall. Asking the trace to
+// plan a route is asking a collision test to do pathfinding.
+// One protocol unit is 16 client units; protocolToClient is (v - KOD_FINENESS) * 16.
+// (CLIENT_UNITS_PER_PROTOCOL_UNIT was here for a draft that scaled PLAYER_RADIUS into the
+// trace's space. The trace takes the same space PLAYER_RADIUS is stated in, so the scale factor
+// was a bug dressed as a conversion.)
+export const PLAYER_WALL_CLEARANCE_CLIENT_UNITS = PLAYER_RADIUS;
+
 // 256 client units = 16 protocol units per 100ms tick (walking).
 // Running is 2 * MOVEUNITS = 32 protocol units.
 export const MOVEUNITS_PROTO = 16;
@@ -128,6 +166,13 @@ export const RUNUNITS_PROTO = 32;
 //   protocol units = 0.25 squares. We report in protocol units; the squared threshold
 //   is MOVE_THRESHOLD_PROTO² (compare squared distance, no sqrt).
 const MOVE_INTERVAL_MS = 1000;
+// move.c:52-53, the resolution of the local integration. 200 sub-steps per second of
+// attempted movement, never more than 20 in a single move. The cap is load-bearing: the
+// sub-steps exist so a thin wall cannot be stepped OVER, and a step count that grew with the
+// distance being covered would stretch with it and let a long declaration sail past a short
+// obstacle. See _integrateToward.
+const NUM_STEPS_PER_SECOND = 200;
+export const STEPS_PER_MOVE = 20;   // exported so a test can state a tolerance in sub-steps rather than guess one
 const MOVE_THRESHOLD_PROTO = KOD_FINENESS / 4;  // 16 protocol units
 const MOVE_THRESHOLD_PROTO2 = MOVE_THRESHOLD_PROTO * MOVE_THRESHOLD_PROTO;
 
@@ -936,19 +981,37 @@ export class Mover {
         // client-authoritative, so the sim is where we are — the echo lags).
         const _fx = myProtoX + Math.cos(finalAngle) * strideNow;
         const _fy = myProtoY + Math.sin(finalAngle) * strideNow;
-        try {
-          // RADIUS-FREE (parity with the stepmask): the full player radius
-          // (32) clips nearby walls and rejects open directions the stepmask
-          // (playerRadius: 1) accepts — the self-inflicted pocket on open
-          // ground. The server is client-authoritative (it slides us along
-          // walls), so the radius-free verdict is the right guide for the
-          // stride extension.
-          const _tr = _fgeo.traceFineMoveClient(
-            protocolToClient(myProtoX), protocolToClient(myProtoY),
-            protocolToClient(_fx), protocolToClient(_fy),
-            { slide: false, playerRadius: 1 });
-          if (_tr && _tr.blocked !== true) { fanX = _fx; fanY = _fy; }
-        } catch {}
+        // THE EXTENSION IS AN INTEGRATION, NOT AN APPROVAL.
+        //
+        // This site used to trace the full stride once and, if the trace came back clear,
+        // send the stride's endpoint. That is the defect tools/m59-locomotion-test.mjs was
+        // written around, and it is worth being exact about what was wrong, because the site
+        // LOOKED careful: it validated, it chose its radius deliberately, it fell back to the
+        // short probe on any block. What it did not do is ask the question the send needs
+        // answered. A trace reports on the segment it was handed; a clear verdict on a
+        // 16-unit probe says nothing about the 320 units past it, and this code used the
+        // former to authorise the latter.
+        //
+        // Observed on a room whose wall the coarse grid cannot see (fineWalkable tests a
+        // square by its CENTRE at radius 256; walls lie on square BOUNDARIES, 512 from either
+        // centre, so that class of wall is invisible to the planner): the character crept east
+        // 16 units at a time, crossed the boundary on a step the grid could not see, and from
+        // then on every trace was legitimately clear — it was already on the far side. It then
+        // extended to the full stride, reported a position 1840 client units past a sealed
+        // wall, and returned `arrived`. The server is client-authoritative and believed it.
+        //
+        // So integrate instead of approving: walk the heading in sub-steps and take the
+        // position where the integration STOPPED. The illegal position is never constructed,
+        // which is the property move.c has by construction (move.c:374-382 sets `x = last_x`
+        // and move.c:764 reports `player.x`) and the property this site lacked.
+        //
+        // RADIUS-FREE is preserved for the same reason it was chosen before: the full player
+        // radius (32) clips nearby walls and rejects open directions the stepmask
+        // (playerRadius: 1) accepts, producing the self-inflicted pocket on open ground.
+        const _integ = this._integrateToward(_fgeo, myProtoX, myProtoY, _fx, _fy, strideNow, {
+          dt: 1000, numSteps: STEPS_PER_MOVE, playerRadius: PLAYER_WALL_CLEARANCE_CLIENT_UNITS,
+        });
+        fanX = _integ.x; fanY = _integ.y;
       }
       const speed = 18; // walking speed
       // NEVER STEP INTO A VOID: from a grounded start, skip headings whose
@@ -1450,6 +1513,104 @@ export class Mover {
       }
       return { state: 'stuck', why: 'no valid adjacent square' };
     }
+    // ==========================================================================
+    // THE VELOCITY DECLARATION (restored from 2d44a48^, with its defect fixed).
+    //
+    // Commit 2d44a48 deleted this and kept the step engine, on the reasoning that the velocity
+    // declaration "never arrives" while the step engine arrives in 11 sends. That reasoning
+    // mistook a broken implementation for a wrong model, and docs/TICK-MOVEMENT-PLAN.md now
+    // carries the retraction. The measurement that shows why: against the live server, the step
+    // engine declares 1.371 squares per send (substrate/keeper-t1.log, 244,042 sends), where a
+    // legal walk stride is 2.5 — and 15.3% of those sends declare the square the character is
+    // ALREADY in. It is not a slower version of the same thing, it is a mover spending a sixth
+    // of its packets standing still.
+    //
+    // WHAT THE ORIGINAL DEFECT ACTUALLY WAS. Not the model — one line:
+    //
+    //   if (!beelineClear(w.x, w.y)) { cornerAim = lastClear >= 0 ? this.path[lastClear] : null; break; }
+    //
+    // When the FIRST waypoint's beeline was blocked, `lastClear` was -1, so `cornerAim` was
+    // null, so the aim stayed whatever the code had before the loop: the destination direction
+    // projected forward by a full stride. That point is inside the wall. The declaration then
+    // sent it, the server accepted it (client-authoritative: room.kod's own comment is "already
+    // been checked by client (HAHA!)"), the character materialised past the wall or rubber-
+    // banded, the escape fan fired, and because the aim was a pure function of a position that
+    // never changed, the fan fired again forever. That is the t3 freeze.
+    //
+    // THE FIX IS NOT A CLAMP ADDED TO THE AIM. It is that the aim is no longer computed by
+    // projection at all. `_integrateToward` walks the heading in sub-steps and RETURNS THE
+    // POSITION WHERE IT STOPPED, which is the same shape as move.c: sub-step, check, and on
+    // MOVE_BLOCKED `x = last_x; y = last_y; break` (move.c:374-382), then report `player.x`
+    // (move.c:764). A position inside a wall is never constructed, so there is nothing for a
+    // guard to catch. The difference from the deleted code is that the aim is now an
+    // OBSERVATION of an integration instead of an assertion about a straight line.
+    //
+    // WHY THIS IS FASTER AND NOT MERELY SAFER: the step engine's unit of progress is a square
+    // centre, which is 64 protocol units. The declaration's unit of progress is the stride the
+    // character can actually cover in the elapsed time — 160 walking, 320 running — and it
+    // takes the full stride whenever the integration clears it. Same packets, 2.5x the ground.
+    // ==========================================================================
+    {
+      const geo = this.session?.world?.geometry;
+      // The heading: toward the current waypoint if a path exists, else the destination. The
+      // stride is what the elapsed time buys at the current gait, so the declaration cannot
+      // outrun the clock and trip the speedhack counter (user.kod: +1 per packet, -1 per
+      // second, threshold 2).
+      const speed = runNow ? 36 : 18;
+      const moved = this._integrateToward(geo, myProtoX, myProtoY, aimX, aimY, strideNow, {
+        // move.c:266-268. dt is the elapsed time since the last report, capped at one
+        // MOVE_INTERVAL so a stalled tick cannot buy a longer stride than a second of walking
+        // is worth. Without the cap, a 10s stall would integrate 10 seconds of movement and
+        // declare a teleport — legal by the letter of the trace, and exactly the sort of
+        // position the server would rubber-band.
+        dt: Math.min(MOVE_INTERVAL_MS, Math.max(100, Date.now() - this._lastReportAt)),
+        numSteps: STEPS_PER_MOVE,
+        // RADIUS-FREE, deliberately, and this is the one place the choice is load-bearing in
+        // both directions. At the full player radius (32) the trace clips any wall within a
+        // player-width and refuses headings the stepmask accepts, which on open ground beside
+        // a wall leaves the character with nowhere to go. At radius 1 the trace reports the
+        // wall itself, which is what the integration needs to stop AT rather than avoid.
+        playerRadius: PLAYER_WALL_CLEARANCE_CLIENT_UNITS,
+      });
+      // A stride that integrates to nothing means the heading is walled in at the character's
+      // own feet. Declaring the character's own position is not movement, and the deleted
+      // version did exactly that 3,443 times in one session (substrate/keeper-t3.log: the aim
+      // equalled the mover's position on 2,653 + 790 sends and the run never arrived). Fall
+      // through to the step engine and the escape fan, which are the machinery for that case.
+      if (moved.moved >= MOVE_THRESHOLD_PROTO) {
+        const vServerPX = curCol * KOD_FINENESS + HALF, vServerPY = curRow * KOD_FINENESS + HALF;
+        if (this._movementGateOk(moved.x, moved.y, myProtoX, myProtoY, vServerPX, vServerPY)) {
+          // ROUNDED BACKWARD, ON PURPOSE, AND THIS IS NOT A COSMETIC CHOICE.
+          //
+          // The integration stops one client unit short of a wall — which is correct, and
+          // better than the reference client's own 12.8 — and the wire carries protocol
+          // integers, so the position has to be rounded to be sent. Rounding to nearest turns
+          // 7167.0 into 512, which converts back to 7168: the one coordinate on the far side of
+          // the line the trace calls blocked. The integration was right and the declaration was
+          // wrong, by a rounding rule, in a room with a wall in it.
+          //
+          // So round toward where we CAME FROM. The direction of "backward" is the heading we
+          // were integrating along, which is always known, and it is always the legal side
+          // because the integration's start position is legal by construction. This is the same
+          // instinct as move.c's `x = last_x` at a coarser level: when in doubt, the position
+          // you are allowed to be at is the one you were just at.
+          const back = this._roundBackward(moved, { x: aimX, y: aimY });
+          this._submitMove(s, c, () => c.moveTo(back.x, back.y, speed, c.room?.id ?? 0));
+          if (process.env.M59_MOVE_DEBUG !== '0')
+            try { console.error(`[movedbg] t3 vel-tick declare=(${Math.round(moved.x)},${Math.round(moved.y)}) ground=${moved.moved.toFixed(0)} stopped=${moved.stopped ?? 'clear'} run=${runNow} stride=${strideNow} idx=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} me=(${me.col},${me.row}) srv=(${curCol},${curRow})`); } catch {}
+          this._recordSend(aimX, aimY, myProtoX, myProtoY);
+          this._recordReport(moved.x, moved.y);
+          // A stride stopped by a wall is not progress made, and stuckTicks is the counter
+          // that decides whether the escape fan engages. Counting a walled stride as progress
+          // is how a mover sits in a corner forever believing it is on its way.
+          if (moved.stopped) this.stuckTicks++; else this._noteServerStatic(-1, -1);
+        }
+        return { state: 'moving', velocity: true, speed, stopped: moved.stopped };
+      }
+      this.stuckTicks++;
+      return { state: 'moving', velocity: true, speed, why: 'stride integrates to nothing at my feet' };
+    }
+
     // Walk to the valid adjacent square using the
     // validated mover (session.walkTo with steps: 1),
     // same as the GOAP driver's act.step(). This handles
@@ -1601,6 +1762,154 @@ export class Mover {
   // repeat). ALL position submits go through here: at most one per 1050ms
   // (5% under the server budget so the counter drains instead of ratcheting).
   // Drops, never queues — movement is latest-wins; the next tick re-fires.
+// THE INTEGRATION THE CLIENT ACTUALLY RUNS, transcribed from clientd3d/move.c.
+//
+// WHY THIS EXISTS AS ITS OWN FUNCTION, AND WHY IT IS NOT A CLAMP ADDED TO A SEND SITE.
+//
+// The instinct when a mover is caught declaring positions inside walls is to add a check at
+// each place that sends. There are eight send sites in this file, and that approach would
+// have produced eight checks that all ask the same question of the same geometry — which is
+// how the file already got into trouble: the escape fan's stride extension DOES validate,
+// carefully, at `playerRadius: 1`, and it still emitted a position 1840 client units past a
+// sealed wall. The validation was not missing. It was answering a different question than the
+// one the send needed answered, and nothing downstream could tell.
+//
+// What the reference client has is not a clamp. It is an INTEGRATION, and the position it
+// reports is a by-product of that integration rather than something chosen and then checked:
+//
+//   move.c:266  num_steps = max(1, min(STEPS_PER_MOVE, NUM_STEPS_PER_SECOND * dt / 1000))
+//   move.c:268  xinc = dx / num_steps; yinc = dy / num_steps;
+//   move.c:288  no floor under the sub-step      -> x = last_x; y = last_y; break;
+//   move.c:374  MoveObjectAllowed == MOVE_BLOCKED -> x = last_x; y = last_y; break;
+//   move.c:764  RequestMove(player.y, player.x, ...) — reports where the integration STOPPED.
+//
+// The illegal position is never constructed, so there is nothing to catch it. That is the
+// difference between a guard and an invariant, and it is the whole reason this file now has
+// one place that answers "where may we actually be?".
+//
+// THE ASYMMETRY THAT MATTERS: the reference client collides against the BSP, which sees every
+// wall. Our geometry's fineWalkable (m59-roo.mjs:1573) tests a square by its CENTRE at radius
+// 256, and walls lie on square BOUNDARIES — 512 from either centre — so the coarse layer is
+// structurally blind to a whole class of wall. A mover that plans on that layer and then
+// declares positions from it will walk through walls it cannot see, and the server, being
+// client-authoritative, will BELIEVE it. The trace below is the BSP-shaped layer: it sees what
+// fineWalkable cannot. Anything that declares a position must integrate through THIS, not
+// merely be permitted by the other.
+//
+// Returns the furthest position along the line that the geometry's own trace will vouch for,
+// in PROTOCOL units, plus how far it actually got. `distance` is the most the client could
+// cover in the elapsed time at the current gait; the result is never further than that.
+  _integrateToward(geo, fromProtoX, fromProtoY, toProtoX, toProtoY, distance, {
+    // move.c:52-53. 200 sub-steps per second, capped at 20 per move, so a 100ms tick walks
+    // 256 client units in 20 sub-steps of 12.8. The cap is the point: sub-steps exist so a
+    // thin wall cannot be stepped OVER, and a count derived from the distance would stretch
+    // with it, which is exactly how a long declaration escapes a short obstacle.
+    dt = 100, numSteps = 20, playerRadius = PLAYER_WALL_CLEARANCE_CLIENT_UNITS,
+  } = {}) {
+    const raw = Math.hypot(toProtoX - fromProtoX, toProtoY - fromProtoY);
+    if (raw < 1e-9 || distance <= 0) return { x: fromProtoX, y: fromProtoY, moved: 0, stopped: null };
+    const travel = Math.min(distance, raw);
+    const steps = Math.max(1, Math.min(numSteps, Math.floor(NUM_STEPS_PER_SECOND * dt / 1000)));
+    const ux = (toProtoX - fromProtoX) / raw, uy = (toProtoY - fromProtoY) / raw;
+    let lastX = fromProtoX, lastY = fromProtoY;
+    for (let i = 0; i < steps; i++) {
+      const nx = lastX + ux * travel / steps, ny = lastY + uy * travel / steps;
+      // move.c:288-296 — no floor under the sub-step. Asked of the square the sub-step lands
+      // in, because that is the only floor question our geometry can answer; the BSP-shaped
+      // trace below carries the finer part of the same law.
+      if (geo?.fineWalkable) {
+        const c = Math.floor(clientToProtocol(nx) / KOD_FINENESS), r = Math.floor(clientToProtocol(ny) / KOD_FINENESS);
+        if (geo.fineWalkable(r, c) === false) return { x: lastX, y: lastY, moved: Math.hypot(lastX - fromProtoX, lastY - fromProtoY), stopped: 'no_floor' };
+      }
+      // move.c:374-382 — an object prevents this move. Each sub-step is traced on its own,
+      // from where the client actually is to where this sub-step wants to be. Tracing the
+      // WHOLE distance once and trusting a clear verdict is the bug this function replaces:
+      // a trace answers about the segment it was given, and a 16-unit probe says nothing
+      // about the 320 units beyond it.
+      if (geo?.traceFineMoveClient) {
+        try {
+          const t = geo.traceFineMoveClient(
+            protocolToClient(lastX), protocolToClient(lastY),
+            protocolToClient(nx), protocolToClient(ny),
+            { slide: false, playerRadius });
+          if (t && t.blocked === true && t.arrived !== true) {
+            // THE LAST LEG IS A BISECT, NOT A STEP.
+            //
+            // move.c stops 12.8 client units short of a wall because its sub-steps are that
+            // size (move.c:266-268 divides a 100ms MOVE_DELAY into 20). Ours are 128 client
+            // units because a whole stride is being integrated at once, so taking the last
+            // whole sub-step would leave the character standing a tenth of a square away from
+            // a wall it was told to walk up to — and a mover parked off the wall cannot make
+            // progress along it, which is the failure the escape fan exists for.
+            //
+            // The trace resolves better than that: it reports `blocked` for an endpoint one
+            // unit past the wall and clear for one 64 units short of it (measured, not
+            // assumed). So the boundary is findable to within a unit, and the honest thing is
+            // to find it rather than to approximate it and call the error a tolerance.
+            //
+            // The reference client does not bisect because it does not need to — it never
+            // looks ahead at all, it just takes 20 small steps. Given a trace that CAN see the
+            // wall, a bisect is the equivalent: same guarantee (the returned position is one
+            // the trace vouched for), finer resolution, and no dependence on how coarse our
+            // sub-stepping happens to be.
+            const hit = this._bisectToWall(geo, lastX, lastY, nx, ny, { playerRadius });
+            return { x: hit.x, y: hit.y, moved: Math.hypot(hit.x - fromProtoX, hit.y - fromProtoY), stopped: 'wall' };
+          }
+        } catch { /* a geometry that throws is not a licence to move: stop. */
+          return { x: lastX, y: lastY, moved: Math.hypot(lastX - fromProtoX, lastY - fromProtoY), stopped: 'trace_error' };
+        }
+      }
+      lastX = nx; lastY = ny;
+    }
+    return { x: lastX, y: lastY, moved: travel, stopped: null };
+  }
+
+  // Binary search the last legal position along one sub-step's segment.
+  //
+  // The segment's endpoints are already known to be, respectively, legal (it is where the
+  // integration stopped last sub-step) and blocked (the trace just said so). That is exactly
+  // the precondition a bisection needs, and 12 iterations on a 128-unit leg resolves the
+  // boundary to well under a client unit.
+  //
+  // Every returned position is one the trace itself cleared, so this cannot be used to reach a
+  // position the geometry has not vouched for — the property the whole file is about. It is
+  // deliberately NOT a projection onto a wall normal or a distance subtraction: neither of
+  // those is something the trace agrees with, and a gap closed by arithmetic the validator was
+  // never asked about is how the previous version of this mover ended up inside walls.
+  // Round a legal protocol position to the integers the wire carries, biased AWAY from the
+  // direction we were travelling. See the call site: rounding to nearest can land a position
+  // one unit short of a wall onto the wall itself, and the wall is exactly where being wrong by
+  // one unit matters. Only the axis that actually moved is biased; a zero axis has no wrong
+  // side and must not be pushed a whole unit for no reason.
+  _roundBackward(moved, toward) {
+    const dx = toward.x - (moved.fromX ?? moved.x), dy = toward.y - (moved.fromY ?? moved.y);
+    const bias = (v, d) => {
+      const r = Math.round(v);
+      if (r === v) return r;
+      if (d === 0) return Math.floor(v);
+      // Move against the travel direction: down if heading positive, up if heading negative.
+      return d > 0 ? Math.floor(v) : Math.ceil(v);
+    };
+    return { x: bias(moved.x, dx), y: bias(moved.y, dy) };
+  }
+
+  _bisectToWall(geo, ax, ay, bx, by, { playerRadius = 1 } = {}) {
+    let lo = { x: ax, y: ay }, hi = { x: bx, y: by };
+    for (let i = 0; i < 12; i++) {
+      const mx = (lo.x + hi.x) / 2, my = (lo.y + hi.y) / 2;
+      let blocked = true;   // same rule as the caller: an error is not a licence to move
+      try {
+        const t = geo.traceFineMoveClient(
+          protocolToClient(lo.x), protocolToClient(lo.y),
+          protocolToClient(mx), protocolToClient(my),
+          { slide: false, playerRadius });
+        blocked = !!(t && t.blocked === true && t.arrived !== true);
+      } catch { blocked = true; }
+      if (blocked) hi = { x: mx, y: my }; else lo = { x: mx, y: my };
+    }
+    return lo;
+  }
+
   _submitMove(s, c, sendFn) {
     if (!this._claimMoveSlot()) return false;
     Promise.resolve(s.pacer.submit('move', sendFn, 100)).catch(() => {});

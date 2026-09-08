@@ -5,6 +5,7 @@ document is written for a version of you with **no memory of the work**. Read it
 before touching `tools/m59-act/`, `m59-worldstate.mjs`, `m59-plan.mjs` or
 `m59-goap-planner.mjs`.
 
+Read `docs/SESSION-HANDOFF.md` first — it is the most current state (Sep 3).
 Read `docs/keeper-rebuild-plan.md` next — it is the plan; this is the orientation.
 
 **If you change the shape of this work, update or delete this file.** Its
@@ -15,6 +16,28 @@ orphaned module with a live bug as "the path forward", and was deleted for it.
 
 ## 0. START HERE — how to actually run it
 
+There are **two drivers**, and they share the same brain.
+
+### The tick keeper (the live path)
+
+```bash
+# run one character on the real-time driver
+node tools/m59-tick-run.mjs --agent t3 --seconds 120 --i-mean-it
+node tools/m59-tick-run.mjs --agent t3 --to 1016 --i-mean-it     # and go somewhere
+```
+
+`tools/m59-tick-run.mjs` is the entry point for the tick driver. It logs in,
+runs a `TickLoop` at a fixed 10Hz rate, and prints what it decided and what
+actually changed. The decider is `tools/m59-decide.mjs` — a pure synchronous
+function that calls `evaluate()` → `planFor()` → `intend()`, the **same three
+calls** the GOAP keeper makes. The act phase is fire-and-forget: one command
+per tick, never awaited.
+
+The tick keeper is what the broker runs for each character. It is the
+production driver.
+
+### The GOAP keeper (the experimental/blocking variant)
+
 ```bash
 # plan only. Sends nothing.
 node tools/m59-goap-run.mjs --fleet local --agent fleet01 --goal vigor_ok
@@ -23,16 +46,20 @@ node tools/m59-goap-run.mjs --fleet local --agent fleet01 --goal vigor_ok
 node tools/m59-goap-run.mjs --fleet local --agent fleet01 --goal vigor_ok --apply
 ```
 
-`tools/m59-goap-run.mjs` is **the entry point and the only thing here that runs a
-character.** Everything else is a library. If you are looking for "the GOAP keeper"
-as a daemon you will not find one, because there is not one yet: this logs in, reads
-the vocabulary, plans, steps, reports, and exits.
+`tools/m59-goap-run.mjs` is the entry point for the GOAP driver. It logs in,
+reads the vocabulary, plans, steps (awaiting each atomic), reports, and exits.
+It is **not** a keeper (no loop, no supervision, no watchdog), **not** a broker
+client (it opens its own connection, so it will bump a broker off that
+character), and **cannot move** (`m59-act/step` requires the broker's
+fine-coordinate mover; the minimal session here has none, so `step` refuses by
+design — see §5).
 
-It is **not** a keeper (no loop, no supervision, no watchdog — `m59-autopilot.mjs`
-is still the real one and this does not touch it), **not** a broker client (it opens
-its own connection, so it will bump a broker off that character), and **cannot
-move** (`m59-act/step` requires the broker's fine-coordinate mover; the minimal
-session here has none, so `step` refuses by design — see §5).
+`tools/m59-keeper-goap.mjs` is the GOAP keeper class. It runs inside the
+broker's existing session (so it has the fine-coordinate mover), and is
+activated by `policy.useGOAP` per character. Its `pass()` is called by the
+autopilot's loop, the same way the legacy sequential `pass()` is called. The
+act phase **awaits** an atomic, so the cadence is decided by how long the
+atomic takes (p99 16.6s, worst 207s).
 
 Agent names differ per fleet: the `local` roster has `fleet01..fleet04`, not
 `t1..t5`. `node tools/m59-fleets.mjs` lists them.
@@ -45,8 +72,20 @@ Agent names differ per fleet: the `local` roster has `fleet01..fleet04`, not
 if/return decisions driving a character. The rebuild replaces the ladder with a
 **GOAP planner over small honest atomics**. The planner searches over actions
 declared with preconditions and effects, in a **closed vocabulary of world-state
-symbols**, and replans continuously. The old ladder still runs the fleet; nothing
-here has replaced it yet.
+symbols**, and replans continuously.
+
+The tick keeper (`m59-tick.mjs` + `m59-decide.mjs`) is the **production**
+driver. It uses the same GOAP planner (`m59-plan.mjs`), the same vocabulary
+(`m59-worldstate.mjs`), and the same atomics (`m59-act/*.mjs`), but runs them
+on a fixed 10Hz sensor loop instead of a blocking pass loop. The sensor data
+is already free — the server pushes it, unasked — so the decide half never
+needed to block. The only thing standing between the old model and this one was
+that execution went through `stepPlan`, which awaits an atomic. The tick keeper
+replaces that with `intend()`, which fires one command and returns.
+
+The GOAP keeper (`m59-keeper-goap.mjs`) is the **experimental** driver. It
+uses the same planner and vocabulary, but the act phase blocks, so it is the
+one that needs the `--apply` pass to verify the atomics against a live server.
 
 ---
 
@@ -87,10 +126,14 @@ yourself adding a danger weight to make a plan come out right, stop.
 
 | file | what it is |
 |---|---|
-| `tools/m59-goap-run.mjs` | **the entry point** — runs one character under the planner |
-| `tools/m59-act/*.mjs` | the atomics: `attack`, `step`, `equip`, `rest`/`stand`, `cast`, `eat` |
+| `tools/m59-tick-run.mjs` | **the live entry point** — runs one character on the tick driver |
+| `tools/m59-tick.mjs` | the tick loop: sensor, actuator, fixed 10Hz cadence |
+| `tools/m59-decide.mjs` | the decider: `evaluate()` → `planFor()` → `intend()`, synchronous |
+| `tools/m59-goap-run.mjs` | the experimental entry point — runs one character under the blocking planner |
+| `tools/m59-keeper-goap.mjs` | the GOAP keeper class (blocking, per-character opt-in via `policy.useGOAP`) |
+| `tools/m59-act/*.mjs` | the atomics: `attack`, `step`, `equip`, `rest`/`stand`, `cast`, `eat`, `buy`, `sell`, `pickup`, `drop`, `bank`, `scavenge`, `travel-to`, `take-safe-spot`, `escape-pocket`, `escape-underworld`, `flee` |
 | `tools/m59-act-test.mjs` | **the conformance sweep** — runs over every file in `m59-act/` |
-| `tools/m59-worldstate.mjs` | the ACT vocabulary (live client, ~1s clock), 14 symbols |
+| `tools/m59-worldstate.mjs` | the ACT vocabulary (live client, ~1s clock), 28 symbols |
 | `tools/m59-errandstate.mjs` | the ERRAND vocabulary (fleet rows over MCP, minutes), 8 symbols |
 | `tools/m59-plan.mjs` | the join: builds the action set, validates it, plans, steps it |
 | `tools/m59-goap-planner.mjs` | A\* over pre/effects (salvaged from the abandoned fork) |
@@ -102,13 +145,16 @@ yourself adding a danger weight to make a plan come out right, stop.
 Everything runs offline. No broker, no server, no fleet:
 
 ```bash
-node tools/m59-act-test.mjs          # 142
-node tools/m59-plan-test.mjs         #  25
+node tools/m59-act-test.mjs          # 286
+node tools/m59-plan-test.mjs         #  28
 node tools/m59-cost-test.mjs         #  23
-node tools/m59-worldstate-test.mjs   # 108
+node tools/m59-worldstate-test.mjs   # 160
 node tools/m59-errandstate-test.mjs  #  37
 node tools/m59-fake-client-test.mjs  #  51
 node tools/m59-bt-delegation-test.mjs
+node tools/m59-tick-test.mjs         #  35
+node tools/m59-decide-test.mjs       #  19
+node tools/m59-roo-test.mjs          # 818
 ```
 
 ---
@@ -185,6 +231,14 @@ on vigor. The broker's mover is `step(col, row, { confirm, beforeMutation })` an
 takes no speed, so the argument was silently discarded and the guard could never
 fire. A lever connected to nothing is worse than no lever.
 
+**THE TICK DRIVER IS SYNCHRONOUS BY CONTRACT.** `decide()` must not await
+anything. A `decide()` that returns a promise is doing something asynchronous,
+which is the exact habit the tick model exists to remove. The `TickLoop` reports
+it and does not await it — awaiting it would quietly reintroduce the blocking
+loop while every counter still said "tick". The atomics stay where they are,
+for the legacy driver and for the offline suite; the tick driver is a second
+reader of the same plan, not a rewrite of them.
+
 ---
 
 ## 6. State: what works, what is unproven
@@ -205,6 +259,13 @@ And the refusals, which matter more:
 | no mana | **no plan** |
 | target above the ceiling | **no plan at any price** |
 
+**The tick keeper is the live path.** It runs the same GOAP planner on a fixed
+10Hz loop. The decide half is synchronous by construction: `evaluate()` reads
+pushed client state, `planFor()` is A* over an in-memory action set, and
+`intend()` fires one command and returns. The sensor data is already free — the
+server pushes it, unasked — so the decide half never needed to block. The tick
+keeper is the production driver; the GOAP keeper is the experimental variant.
+
 **ONE LIVE RUN HAS HAPPENED — PLAN-ONLY, AND IT CORRECTED A SYMBOL.**
 `m59-goap-run.mjs` logged a character in on the local server and read the
 vocabulary. It found three things the offline suite could not, and they are the
@@ -219,8 +280,8 @@ model for what live running is FOR:
    satisfied, **the plan came back EMPTY**, and a hungry character would never have
    eaten. `vigor_ok` now fails CLOSED, and the same character plans `eat`.
 
-**NOTHING HAS BEEN EXECUTED AGAINST A SERVER YET.** No `--apply` run has happened,
-so still unverified:
+**THE GOAP KEEPER'S `--apply` HAS NOT RUN YET.** No `--apply` run has happened
+on the GOAP driver, so still unverified for the blocking path:
 
 - every `waitMs` is a guess
 - whether `create food` produces something matching `FOOD_RE` (an invented regex)
@@ -228,8 +289,12 @@ so still unverified:
 - whether `apply(food, selfId)` is actually how eating works
 - whether the plan feeds a character at all
 
+The tick driver's `intend()` path is proven (it is the live path). The GOAP
+keeper's `stepPlan()` path is the untested one.
+
 Treat "the design is coherent" and "the design works" as different claims. The first
-is supported; the second is supported only for reading state, not for acting.
+is supported; the second is supported for the tick driver (live) and for reading
+state on the GOAP driver, not for acting on the GOAP driver.
 
 ---
 
@@ -258,19 +323,27 @@ to ask the server.
 
 ## 8. Next steps, in order
 
-1. **The live `--apply` pass.** Plan-only is done (§6). The remaining half is
-   `node tools/m59-goap-run.mjs --fleet local --agent fleet01 --goal vigor_ok
-   --apply`, then compare the vigor/pack/mana it reports against what the atomics
-   *claimed*. A disagreement is the finding. This is still the highest-value thing
-   available, and every `waitMs` in the atomics is a guess until it runs.
+1. **The live `--apply` pass on the GOAP driver.** Plan-only is done (§6). The
+   remaining half is `node tools/m59-goap-run.mjs --fleet local --agent fleet01
+   --goal vigor_ok --apply`, then compare the vigor/pack/mana it reports against
+   what the atomics *claimed*. A disagreement is the finding. This is still the
+   highest-value thing available for the GOAP driver, and every `waitMs` in the
+   atomics is a guess until it runs. The tick driver's `intend()` path is already
+   proven (it is the live path), so this is specifically about the GOAP keeper's
+   `stepPlan()` path.
 2. **Give `m59-atomics.mjs` real `pre`/`effects`** from `m59-errandstate`. Its 14
    verbs currently declare `effect` as prose (`'room=to, health readable'`), so the
    coarse layer cannot be planned over at all. This is what makes the two-library
    claim true rather than asserted.
-3. **More atomics** — `pick_up`, `drop`, `buy`, `sell`, `deposit`, `withdraw` — each
-   through the same sweep.
-4. **Wire a planner-driven character behind a per-character opt-in**, directional
-   errands first, where being wrong costs a wasted trip rather than a character.
+3. **More atomics** — each through the same sweep. The current set is: `attack`,
+   `step`, `equip`, `rest`/`stand`, `cast`, `eat`, `buy`, `sell`, `pickup`,
+   `drop`, `bank` (deposit/withdraw), `scavenge`, `travel-to`, `take-safe-spot`,
+   `escape-pocket`, `escape-underworld`, `flee`.
+4. **Wire the GOAP keeper behind a per-character opt-in** for the blocking
+   variant. The tick keeper is already the live path; the GOAP keeper is the
+   one that needs the `policy.useGOAP` lever flipped on a specific character.
+   Directional errands first, where being wrong costs a wasted trip rather than
+   a character.
 
 ---
 
@@ -285,3 +358,8 @@ to ask the server.
 - **The ledger is the referee** for anything live: kills/minute from `countKills`,
   never a keeper's own tally, which is emptied in the constructor while keepers
   restart about once a minute.
+- **The tick driver is synchronous by contract.** A `decide()` that returns a
+  promise is a programming error. The `TickLoop` reports it and does not await it.
+  The atomics stay where they are, for the legacy driver and for the offline
+  suite; the tick driver is a second reader of the same plan, not a rewrite of
+  them.

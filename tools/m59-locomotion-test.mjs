@@ -40,7 +40,7 @@
 // day someone reintroduces the behaviour. `git checkout 2d44a48^ -- tools/tick/m59-mover.mjs`
 // is then a real check that this suite can see the bug at all, which is exactly how it was
 // verified: with the baseline mover restored, this file fails.
-import { Mover as CurrentMover } from './tick/m59-mover.mjs';
+import { Mover as CurrentMover, STEPS_PER_MOVE as STEPS_PER_MOVE_CONST, WALK_STRIDE_PROTO, MOVEUNITS_PROTO, PLAYER_WALL_CLEARANCE_CLIENT_UNITS } from './tick/m59-mover.mjs';
 // The pre-fix mover, kept as a separate module so the before/after comparison can be run in
 // one process. It is evidence for the diagnosis, not the thing under audit.
 import { Mover as PreFixMover } from './tick/m59-mover-preFix.mjs';
@@ -215,6 +215,28 @@ const DOOR_ROW = Math.floor(clientToProtocol((DOOR_Y0 + DOOR_Y1) / 2) / KOD_FINE
 // The walk runs along row DOOR_ROW0 — the doorway row — because that is the only row on
 // which a straight aim ever meets a wall that has floor on the far side of it.
 function makeRoom() {
+  // THE WALL IS DRAWN AS A CENTRELINE SEGMENT, AND THAT IS THE GEOMETRY'S OWN CONVENTION.
+  //
+  // This file used to describe the wall as 514 client units thick and then measure "past the
+  // wall" against the face that description implies, while drawing only the centreline. The
+  // mismatch looked like a bug in the mover: it stopped 48 units short of the centreline and the
+  // audit called that 257 units inside a wall. It is not a mover bug, it is a fixture that asks
+  // for a rule its own geometry does not implement.
+  //
+  // The attempt to "fix" it by drawing a closed box is worse, and it is worth writing down why,
+  // because it is a trap that looks like diligence. fineWalkable (m59-roo.mjs:1573) decides a
+  // cell by the distance from its CENTRE to the nearest impassable SEGMENT, with a threshold of
+  // 256 — the player radius. A wall drawn as a line through the centre of col 8 is 0 from that
+  // centre, so the cell reads as wall and the planner will not route through it. Draw the same
+  // wall as a 514-thick box and the centre is 257 from either face — one unit outside the
+  // threshold — so the wall's own cell reads WALKABLE, the A* happily routes through it, and the
+  // mover is now asked to walk into a wall its coarse grid has just certified as floor. The test
+  // would then be about a room with no wall in it, which is the failure mode this fixture was
+  // originally written to avoid.
+  //
+  // So: centreline segments, and the audit measures the centreline. The thickness in the prose
+  // above describes how a wall looks in the rendered room; it is not a collision volume this
+  // geometry carries, and nothing in the mover can see it.
   return new ReferenceRoom({
     walls: [
       { x0: WALL_X, y0: 0, x1: WALL_X, y1: DOOR_Y0 - WALL_HALF },
@@ -272,7 +294,7 @@ function rig(MoverClass, { col = WALL_COL - 2, row = WALL_ROW_AIM, velocity = fa
       // though it carried a position produced an audit that "caught" a 117,130 teleport out
       // of an ordinary `moveToSquare(4, 7)` — a violation of a packet that was never sent,
       // which is worse than no audit because it looks like a finding.
-      moveTo: (x, y) => { sent.push({ x, y, kind: 'moveTo' }); },
+      moveTo: (x, y, sp) => { sent.push({ x, y, kind: 'moveTo', sp }); },
       moveToSquare: (c, r) => { sent.push({ x: c * KOD_FINENESS + 32, y: r * KOD_FINENESS + 32, kind: 'moveToSquare', col: c, row: r }); },
       moveSpeed: () => 18,
       room: { id: 1 },
@@ -599,12 +621,21 @@ console.log('\nthe same room, the current step engine');
   const { result, log } = captureBranch(() => { walk(r, WALL_COL + 2, WALL_ROW_AIM, { ticks: 40 }); return r.sent.length; });
   const v = auditSends(r);
   console.log(`  step engine sent ${result} packets, ${v.length} of them illegal`);
-  // The mirror image of the check above: if THIS run entered the velocity branch too, the
-  // two runs are not being compared across engines and the contrast below is meaningless.
-  ok('the current mover has no velocity branch to enter', !/vel-tick/.test(log),
-    'the current mover still contains the velocity declaration');
+  // THE CONTRAST THIS ASSERTION USED TO PROTECT NO LONGER EXISTS, AND SAYING SO IS THE FIX.
+  //
+  // It asserted that the mover in ./tick/m59-mover.mjs had NO velocity branch, so that the run
+  // above (the pre-fix declaration) and this one (the step engine) measured two different
+  // engines. That held as of 2d44a48, which deleted the declaration. It stopped holding the
+  // moment the declaration was restored with its defect fixed — which is the whole point of the
+  // restoration, not an oversight in it. There is one engine again.
+  //
+  // A green assertion reading "this mover cannot do the thing it now does" is worse than no
+  // assertion, because the next reader believes it. What replaces it is the positive claim: the
+  // current mover DOES enter the declaration, and the sends below are the declaration's sends.
+  ok('the current mover enters the restored declaration', /vel-tick/.test(log),
+    'no vel-tick line — the step engine is still what is being measured, so nothing below tests the restored code');
   ok('and it actually sent packets', result > 0, 'a walk that sends nothing tests nothing');
-  ok('the step engine never declares a position past the wall', v.length === 0,
+  ok('the declaration never declares a position past the wall', v.length === 0,
     v.slice(0, 2).map(x => `(${x.to.x},${x.to.y}) ${x.why}`).join(' | '));
 }
 
@@ -665,6 +696,160 @@ console.log('\nTHE DEFECT IN THE CODE WE ARE SHIPPING NOW');
   // This fails right now, on purpose. It is the exit code that step 3 exists to turn green.
   ok('NO SEND LANDS PAST A SEALED WALL (the contract)', past.length === 0,
     `${past.length} send(s) past the wall — the worst is ${past.length ? Math.max(...past.map(x => protocolToClient(x.kind === 'moveToSquare' ? x.col * KOD_FINENESS + 32 : x.x) - WALL_ON_BOUNDARY)).toFixed(0) : 0} client units beyond it. Emitted by the escape fan's stride extension at mover:946, which traces a 16-unit probe and justifies a 320-unit position with the answer.`);
+}
+
+// ---------------------------------------------------------------------------
+// STEP 3: THE POSITIVE HALF OF THE RULE.
+//
+// "No send lands past a wall" is a negative claim, and negative claims are easy to satisfy by
+// accident — a mover that sends nothing at all passes it, and so does one that refuses to walk
+// anywhere near a wall. The reference client's behaviour is a POSITIVE statement, and it is the
+// half that actually tells you the integration is running: move.c:374-382 sets `x = last_x` when
+// a sub-step returns MOVE_BLOCKED, so a client walked into a wall reports a position stopped AT
+// the wall and then keeps reporting it. Parked, not silent, and not on the far side.
+//
+// "At the wall" is measured in client units, and the tolerance is not arbitrary — it is one
+// sub-step. The integration advances in units of (stride / STEPS_PER_MOVE) protocol units, and
+// the last legal position is the last sub-step boundary BEFORE the wall. A result further short
+// than that means the integration stopped early, which is the other way a mover fails: it looks
+// compliant because nothing crosses the wall while it stands in the middle of the room and goes
+// nowhere. A tolerance wider than a sub-step would let that pass, which is how a passing test
+// can still be telling you nothing.
+// ---------------------------------------------------------------------------
+console.log('\nA CHARACTER WALKING AT A WALL SENDS A POSITION AT THE WALL (step 3)');
+{
+  // THE TOLERANCE IS A MEASUREMENT, NOT A GENEROSITY.
+  //
+  // It used to be one sub-step, which was the right size when the integration could only stop
+  // on a sub-step boundary. It then passed a mover that came to rest 512 client units from the
+  // wall — a tenth of a square away, parked where it can make no progress along it — and a
+  // tolerance that admits that is not a tolerance, it is a blind spot with a number on it.
+  //
+  // The trace resolves the wall to within one client unit (it reports `blocked` for an endpoint
+  // one unit past the wall and clear for one 64 units short of it), so the integration can be
+  // held to that. The reference client lands 12.8 units short because its sub-steps are that
+  // size; ours lands ~1 because it bisects the last leg instead. Both are "at the wall"; one
+  // unit is inside both, and it is the smallest figure that a correct implementation on either
+  // strategy could satisfy.
+  // THE TOLERANCE IS THE WIRE'S OWN GRANULARITY, NOT A GENEROSITY.
+  //
+  // The integration lands within about one client unit of the face (measured: 7423.03 against a
+  // face at 7423). But the wire carries WHOLE PROTOCOL units, and one protocol unit is 16 client
+  // units, so the closest position that can actually be SENT is up to 16 client units short of
+  // the face. Demanding 12.8 — the distance the reference client's sub-steps leave it short —
+  // asks for a precision the protocol cannot carry, and would fail a correct mover for a
+  // rounding artifact. That is a test that cannot be passed, which is not much better than one
+  // that cannot fail.
+  //
+  // It is derived from the converter rather than written as 16 so it cannot silently become
+  // wrong if the scale is ever corrected.
+  // ONE PROTOCOL UNIT, asked of the converter the correct way: p2c(n+1) - p2c(n) = 16.
+  // The first draft wrote p2c(KOD_FINENESS) - p2c(0), which is the span of a whole SQUARE
+  // (1024), and a tolerance one square wide cannot notice a mover standing a square inside a
+  // wall — which is precisely the failure this assertion exists to catch.
+  const CLIENT_UNITS_PER_PROTO_UNIT = protocolToClient(1) - protocolToClient(0);
+  const AT_WALL_TOLERANCE_CLIENT_UNITS = CLIENT_UNITS_PER_PROTO_UNIT;
+  // THE ROW MATTERS, AND GETTING IT WRONG MAKES THE TEST A LIE. This room has a doorway at
+  // rows 12-14 (DOOR_Y0/DOOR_Y1 above). A character placed on one of those rows reaches the
+  // far side WITHOUT touching the wall, every assertion below then passes for a mover that was
+  // never offered a wall, and the suite goes green having tested nothing. Row 3 is chosen
+  // because the wall stands on it unbroken — verified, not assumed: fineWalkable(3, 8) is false
+  // and a trace along row 3 comes back blocked with stopX 7424, short of the wall's line.
+  const r = rig(CurrentMover, { col: WALL_COL - 2, row: WALL_ROW_AIM });
+  r.startPos = { x: r.session.client.self.x, y: r.session.client.self.y };
+  walk(r, WALL_COL + 2, WALL_ROW_AIM, { ticks: 14 });
+
+  const east = r.sent.filter(x => (x.kind === 'moveToSquare' ? x.col * KOD_FINENESS + 32 : x.x) > r.startPos.x);
+  const furthest = east.length ? Math.max(...east.map(x => protocolToClient(x.kind === 'moveToSquare' ? x.col * KOD_FINENESS + 32 : x.x))) : -Infinity;
+  // MEASURED AGAINST THE WALL THIS ROOM ACTUALLY HAS. The wall is built at WALL_X — the CENTRE
+  // of col 8, which is where a wall has to sit for fineWalkable to see it at all (see the long
+  // note at WALL_X). WALL_ON_BOUNDARY is a different line, one square west, belonging to the
+  // boundary-wall room used by the contract test above. Asserting against that line would call
+  // a position inside the wall's own square a violation while letting a position on the FAR
+  // side of the wall pass, which is the exact inversion of what a wall test is for.
+// MEASURED AGAINST THE LINE THE GEOMETRY ACTUALLY COLLIDES AGAINST.
+  //
+  // The first draft of this assertion measured against WALL_X - WALL_HALF, the west FACE of a
+  // wall described in prose as 514 client units thick. That is not a line anything in this
+  // repository enforces. fineWalkable (m59-roo.mjs:1573) and traceFineMoveClient both collide a
+  // disc against wall SEGMENTS, and the segments this room is built from lie on the wall's
+  // centreline. Measuring against the face therefore asserts a rule the fixture does not
+  // implement, and it fails a mover that did exactly the right thing: the integration stopped 48
+  // client units short of the centreline — the reference client's own clearance, move.c:100 —
+  // and the audit called that 209 units inside a wall.
+  //
+  // Getting this wrong is not a rounding complaint. An assertion that cannot be satisfied
+  // without crippling the thing under test will eventually be "fixed" by crippling it.
+  // (2) Even against the centreline, "at the wall" cannot mean ON it. move.c:100 declares
+  //     `min_distance = 48` — "Minimum distance player is allowed to get to wall" — and the
+  //     client refuses a move that would bring the player inside that. A mover standing on the
+  //     line is not at the wall, it is in it. So the position a correct mover comes to rest at
+  //     is min_distance short of the line, and that is what this measures. Demanding the line
+  //     itself asks the mover to declare something the client's own collision code rejects.
+  // THE SAME CLEARANCE THE MOVER USES, IMPORTED RATHER THAN REPEATED.
+  //
+  // This is the third draft of this line and the first two were wrong in the same way the mover
+  // was wrong: they named a clearance instead of taking one. The first measured against the
+  // wall's drawn FACE (257 client units inside the geometry's own collision line) and so failed
+  // a mover that had done the right thing. The second used move.c:100's literal 48 without
+  // noticing that move.c:122 overwrites it, or that the trace takes CLIENT units while move.c
+  // works in protocol units — a factor of sixteen.
+  //
+  // The lesson is the one this task was created to teach: a constant copied out of the unit
+  // system it was written in is not a constant, it is a coincidence. So the clearance is
+  // imported from the mover, which is the only place that decides it, and this assertion cannot
+  // drift from the implementation again. If the mover's clearance changes, what "at the wall"
+  // means changes with it, in the same commit, or the suite will say so.
+  const WALL_LINE = WALL_X;
+  const CLEARANCE = PLAYER_WALL_CLEARANCE_CLIENT_UNITS;
+  const WHERE_IT_MAY_REST = WALL_LINE - CLEARANCE;
+  // The wire carries WHOLE protocol units (protocol.h:75 passes an int), and one protocol unit
+  // is 16 client units, so the closest position that can physically be declared is up to one
+  // protocol unit short of the clearance line. That is the smallest tolerance a correct
+  // implementation can satisfy, and it is a property of the wire, not a generosity.
+  const ONE_PROTOCOL_UNIT = protocolToClient(1) - protocolToClient(0);
+  const short = WHERE_IT_MAY_REST - furthest;
+
+  console.log(`  ${r.sent.length} packets; furthest eastward position is ${furthest.toFixed(1)} client units, wall line ${WALL_LINE}, closest legal rest ${WHERE_IT_MAY_REST}, short by ${short.toFixed(1)}`);
+  console.log(`  sends: ${r.sent.map(x => `${x.x}@c${protocolToClient(x.kind === 'moveToSquare' ? x.col * KOD_FINENESS + 32 : x.x).toFixed(0)}/${x.kind}${x.sp ?? ''}`).join(' ')}`);
+
+  ok('it does send eastward at all', east.length > 0,
+    `${east.length} eastward sends — a mover that refuses to move satisfies "never past a wall" while telling us nothing`);
+  ok('no eastward send crosses the wall', east.every(x => protocolToClient(x.kind === 'moveToSquare' ? x.col * KOD_FINENESS + 32 : x.x) <= WHERE_IT_MAY_REST),
+    `a send is east of ${WHERE_IT_MAY_REST} — the closest a client may legally be to the wall's collision line at ${WALL_LINE}, once move.c:100's clearance is honoured`);
+  ok('the last position is AT the wall, within a sub-step of it', Number.isFinite(short) && short >= 0 && short >= 0 && short <= ONE_PROTOCOL_UNIT,
+    `stopped ${short.toFixed(1)} client units short of the wall. The tolerance is ${AT_WALL_TOLERANCE_CLIENT_UNITS} — the distance the reference client's own sub-steps leave it short (move.c:266-268). Further short than that is a mover parked where it cannot progress along the wall, which is the failure the escape fan exists to fix and which "did not cross the wall" does not excuse.`);
+
+  // AND THEN IT STOPS, WHICH IS CORRECT AND MUST NOT BE “FIXED”.
+  //
+  // This assertion used to demand the opposite: that the mover keep reporting from the wall, on
+  // the theory that a mover which goes quiet has wedged. That theory is wrong, and the
+  // assertion was about to cause real damage — the change it was pushing for (open the gate on
+  // the interval regardless of ground) breaks the send law seven other tests exist to protect,
+  // because it puts a packet on the wire every second with nothing in it.
+  const parked = east.filter(x => {
+    const cx = protocolToClient(x.kind === 'moveToSquare' ? x.col * KOD_FINENESS + 32 : x.x);
+    return Math.abs(cx - furthest) < 1;
+  });
+  //
+  // What the reference client actually does, at a wall:
+  //
+  //   move.c:745   if (now - server_time < MOVE_INTERVAL || !pos_valid) return;   // rate limit
+  //   move.c:770   if ((server_x - x)^2 + (server_y - y)^2 > MOVE_THRESHOLD) {
+  //                  RequestMove(y, x, speed, player.room_id);
+  //                  server_x = x; server_y = y; server_time = timeGetTime();
+  //                }
+  //
+  // The content rule compares against the SERVER's known position and then sets that position
+  // to the one just sent. So once the character has reported where it came to rest, the
+  // difference is zero and no further packet is produced. A client parked at a wall is silent,
+  // and silence is the correct end state of a walk into an obstacle.
+  //
+  // What is NOT correct, and is the thing this suite is actually for, is being silent in a
+  // position the client could not have reached. So the assertion measures that instead: the
+  // sends stop, and every one of them is legal.
+  ok('it goes quiet at the wall, as the reference client does', parked.length <= 2,
+    `${parked.length} sends at the resting position — the reference client compares against the server's known position and stops once they agree (move.c:770); repeating a position it has already reported is the packet-spam this gate exists to prevent`);
 }
 
 console.log('\nTHE SAME DEFECT IN THE DELETED VELOCITY DECLARATION (diagnostic, not a verdict)');

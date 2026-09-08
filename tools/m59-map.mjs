@@ -801,12 +801,41 @@ export function codeExits(roomNum) {
   const idx = loadCodeExits(CODE_EXITS_FILE);
   const list = idx?.rooms?.[roomNum];
   if (!list) return [];
-  return list.map(e => ({
-    kind: 'region', to: e.to, when: e.when, arrive: e.arrive,
-    how: 'walk into the part of this room where ' +
-         e.when.map(c => `${c.axis} ${c.op} ${c.value}`).join(' and ') +
-         ' — the room moves you across by itself, there is nothing to press',
-  }));
+  return list.map(e => {
+    // COMPUTE THE TRIGGER TARGET FROM THE `when` CONDITION.
+    // For example, `row < 32 AND col > 66` means the top-right corner of the room.
+    // We compute a target position that satisfies the condition, so the character
+    // knows where to walk to trigger the exit.
+    let trigger_targets = null;
+    if (e.when && Array.isArray(e.when)) {
+      const targets = [];
+      for (const c of e.when) {
+        if (c.axis === 'row' && c.op === '<') targets.push({ row: c.value - 2, col: null });
+        if (c.axis === 'row' && c.op === '>') targets.push({ row: c.value + 2, col: null });
+        if (c.axis === 'row' && c.op === '==') targets.push({ row: c.value, col: null });
+        if (c.axis === 'col' && c.op === '<') targets.push({ row: null, col: c.value - 2 });
+        if (c.axis === 'col' && c.op === '>') targets.push({ row: null, col: c.value + 2 });
+        if (c.axis === 'col' && c.op === '==') targets.push({ row: null, col: c.value });
+      }
+      // Merge the targets into a single position.
+      const merged = { row: null, col: null };
+      for (const t of targets) {
+        if (t.row != null) merged.row = t.row;
+        if (t.col != null) merged.col = t.col;
+      }
+      if (merged.row != null && merged.col != null) {
+        trigger_targets = [merged];
+      }
+    }
+    
+    return {
+      kind: 'region', to: e.to, when: e.when, arrive: e.arrive,
+      trigger_targets,
+      how: 'walk into the part of this room where ' +
+           e.when.map(c => `${c.axis} ${c.op} ${c.value}`).join(' and ') +
+           ' — the room moves you across by itself, there is nothing to press',
+    };
+  });
 }
 
 // ROOMS TO WALK AROUND WHEN THERE IS ANY OTHER WAY, MEASURED RATHER THAN GUESSED.
