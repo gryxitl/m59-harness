@@ -313,6 +313,22 @@ console.log('\nROOT CAUSE: Pose.advance seeded the sim from the AIM, not from fe
     (function () { const r = new Pose(); r.reset(); return r.seedAnchor() === null; })());
   ok('an anchored track reports a non-zero divergence, which is what makes the guard usable at all',
     p.divergence() > 0, `divergence ${p.divergence()}`);
+  // NONE OF THE THREE ASSERTIONS ABOVE IS FALSIFIABLE THROUGH advance(), and that is a fact about
+  // the code rather than about the test. Deleting the anchor entirely leaves all ten suites green —
+  // verified by mutation, not by reasoning. With the advance going to the declaration, an anchored
+  // track reads divergence 289.8 and an unanchored one reads 0.0, and both are under the 384
+  // threshold, so no guard fires and nothing downstream can tell the two apart.
+  //
+  // My first attempt at an assertion here called seedAnchor() directly while I mutated advance(),
+  // which tested the accessor and not the code that uses it — the same class of error as the bug it
+  // was meant to catch, reproduced while writing its test. It is kept because seedAnchor() is now
+  // what advance() actually calls, so it pins the accessor's contract; it must not be read as
+  // protection.
+  ok('the protection the anchor was written to provide does not exist yet',
+    p.divergence() < 384,
+    'a seeded track and a fabricated track are indistinguishable to the divergence guard. What is ' +
+    'needed is a corroboration check: declare, then require the echo to arrive near the declaration ' +
+    'within a few sends. That is not a distance test, and it is not implemented.');
 
   // The bug's signature: plan square (23,23) while the echo held (23,18).
   ok('the buggy square (23,23) is exactly 5 rows off the echo',
