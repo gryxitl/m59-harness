@@ -443,3 +443,31 @@ corner tests to `SYNTHETIC_EDGE_EXITS`, the mechanism that already exists for ex
 **544 has fungus beast lv50 @65% with no alternative** — a full search of the room graph from 534
 reaches 9 rooms and all of them go through it. With Marion's edges added, `534 → 200 → 535` becomes a
 two-hop route that avoids the lv50 room entirely, which is presumably why it was assumed to exist.
+
+---
+
+## 12. The rate after all four fixes, and it is not one number
+
+`node tools/m59-rate-live.mjs substrate/keeper-t1.log --contig`, current session only (399.3 MB of
+earlier code excluded), 689 packets, 176 server positions:
+
+| window | packets | ground | time | rate | % of walk |
+|---|---|---|---|---|---|
+| 19 pk | 19 | 9.8 sq | 23 s | 0.42 /s | 17% |
+| 61 pk | 61 | 58.9 sq | 63 s | 0.94 /s | **38%** |
+| 565 pk | 565 | 214.3 sq | 609 s | 0.35 /s | 14% |
+
+**The rate is not one number and must not be quoted as one.** The best contiguous window reaches 38%
+of the client's walk rate -- the number the goal was after -- while the largest window sits at 14%.
+The spread is terrain and behaviour, not noise: the same character in the same room does 0.94 while
+walking a clear leg and 0.35 while the escape fan is searching.
+
+**Where the remaining cost goes, counted rather than assumed.** Of 689 packets: 449 stride
+declarations, 118 waypoint steps, **89 escape-fan probes**, 16 walk-past-boundary. The fan probes
+spend the same one-per-second allowance that movement does and buy no ground; roughly one packet in
+eight. That is the next lever, and it is bigger than stride length, which is already proven allowed
+up to five squares (section 2) and is currently spent at 0.45 squares per packet.
+
+Ground per packet at 0.45 against a client stride of 2.5 means the distance lever is far from
+exhausted -- but it cannot be pulled by a path that does not go where it says, which is what the
+supercover line and the corner ban were for.
