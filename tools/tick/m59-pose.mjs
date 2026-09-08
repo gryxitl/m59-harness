@@ -166,13 +166,25 @@ export class Pose {
     this.lastDeclared = { x, y };
   }
 
+  // The position a seeded track starts from, exposed because it stopped being observable through
+  // advance(): once the advance goes to the declaration, reading the sim after a send shows the
+  // declaration whichever anchor was used, so the test that wanted to prove the anchor had to either
+  // guess or reach inside. This is the reach, made explicit. Returns null when there is nothing
+  // confirmed to anchor on — which is the case the divergence guard cannot see, and the reason the
+  // guard's threshold has to be wider than one stride.
+  seedAnchor() {
+    if (this.sim != null) return null;
+    const s = this.server;
+    return s != null && Number.isFinite(s.x) && Number.isFinite(s.y)
+      ? { x: s.x, y: s.y }
+      : null;
+  }
+
   advance(x, y, step = KOD_FINENESS) {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     if (this.sim == null) {
-      const anchor = this.server != null
-        && Number.isFinite(this.server.x) && Number.isFinite(this.server.y)
-        ? { x: this.server.x, y: this.server.y }
-        : { x, y };
+      const a = this.seedAnchor();
+      const anchor = a != null ? { x: a.x, y: a.y } : { x, y };
       this.sim = anchor;
       this.simAt = Date.now();
       // AND THEN GO TO THE DECLARATION, exactly as the non-seed branch below does.

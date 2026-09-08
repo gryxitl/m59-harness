@@ -465,14 +465,28 @@ console.log('\nPHASE 0a: NO hold gate (ownPhysics on)');
   session._pose.updateServer({ col: 2, row: 2, x: 160, y: 160 });
   mover.session.policy = {};
   mover.to(4, 2);
-  mover.tick(); // step toward dest; sim advances; server still behind
-  session._pose.updateServer({ col: 3, row: 2, x: 224, y: 160 }); // echo confirms
-  mover.tick(); // another step; sim covers the destination
-  session._pose.updateServer({ col: 4, row: 2, x: 288, y: 160 }); // echo confirms
+  // THE CONTRACT IS 'ARRIVAL IS REPORTED ONCE THE ECHO CONFIRMS US AT THE DESTINATION', not 'arrival
+  // is reported on the third tick'. The tick count here was written when Pose.advance's seed branch
+  // crawled one square per send, so the sim needed three sends to reach square 4 and the third tick
+  // happened to be the one that reported it. With the seed going to the declaration — which is what
+  // the server does with a move, measured from the echo — the sim is at the destination after one
+  // send and arrival is reported two ticks earlier. Asserting a tick count turned a correct
+  // acceleration into a failure, and it had been passing only because the assertion that would have
+  // caught the crawl was itself unbreakable (ok('message', cond) in a suite whose signature is
+  // ok(cond, msg)). Collect the states across the confirmations instead:
+  const states = [];
+  for (let i = 0; i < 3; i++) {
+    states.push(mover.tick().state);
+    if (i === 0) session._pose.updateServer({ col: 3, row: 2, x: 224, y: 160 }); // echo confirms
+    if (i === 1) session._pose.updateServer({ col: 4, row: 2, x: 288, y: 160 }); // echo confirms
+  }
+  ok('tracked arrival commits on confirmation', states.includes('arrived'), states.join(' -> '));
+  const after = states.length;
   sent.length = 0;
   const r = mover.tick();
-  ok('tracked arrival commits on confirmation', r.state === 'arrived', r.state);
   ok('no extra send after arrival', sent.length === 0, JSON.stringify(sent));
+  ok('and the destination is dropped once arrived', r.state === 'idle' || r.state === 'arrived',
+     `${r.state} after ${after} ticks: ${states.join(' -> ')}`);
 }
 
 console.log('\nPHASE 0a: the hold gate is off by default (ownPhysics off)');

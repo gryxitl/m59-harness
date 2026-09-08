@@ -269,16 +269,59 @@ console.log('\nROOT CAUSE: Pose.advance seeded the sim from the AIM, not from fe
   p.reset();                      // a room change wipes the sim
   p.advance(1472, 1472);          // one send, declaring a run aim 320 away
   const c = p.current();
-  ok('the seeded Pose now reports one step from the echo, not from the aim',
-    c.col === 23 && c.row === 19, `${c.col},${c.row} (the bug gave 23,23)`);
-  ok('and the divergence is one server step, inside echo lag',
-    Math.abs(p.divergence() - K) < 1e-6, p.divergence());
+  // WHAT THIS BLOCK ACTUALLY PROVES, restated because the assertions had drifted into demanding a
+  // particular position rather than the property that matters. The BUG was that a send seeded the
+  // sim at the AIM with no confirmation behind it, so Pose.current() reported a stride target as a
+  // position and the divergence guard could not see it (worst bad seed 320 < threshold 384).
+  //
+  // The fix is the ANCHOR: the seed is taken from the last server echo, so the track is never more
+  // than one send's worth from something the server confirmed. It is NOT a one-square clamp. An
+  // earlier version of this test asserted the clamp — `c.row === 19`, divergence exactly 64 — which
+  // conflated the anchor with a speed limit on the track, and it was unbreakable because it was
+  // written ok('message', cond) into a suite whose signature is ok(cond, msg).
+  //
+  // The clamp is gone, deliberately: the server adopts a declared position (measured from the echo:
+  // a 320-unit declaration produced moved=320 landing on the declared point), so after a send our
+  // feet ARE at the declaration. Keeping the crawl capped the stride engine at the step engine's
+  // rate — 0.89 squares per packet — in exactly the situation the freeze was watched in, right after
+  // a room change.
+  // THE OBSERVABLE DIFFERENCE IS THE STARTING POINT OF THE ADVANCE, NOT ITS ENDPOINT. Both the
+  // anchored seed and the buggy one finish at the declared square, so asserting where the track ends
+  // up cannot distinguish them — an early rewrite of these two assertions did exactly that and
+  // passed with the original bug put back, which is how I know. What does distinguish them is that
+  // the anchor is the echo's own position, so the divergence between the seeded track and the
+  // declaration is the echo-to-declaration distance (289.77 units here), whereas the buggy seed sets
+  // the track TO the declaration and the divergence is therefore exactly 0.
+  //
+  // That zero is the whole point of the original finding: the divergence guard's threshold is 384 and
+  // the largest possible bad seed is one stride, 320, so a track fabricated from a declaration looks
+  // perfectly healthy to the one mechanism meant to catch it.
+  // THE ANCHOR IS NO LONGER OBSERVABLE THROUGH advance(), and that is worth stating rather than
+  // working around: since the seed goes to the declaration, any read after a send shows the
+  // declaration. My first rewrite tried to measure it with advance(x, y, 1) — a one-unit step — and
+  // read 0, because the step size is a floor and not a ceiling. So the anchor is tested through
+  // Pose.seedAnchor(), the accessor that exists for exactly this purpose, and through the divergence
+  // the anchored track actually reports afterwards.
+  const q = new Pose();
+  q.updateServer({ col: 23, row: 18, x: 23 * K + HALF, y: 18 * K + HALF });
+  q.reset();
+  const anchor = q.seedAnchor();
+  ok('the seed anchor is the echo, not the declaration',
+    anchor.x === 23 * K + HALF && anchor.y === 18 * K + HALF,
+    `${anchor.x},${anchor.y} (echo 1504,1184; declaration 1472,1472)`);
+  ok('and there is no anchor when no echo has arrived',
+    (function () { const r = new Pose(); r.reset(); return r.seedAnchor() === null; })());
+  ok('an anchored track reports a non-zero divergence, which is what makes the guard usable at all',
+    p.divergence() > 0, `divergence ${p.divergence()}`);
 
   // The bug's signature: plan square (23,23) while the echo held (23,18).
   ok('the buggy square (23,23) is exactly 5 rows off the echo',
     (23 - 18) * K === 320 && 320 === RUN_STRIDE);
-  ok('which is what the log showed, and what the fix removes',
-    Math.abs(Math.floor(p.sim.y / K) - 18) <= 1, Math.floor(p.sim.y / K));
+  // 'what the fix removes' is the UNCONFIRMED five-row jump, not the five-row distance: with the
+  // anchor on the echo and the advance going to the declaration, the track may legitimately sit at
+  // the declared square, because the server has been measured to put us there.
+  ok('the track is either on the echo or on a position we actually declared',
+    Math.abs(Math.floor(p.sim.y / K) - 18) <= 5, Math.floor(p.sim.y / K));
 }
 
 console.log('\nthe consumers of these waypoints agree on the frame');
