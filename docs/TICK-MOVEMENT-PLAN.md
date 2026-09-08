@@ -1052,3 +1052,109 @@ server's position, and the measurement is only as good as the sample — 39 dist
 positions in 190 s means the server's position is reported roughly every fifth packet, so even
 the dense sample is quantised. Tightening it further means reading the echo on every tick rather
 than every packet, which is a sensor change and is the next thing before any further engine work.
+---
+
+# The speed claim, measured — and it does not explain the fleet
+
+Step 5 of the goal said: *prove the speed claim, and do not accept it if it is false. If velocity
+is not faster once fixed, say so plainly and stop — the whole justification for this work would be
+gone and that must be reported, not hidden.* Here is the measurement, and the answer has two halves
+that must not be merged.
+
+## The claim is TRUE per packet
+
+`node tools/m59-rate-measure.mjs`, both engines, identical open geometry, one virtual clock:
+
+| engine | ground per packet | vs the client's 2.50 sq/packet |
+|---|---|---|
+| step engine (`2d44a48^`, engine flag off) | 1.00 squares | 0.40x |
+| restored stride engine (current mover) | 2.00 squares | 0.80x |
+
+And in game the mover declares the *full* run stride — `ground=320 stride=320 run=true` on 12 of
+the last 20 stride samples — and the server adopts it **exactly**, to the unit:
+
+```
+[echo] x=800,2528 -> x=722,2838 moved=320 (4.99 sq)
+```
+
+So the stride engine is 2x the step engine per packet, and 2.5x if it were walking-limited rather
+than wall-limited. That part of the premise holds.
+
+Note that the offline fixture's 2.00 is itself an understatement of the mover: the fixture never
+lets `runNow` come out true, so it measures the walk stride. The live mover declares 320 units.
+A fixture that quietly measures a different configuration from the code under test is worse than no
+fixture, because its number looks like a property of the code.
+
+## The claim is FALSE as an explanation of the fleet
+
+The fleet's real speed, measured by an instrument that cannot fake it — `Pose.noteGround`, which
+accumulates ground at the moment the server's echo arrives, with its own clock, excluding room
+transitions at the source:
+
+```
+[mover-hb] ... ground=2.0sq/64s=0.03sq/s trans=0
+```
+
+**0.03 squares per second.** Two squares in a minute. The stride engine is running, declaring
+320-unit strides, and being honoured exactly — and the character does not go anywhere, because
+ground per packet is not what limits it. What limits it, from the same logs:
+
+- **t4: `dest=1013 rstate=no-route why=no route from 106 to 1013`, retried every 15 s.** The
+  character has nowhere to go. The mover is never asked to move. There is no tick-state line for it
+  at all, because `tick()` is never entered with a destination. This is a routing-graph gap.
+- **t3 and t2: pacing one column between two rooms.** t3's echo, in order:
+
+  ```
+  x=800,2656 -> 800,2592 -> 800,2528        walking, 1 sq/s
+  x=800,2528 -> 722,2838  moved=320          stride adopted, 5 squares
+  x=722,2838 -> 2336,160  moved=3127         ROOM TRANSITION
+  x=2336,160 -> 800,2976  moved=3208         ROOM TRANSITION, BACK AGAIN
+  x=800,2976 -> 800,2912 -> 800,2848 -> 800,2784 -> 800,2720      walking back
+  ```
+
+  Column 800 appears on every line. The tick-states say `path=8/9 stuck=2,3,4` and alternate
+  `moving`/`crossing` every tick: nine waypoints, stuck on the last one, which is a doorway that
+  puts the character back where it came from.
+
+## What this means for the work
+
+The locomotion engine is fixed and is faster than what it replaced, by the measurement the goal
+asked for. It was never the reason the fleet crawls. Doubling the stride cannot help a character
+with no route, and cannot help a character that a doorway throws back.
+
+The two remaining limits are, in order of how much fleet throughput they cost:
+
+1. **Routing: `no route from 106 to 1013`.** Four of five characters produce no ground at all.
+   They are not slow; they are not moving.
+2. **Room transitions that reverse the character.** `state=crossing` alternating with `state=moving`
+   at the last waypoint of a path.
+
+Both are above the mover in the stack, and neither is a locomotion-model question. The goal's
+premise — "that is why the fleet crawls", referring to the step engine's one square per second —
+is disproved, and this is the report the goal asked for if the measurement came out that way.
+
+## The instrument that finally made this measurable
+
+Six different speeds were printed today and each was wrong in its own way, because in every case
+the position was sampled at a moment chosen for a different purpose and divided by a clock that
+measured something else:
+
+| claim | what it actually measured |
+|---|---|
+| "the server honours 29% of declarations" | `srv=` is sampled at send time, so a packet sent between two echoes repeats the previous one and reads as a refusal |
+| "median displacement per packet is 0.00" | same artefact; 164 of 331 `srv=` values are exactly (32,32) mod 64, synthesised from `col`/`row` because the echo carried no `x`/`y` |
+| "the server moves at 49 squares/s" | divided by `updatedAt`, which every no-change echo refreshes, so the denominator was the frame period |
+| "170 squares/s" | a room transition. The echo's `x`/`y` are room-local, so a new room is a new origin and the delta is not distance |
+| "0.96 sq/s moving, 0.46 overall" | two windows, one containing a vigor rest, presented as though they disagreed |
+| "0.03 sq/s" | `Pose.noteGround`: accumulated when the echo arrives, its own clock, transitions excluded at the source |
+
+`noteGround` counts a transition's *time* and no distance, and counts standing time as time. The
+first version overwrote its reference position unconditionally, so a transition or a standstill
+replaced the reference and the ground between them was lost: three one-second squares accumulated
+2 squares over 1 second. Dropping time you cannot count does not make a rate conservative, it makes
+it **inflated** — the exact failure mode the rest of this file exists to avoid.
+
+One test assertion was written wrong and then corrected in place: the first version demanded that a
+60 s standstill contribute **no** seconds, which would have made the figure a rate "while moving".
+A player who is sitting down is slow, and the fleet's speed is what a player experiences.
+Conflating the two is what made this repository's numbers look irreproducible for a day.
