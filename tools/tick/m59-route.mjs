@@ -888,7 +888,8 @@ export class Router {
         console.error(`[aim-dbg] dest=${this.dest} me=(${me.col},${me.row}) aim=(${aimCol},${aimRow}) ` +
           `standOn=${JSON.stringify(this.leg?.standOn)} edgeTarget=${JSON.stringify(this.leg?.edgeTarget ?? null)} ` +
           `subWp=${this.subWp ? this.subWp.length : 'null'} subWp0=${JSON.stringify(this.subWp?.[0] ?? null)} ` +
-          `at=${this._at ?? '?'} inBounds=${this._geo()?.inBounds?.(aimRow, aimCol)}`);
+          `at=${this._at ?? '?'} inBounds=${this._geo()?.inBounds?.(aimRow, aimCol)} ` +
+          `room=${this._geo()?.roomNum ?? this._geo()?.num ?? '?'} geoRows=${this._geo()?.rows ?? '?'} geoCols=${this._geo()?.cols ?? '?'}`);
       } catch {}
     }
     this.mover.to(aimCol, aimRow, { standOn: isStandOn, edgeTarget: this.leg.edgeTarget, by: 'router' });

@@ -899,3 +899,50 @@ that was starving the fan, and now a branch ordering that lets the declaration e
 Those are all verified and several are falsified. **The fleet does not move at the client's rate
 and this work did not achieve it.** The measurement that was supposed to prove otherwise was run on
 the wrong denominator, and correcting it makes the gap larger, not smaller.
+## The model question is settled by live evidence, and the rate tripled
+
+**Model A is true: the server adopts the declared position.** This was the open question the whole
+step-vs-velocity argument rested on, and it could not be answered from source because the server's
+C++ is not in this tree. It is now answered from the live server, by the `srvXY` instrument added
+for the purpose:
+
+```
+declare=(3296,480) ground=264 stride=320 idx=3/14  srvXY=(3040,544)
+declare=(3552,480) ground=256 stride=320 idx=3/10  srvXY=(3040,544)
+   ...the server's raw position then reads (3296,480)
+```
+
+The mover declared (3296,480) and the server's position later *was* (3296,480) — 256 protocol
+units, four squares, from where it had been, in one accepted packet. The server does not walk the
+character toward an aim at one square per second. That confirms `move.c:96` against the running
+server and it retroactively invalidates `Pose.advance`'s one-square clamp, which encoded the other
+model.
+
+**The rate, measured from the server's position rather than the mover's estimate:**
+
+| | before the ordering fix | after |
+|---|---|---|
+| ground | ~10.8 squares | 59.11 squares |
+| packets | 85 | 118 |
+| window | ~120 s | ~170 s |
+| **squares per second** | **0.09** | **0.35** |
+| squares per packet | 0.13 | 0.50 |
+| vs the client's walk (2.50/s) | 3.6% | **14%** |
+
+**3.9x faster, live.** Still not the client's rate, and the reason is now narrow and measurable:
+118 packets in 170 s is one packet per 1.4 s, which is essentially the client's one-report-per-second
+cadence. The packet rate is right; the ground per packet is not — 0.50 against a stride of 2.5 walk
+or 5.0 run. Most packets are still not strides.
+
+**The planner failure was a symptom, not a cause.** `plan ... found=false reason='no fine path'`
+appeared 794 times in a three-minute window before the ordering fix and **zero times after**. The
+mover was planning A* from a position one square behind its own feet — because `Pose.advance`
+clamped the track by a square per send while the packets carried strides — so the search started
+from a square the character had already left and could not connect to the aim. Fixing the position
+truth fixed the planner. That is why the diagnostic now reports `expanded` and the goal square's
+walkability: when the planner fails again it should say why in terms that can be checked.
+
+**What is left, stated as the remaining defect rather than as progress:** the mover reaches
+`stride=320` and delivers 0.50 squares per packet, so the stride is being computed and then not
+sent. The step branch and the escape fan still own most ticks. That is the next thing, and it is
+measurable in the same units now.
