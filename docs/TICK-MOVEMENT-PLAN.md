@@ -1264,3 +1264,44 @@ fleet: the only ones that moved are the ones whose destination happened not to r
 The fix is not in this document's scope. It is a distinct reason code for a safety refusal, and a
 decider that stops asking instead of retrying — which is a different goal, and is recorded here so
 the next person does not spend a day on the mover first.
+
+## The size cost, stated rather than left to be discovered
+
+| | mover | route | total |
+|---|---|---|---|
+| baseline at the start of this goal (`90643c9`) | 1,765 | 923 | **2,688** |
+| now | 2,534 | 944 | **3,478** |
+
+**+790 lines, a 29% increase**, against a goal whose predecessor had brought the same pair down from
+2,948. The objective said restoring the engine may legitimately raise the figure but that the
+increase must be said honestly instead of hidden, so here is where it went, measured from the diff
+rather than remembered:
+
+```
+added lines: 843
+  comment-only : 592      (70%)
+  code + comment on the same line: 6
+  code only    : 245      (29%)
+deleted      :  50
+```
+
+**Seventy percent of the growth is prose.** The code grew 245 lines net of 50 deletions; the
+explanation grew 592. That is a deliberate trade this session made — after the argument-order bug
+proved that 17 assertions could pass while asserting nothing, and after four confident readings of
+the same log each turned out to be an artefact of the instrument, the reasoning behind each
+movement decision got written down at the decision — and it has a cost that belongs in a diffstat
+rather than in a defence.
+
+Two things follow, and neither is flattering:
+
+- **The prose is load-bearing only if it is read.** It is 592 lines of which roughly 300 are
+  retracted positions kept so the next reader does not re-derive them. A document that carries its
+  own wrong turns grows monotonically; that is the price of not repeating them, and it is why this
+  section exists separately from the narrative.
+- **The 245 lines of code are not all engine.** `tickLogged`, `noteGround`, `groundRate`,
+  `noteSend`/`_corroborate`/`corroboration`, `seedAnchor` and `logName` are instrumentation, added
+  because every number this session printed was wrong until the instrument that produced it was
+  fixed. The stride engine itself is not what made the file bigger.
+
+If the pair has to come back down, the retracted narrative is the first place to look and the
+instrumentation is the last.
