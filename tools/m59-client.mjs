@@ -1463,6 +1463,31 @@ export class M59Client {
         if (o && (o.flags & OF.PLAYER))
           this.emit('player-moved', { id: res.id, who: this.rsc.get(o.nameRsc) ?? null,
                                       col: res.col, row: res.row, x: res.x, y: res.y });
+        // MONSTER MOVEMENT, OFF BY DEFAULT. A monster emits one of these several times a
+        // second, which is why the event above is players-only: the 500-entry ring would be
+        // evicted in seconds. But the fact that they arrive at all is the answer to how a
+        // server-placed monster gets animated -- the server does not set a position and leave
+        // it, it STREAMS moves, and the client interpolates the stream.
+        //
+        // This is also the only in-game clock on movement speed that is not us. Every rate
+        // number in this project has been measured from our own sends, which is circular when
+        // the thing under test is our own sends. A monster walking across a room at the rate
+        // the server drives it is a speed the server itself considers normal, and res.x/res.y
+        // are fine coordinates -- sub-square -- already parsed here and thrown away.
+        //
+        // M59_WATCH_MONSTERS=1 logs one line per monster move to stderr. Diagnostics only: it
+        // does not emit an event, so no listener and no ring entry is affected.
+        if (process.env.M59_WATCH_MONSTERS === '1' && o && !(o.flags & OF.PLAYER)
+            && res.x != null && res.y != null) {
+          // id= IS NOT DECORATION. The first version keyed the stream by NAME and every
+          // measurement it produced was garbage: the server has many monsters called 'spider',
+          // so the log interleaved all of them and a per-name 'step' was the distance between
+          // two DIFFERENT spiders. It read as 16 squares/second and 346 teleport-jumps in a
+          // 21x20 room, including col 53 in a room 21 squares wide. Per-object identity is the
+          // minimum needed to say anything at all about motion.
+          console.error(`[monster-move] id=${res.id} who=${this.rsc.get(o.nameRsc) ?? '?'} `
+            + `x=${res.x} y=${res.y} col=${res.col} row=${res.row} t=${Date.now()}`);
+        }
         break;
       }
 
