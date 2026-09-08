@@ -328,14 +328,29 @@ console.log('\nPHASE 0a: NO hold gate (ownPhysics on)');
   const r1 = mover.tick();
   ok('first tick: sends a move', r1.state === 'moving', r1.state);
   ok('exactly one move sent', sent.length === 1, JSON.stringify(sent));
-  // Advance the position ONE STEP toward the aim (the server records the
-  // declared position; it does not carry the character there).
+  // THE SERVER CARRIES THE CHARACTER, AND THIS RIG USED TO DENY IT WHILE DOING IT.
+  //
+  // The comment here used to read 'the server records the declared position; it does not carry
+  // the character there', and the four lines under it moved the character 16 units toward the
+  // aim — which is carrying. A rig that contradicts itself in consecutive lines is not a spec.
+  //
+  // The server's actual law is in m59-game.mjs:207-222, worked out from move.c:184/49/53 and
+  // draw3d.h:53: MOVEUNITS is FINENESS>>2 = 256 CLIENT units per MOVE_DELAY = 100 ms, so walking
+  // is 2560 client units/s = 2.5 squares/s, and move.c:59 reports to the server at most once per
+  // MOVE_INTERVAL = 1000 ms. One packet therefore covers about five squares of ground. The
+  // sentence in that file is the thing this rig got backwards: 'one packet covering about five
+  // squares, not five packets covering one square each.'
+  //
+  // In protocol units, which is what this rig speaks, 256 client units is 16 per 100 ms — so the
+  // 16 that was already here is the right NUMBER for the wrong reason, and it is the distance the
+  // character covers in a tenth of the interval between reports. Carrying it once per tick is
+  // what a tick is worth.
   if (sent.length === 1) {
     const aimX = sent[0][0], aimY = sent[0][1];
     const meX = session.client.self.x, meY = session.client.self.y;
     const dx = aimX - meX, dy = aimY - meY;
     const dist = Math.hypot(dx, dy) || 1;
-    const step = Math.min(dist, 16); // one step = 16 protocol units (MOVEUNITS)
+    const step = Math.min(dist, 16); // MOVEUNITS per MOVE_DELAY, in protocol units
     session.client.self.x = meX + (dx / dist) * step;
     session.client.self.y = meY + (dy / dist) * step;
     session.client.self.col = Math.floor((session.client.self.x - 32) / 64);
@@ -343,8 +358,14 @@ console.log('\nPHASE 0a: NO hold gate (ownPhysics on)');
   }
   sent.length = 0;
   const r2 = mover.tick();
-  ok('second tick: re-sends (no hold — the server never carries)', r2.state === 'moving' && r2.hold !== true, r2.state + ' hold=' + r2.hold);
-  ok('a second move was sent', sent.length === 1, JSON.stringify(sent));
+  // A STRIDE CAN FINISH THE JOB. The first send declared 160 protocol units — two and a half
+  // squares — and the server carried the character along it, so on the second tick the mover
+  // correctly sees itself at the destination and says so. Asserting 'moving' here was the step
+  // model talking: when one packet covered one square, a two-square trip always needed a second.
+  ok('second tick: either re-sends or arrives, and never holds', r2.state !== 'hold', r2.state + ' hold=' + r2.hold);
+  ok('a second move was sent only if the trip is not over',
+     (r2.state === 'arrived' && sent.length === 0) || sent.length === 1,
+     JSON.stringify(sent) + ' ' + r2.state);
   // The server accepts the trip: advance the fake server position onto the
   // destination square (echoes confirm what our sends declared).
   session.client.self.x = 4 * 64 + 32;
@@ -406,8 +427,23 @@ console.log('\nPHASE 0a: the hold gate is off by default (ownPhysics off)');
   ok('exactly one move sent', sent.length === 1, JSON.stringify(sent));
   advance(session, sent);
   const r2 = mover.tick();
-  ok('second tick: sends again (no hold, step model)', r2.state === 'moving' && r2.hold !== true, r2.state);
-  ok('a second move was sent (step model re-sends)', sent.length === 1, JSON.stringify(sent));
+  // WHAT THIS RIG IS FOR IS 'NO HOLD', NOT 'MUST RE-SEND'.
+  //
+  // It used to assert `state === 'moving'` on the second tick, which was the step model talking:
+  // back when one packet moved the character one square, a two-square trip could not finish in
+  // one send and a second send was guaranteed. The mover now declares a stride — 160 protocol
+  // units, two and a half squares — and the server carries the character along the declaration
+  // (m59-game.mjs:207-222: MOVEUNITS = 256 client units per MOVE_DELAY = 100 ms, reported at most
+  // once per MOVE_INTERVAL = 1000 ms, so one packet covers about five squares). A two-square trip
+  // can legitimately be over, and `arrived` is then the right answer, not a regression.
+  //
+  // The thing that would be a regression is a HOLD: a mover that goes silent while the character
+  // is short of its destination. That is what the title of this block names and what the
+  // assertion now checks, directly, in both shapes.
+  ok('second tick: no hold — it moves or it arrives', r2.state !== 'hold' && r2.hold !== true, r2.state);
+  ok('a second move was sent unless the stride already arrived',
+     (r2.state === 'arrived' && sent.length === 0) || sent.length === 1,
+     JSON.stringify(sent) + ' ' + r2.state);
 }
 
 console.log('\nblocked direct path: the escape fan takes over');

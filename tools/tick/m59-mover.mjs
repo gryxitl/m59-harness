@@ -1192,6 +1192,23 @@ export class Mover {
         const rx = this.destProto.x - myProtoX, ry = this.destProto.y - myProtoY;
         const rd = Math.hypot(rx, ry) || 1;
         const stepProto = Math.min(rd, KOD_FINENESS);
+        // ONE SQUARE, AND WHY THE TRACE IS NOT ASKED ABOUT IT.
+        //
+        // The obvious move was to run this through `_integrateToward` like every other send.
+        // That is wrong, and the reason is the raw push's own purpose: it exists to enter a gap
+        // the fine model is WRONG about — a door alcove the coarse graph cannot see. Gating it
+        // on the trace means gating it on the mechanism that is already known to be mistaken
+        // here, which deletes the branch. Measured: with a trace that refuses everything (the
+        // case under test, and the case the branch was written for) the integrated push sends the
+        // ORIGIN and the character never moves again.
+        //
+        // So the safety bound is not the trace, it is the DISTANCE. One square is the extent the
+        // coarse walkable-square graph has already vouched for, and it is shorter than the
+        // player's own clearance in the trace's units — so a one-square push cannot put the
+        // character through a wall the geometry can see, only through one it cannot. That is
+        // exactly the trade this branch is for, and it is the reason the rounding is toward the
+        // target rather than away from it: the destination of a one-square push is a square
+        // centre, which is the safest place in the square.
         const rawX = Math.round(myProtoX + (rx / rd) * stepProto);
         const rawY = Math.round(myProtoY + (ry / rd) * stepProto);
         if (Date.now() - (this._lastRawLogAt ?? 0) > 2000) {
@@ -1882,6 +1899,23 @@ export class Mover {
   // one unit matters. Only the axis that actually moved is biased; a zero axis has no wrong
   // side and must not be pushed a whole unit for no reason.
   _roundBackward(moved, toward) {
+    // ROUND AWAY FROM THE WALL — BUT ONLY IF WE STOPPED AT ONE.
+    //
+    // The integration's result is a fractional protocol position, and the wire carries whole
+    // units (protocol.h:75 passes an int). Rounding to nearest does not know which side of a wall
+    // line it is on: measured, an integration that stopped exactly on the clearance line returned
+    // 527.06, Math.round gave 527, and 527 is fifteen client units INSIDE the wall. So when the
+    // run ended on an obstruction the rounding must go backward, against the heading.
+    //
+    // When the run ended nowhere — it travelled the whole limit, `stopped` is null — there is no
+    // wall to be afraid of and rounding backward is a pure loss. The corner-flow case is exact:
+    // a full 64-unit stride returns 223.9999999999998, which is floating-point dust, not a near
+    // miss. Rounding it down sends 223 where the square centre is 224, and it does that once per
+    // packet. Over a 22-waypoint route that is 22 units of ground handed back for nothing, and a
+    // character that never quite arrives at the middle of the squares it is standing in.
+    if (moved.stopped == null) {
+      return { x: Math.round(moved.x), y: Math.round(moved.y) };
+    }
     const dx = toward.x - (moved.fromX ?? moved.x), dy = toward.y - (moved.fromY ?? moved.y);
     const bias = (v, d) => {
       const r = Math.round(v);

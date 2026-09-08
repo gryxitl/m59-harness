@@ -601,3 +601,65 @@ This is the open question the step ends on, and it is a design question rather t
 what clearance does the mover stop trusting the trace and start trusting the coarse graph? It
 should be answered before the velocity engine is used in a maze, because at the wrong value the
 mover will refuse rooms it can walk, which is the failure mode this whole task started from.
+
+## The two laws that settled Step 3
+
+Step 3 opened with a question the summary carried as a blocker — Model A or Model B, does the
+server accept a declared position or walk the character toward it — and three tests that could
+not pass until it was answered. Both halves turned out to be already written down in this
+repository, in files I had not read.
+
+**The server carries the character.** `m59-game.mjs:207-222`, worked out from `move.c:184/49/53`
+and `draw3d.h:53`: `MOVEUNITS` is `FINENESS>>2` = 256 client units per `MOVE_DELAY` = 100 ms, so
+walking is 2.5 squares/s and running 5.0, and `move.c:59` reports at most once per
+`MOVE_INTERVAL` = 1000 ms. One packet covers about five squares. The file's own sentence is the
+corrected diagnosis of everything before it: *"one packet covering about five squares, not five
+packets covering one square each."* The rig in `m59-mover-test.mjs` asserted the opposite in a
+comment and then implemented the opposite in the four lines below it. A rig that contradicts
+itself in consecutive lines is not a specification, and two of the three failures were that rig
+pinning the step model's behaviour — a guaranteed second send — as though it were a law.
+
+**The player is a cylinder, and its clearance is already exported.** `m59-roo.mjs:143-145` has
+`PLAYER_WIDTH = 31 * KOD_FINENESS / 4` and `PLAYER_RADIUS = 248`, citing the same `move.c:122` I
+had derived from independently. The mover imported that constant on line 33 from its first commit
+and passed `playerRadius: 1` to the trace anyway. Four drafts of the clearance were wrong the
+same way — a number copied between the protocol space (a square is 64) and the trace's client
+space (a square is 1024) without converting:
+
+| draft | what it was | what it did |
+|---|---|---|
+| 1 | a point | a point can be placed on a wall line and a player cannot; the mover parked one client unit from a wall and the test reported that as stopping *at* it |
+| 48 | `move.c:100`'s `min_distance` | `move.c:122` overwrites it two lines later; the initialiser is not the value in force |
+| 256 | a quarter square | right magnitude, wrong quantity, matched `PLAYER_HEIGHT / 3` by coincidence |
+| 248 | `PLAYER_RADIUS` | the right quantity, and the codebase's own answer — taken in the space its own comment is written in |
+
+The consequence of the last row is worth stating because it looks like a regression and is not
+one: at the client's clearance converted into the trace's units, the dead zone on each side of a
+wall is a large fraction of a square, so **the trace cannot be what routes a maze**. The coarse
+walkable-square graph owns corridors and has to keep owning them; the trace owns the last units
+before a wall, which is what an integration needs and the only thing it is for. Asking the trace
+to plan a route is asking a collision test to do pathfinding.
+
+**Rounding has to know whether it stopped.** `_roundBackward` rounds away from the wall, because
+the integration returns a fractional protocol position and the wire carries whole units
+(`protocol.h:75`), and rounding to nearest does not know which side of a wall line it is on —
+measured, an integration that stopped exactly on the clearance line returned 527.06, `Math.round`
+gave 527, and 527 is fifteen client units *inside* the wall. But rounding away from a wall that
+was never reached is a pure loss: a full 64-unit stride returns 223.9999999999998, which is
+floating-point dust and not a near miss, and flooring it gives back a unit every packet — 22 units
+over a 22-waypoint route, and a character that never quite reaches the middle of the squares it
+stands in. Round away from the wall only when `stopped` is set.
+
+**The raw door push must not be gated on the trace.** The obvious cleanup was to route it through
+the integration like every other send. That deletes the branch: it exists to enter a gap the fine
+model is *wrong* about — a door alcove — and gating it on the mechanism that is already mistaken
+there means it can never fire. Measured, with a trace that refuses everything (the case the branch
+was written for) the integrated push sends the origin and the character never moves again. Its
+safety bound is the distance instead: one square, which is what the coarse graph has vouched for.
+
+**What the reordering attempt taught.** Moving the velocity declaration above the raw push,
+because its comment says it is primary, took the mover suite from 112/3 to 93/22. The reason is the
+finding: 292 lines and 12 `return`s sit between them, and the code below assumes the declaration
+has *not* yet run. The branch order in `tick()` is load-bearing and undocumented. Fixing the send
+sites in place is the correct move; reordering is a restructuring that has to be its own task with
+its own evidence, and it is the shape of the 1,300-line function that Step 6 should take on.
