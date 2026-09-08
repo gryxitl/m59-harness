@@ -125,6 +125,24 @@ the checkpoints went; do not delete old ones unasked.
   proves nothing can be built. If the daemon is down, ask the user to start
   Docker Desktop rather than starting it yourself.
 
+## Movement rate and stride — read this first
+
+**`docs/MOVEMENT-ENVELOPE.md` before touching mover rate, stride, or speed.** We spent weeks on this
+and most of the time was spent on measurement bugs of our own. The short version:
+
+- **The server caps move PACKETS at ~1/second** (`user.kod:2907` `@UserMove`; sending faster is what
+  it logs as a speedhack). `USER_MOVE_MIN_INTERVAL_MS = 1050` is correct and is not the problem.
+- **Distance per packet is the only lever, and it is loose: 5 squares per packet lands 284/284.**
+  Measured by `tools/m59-range-probe.mjs`. `WALK_STRIDE_PROTO = 160` (2.5 squares) is half the
+  envelope the server grants, and the comment claiming it was "verified" against `UserMove` is false
+  — that function has no stride constant.
+- **Never send speed 36 below 10 vigor.** The server silently puts you back on your own square and
+  logs only a Debug line, which is indistinguishable from a refused stride. The mover currently
+  chooses 36 without checking.
+- **The fleet is at 0.07 squares/s and it is NOT a locomotion bug** — `path=null` with thousands of
+  sends means the decider cannot hold a destination. Fix that before changing any stride.
+- **We cannot read the server's log.** The fleet plays `76.214.42.186:5959`, not a local blakserv.
+
 ## Traps
 
 - **`create automated` makes a character with ZERO in every attribute.** They are
