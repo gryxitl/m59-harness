@@ -175,14 +175,25 @@ export class Pose {
         : { x, y };
       this.sim = anchor;
       this.simAt = Date.now();
-      // Then take the step toward the aim from that anchor, so a send still
-      // advances the track by one server step rather than being discarded.
-      const dx = x - this.sim.x, dy = y - this.sim.y;
-      const dist = Math.hypot(dx, dy);
-      this.sim = dist > step
-        ? { x: this.sim.x + (dx / dist) * step, y: this.sim.y + (dy / dist) * step }
-        : { x, y };
+      // AND THEN GO TO THE DECLARATION, exactly as the non-seed branch below does.
+      //
+      // This branch used to clamp the advance to \`step\` (64 units, one square) from the echo. The
+      // two branches of one function therefore disagreed about what a send does to the position
+      // truth: with a sim, a send moved the track to the declared position; after a reset — a room
+      // change, a blink, a stuck re-anchor — the same send moved it one square and left the rest on
+      // the floor. That is not a conservative variant, it is the stride engine's own rate capped at
+      // the step engine's, and it fires in precisely the situation the 790-send freeze was watched
+      // in: the character has just changed rooms, the sim is wiped, and every subsequent route is
+      // planned from a position permanently behind its own feet until enough sends accumulate to
+      // walk the track there.
+      //
+      // The clamp survived a day of changes because the assertion that would have caught it was
+      // written ok('message', condition) into a suite whose signature is ok(condition, message) —
+      // so the condition argument received the message, was always truthy, and the assertion was
+      // counted as a pass. See the guard at the top of m59-pose-test.mjs.
+      this.sim = { x, y };
       this.simAt = Date.now();
+      void step;
       return;
     }
     // DEAD RECKONING MEANS GOING WHERE WE DECLARED. The sim is 'dead-reckoned feet', and

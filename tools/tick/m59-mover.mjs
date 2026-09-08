@@ -380,7 +380,7 @@ export class Mover {
     const isNewDest = !this.dest || this.dest.col !== col || this.dest.row !== row;
     if (isNewDest && Date.now() - (this._toDbgAt ?? 0) > 5000) {
       this._toDbgAt = Date.now();
-      try { console.error(`[movedbg] t4 to() -> ${col},${row} (was ${this.dest ? this.dest.col + ',' + this.dest.row : 'none'}) by=${by ?? '?'}`); } catch {}
+      try { console.error(`[movedbg] ${this.logName} to() -> ${col},${row} (was ${this.dest ? this.dest.col + ',' + this.dest.row : 'none'}) by=${by ?? '?'}`); } catch {}
     }
     this.dest = { col, row };
     // PHASE 2: the stand_on flag. When true, the destination is an exit square
@@ -594,14 +594,21 @@ export class Mover {
   // The name every diagnostic should carry. `session.name` is what decide.mjs uses
   // (m59-decide.mjs:1786), and the session is already on `this`.
   //
-  // This exists because the diagnostics in this class had the character's name BAKED INTO THE
-  // STRING — `[movedbg] t3 vel-tick`, `[movestuck] t3 server static` — in a class that all five
-  // characters instantiate. So t4's log line says 't3', and any conclusion drawn from 'the t3
-  // mover does X' is about whichever character happens to have written the line. Every diagnosis
-  // tonight that started from a `t3`-prefixed line is therefore suspect, including some of the
-  // ones I retracted. The literal 't3' in those format strings is the bug; this is the fix, and
-  // the existing strings are left alone rather than edited in 40 places so the change is small
-  // and the new lines are unambiguous.
+  // This exists because the diagnostics in this class had a character's name BAKED INTO THE
+  // STRING — `[movedbg] t3 vel-tick`, `[movedbg] t4 to() -> ...` — in a class that all five
+  // characters instantiate, so on a live fleet every line said 't3' or 't4' regardless of who
+  // wrote it.
+  //
+  // BOTH SPELLINGS MATTER, and I learned that the hard way. The first sweep for this bug searched
+  // for the literal 't3' and reported zero remaining sites, which I read as 'fixed'. It was not:
+  // the destination setter was written `t4`, and it is the single most important movement line in
+  // the log — `[movedbg] t4 to() -> 30,41 (was 30,42) by=combat`. So for a whole extra restart I
+  // read destination churn out of a line whose name was a lie and concluded 'all the re-aims are
+  // by=combat' from a log that could have belonged to any of the five. A cleanup that greps for one
+  // spelling of a bug and declares victory because the other spelling is absent has not fixed the
+  // bug, it has hidden it. The assertion in m59-mover-test.mjs scans the source for the SHAPE of
+  // the bug — any `t<digit>` following a log tag — rather than for the name it happens to
+  // remember.
   get logName() {
     try { return this.session?.name ?? '?'; } catch { return '?'; }
   }
@@ -1301,7 +1308,7 @@ export class Mover {
       const fServerPX = curCol * KOD_FINENESS + HALF, fServerPY = curRow * KOD_FINENESS + HALF;
       if (Date.now() - (this._fanDbgAt ?? 0) > 20000) {
         this._fanDbgAt = Date.now();
-        try { const _g = this._movementGateOk(fanX, fanY, myProtoX, myProtoY, fServerPX, fServerPY); console.error(`[movedbg] t4 fan gate=${_g} me=(${Math.round(myProtoX)},${Math.round(myProtoY)}) srv=(${fServerPX},${fServerPY}) age=${Date.now() - (this._lastReportAt ?? 0)} idx=${idx} tgt=${this._fanTarget ? 'Y' : 'n'}`); } catch (e) { console.error(`[movedbg] t4 fan gate THROW: ${e.message}`); }
+        try { const _g = this._movementGateOk(fanX, fanY, myProtoX, myProtoY, fServerPX, fServerPY); console.error(`[movedbg] ${this.logName} fan gate=${_g} me=(${Math.round(myProtoX)},${Math.round(myProtoY)}) srv=(${fServerPX},${fServerPY}) age=${Date.now() - (this._lastReportAt ?? 0)} idx=${idx} tgt=${this._fanTarget ? 'Y' : 'n'}`); } catch (e) { console.error(`[movedbg] ${this.logName} fan gate THROW: ${e.message}`); }
       }
       if (this._movementGateOk(fanX, fanY, myProtoX, myProtoY, fServerPX, fServerPY)) {
         this._submitMove(s, c, () => c.moveTo(Math.round(fanX), Math.round(fanY), speed, c.room?.id ?? 0));

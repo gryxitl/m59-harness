@@ -5,9 +5,23 @@
 import { Pose } from './tick/m59-pose.mjs';
 
 let pass = 0, fail = 0;
-function ok(cond, msg) {
+function ok(cond, msg, detail) {
+  // ARGUMENT-ORDER GUARD. This suite's signature is ok(cond, msg). Seven other suites in tools/
+  // use the OPPOSITE order, ok(what, cond, detail). Writing a call in the other suite's style
+  // raises nothing and fails nothing: the condition parameter receives the message string, a
+  // non-empty string is truthy, and the assertion is counted as a pass. That is not a hypothetical
+  // — 17 assertions in this file and 11 in m59-ground-test.mjs were written that way and reported
+  // 'passed' through a full day of edits to the code underneath them, including through the change
+  // that made the seeded track crawl one square per send instead of going to the declaration.
+  // A vacuous assertion is worse than a missing one precisely because it is counted.
+  if (typeof cond === 'string') {
+    fail++;
+    console.log(`  FAIL ok() got a string as its CONDITION — argument order is inverted, so this ` +
+                `assertion cannot fail: ${cond.slice(0, 70)}`);
+    return;
+  }
   if (cond) { pass++; console.log(`  ok   ${msg}`); }
-  else { fail++; console.log(`  FAIL ${msg}`); }
+  else { fail++; console.log(`  FAIL ${msg}${detail ? ' — ' + detail : ''}`); }
 }
 
 // 1. Fresh Pose with no data is stale.
@@ -154,12 +168,45 @@ function ok(cond, msg) {
   p.reset();                       // a room change wipes the sim
   p.advance(1472, 1472);           // a run aim 320 proto away, as in the log
   const c = p.current();
-  ok('seeding anchors on the echo, not the aim', c.col === 23 && c.row === 19,
-    `${c.col},${c.row} (the bug gave 23,23)`);
-  ok('the seed advances one server step toward the aim', p.divergence() === 64,
-    p.divergence());
-  ok('the seed is inside the guard threshold by construction, not by luck',
-    p.divergence() <= 64);
+  // THE ANCHOR IS THE ECHO; THE ADVANCE GOES TO THE DECLARATION. Two decisions this block used to
+  // conflate into one demand for a one-square crawl.
+  //
+  //  * Anchoring on the echo is the fix from e70dd99 and stands: seeding from the AIM left the
+  //    track up to a full stride (320) from anything the server had confirmed, which is under the
+  //    divergence guard's 384 threshold, so the guard could never catch its own cause.
+  //  * Advancing to the declaration is what the server does with a send. Measured in game, not
+  //    assumed: the echo shows a 320-unit declaration adopted to the unit
+  //    (`x=800,2528 -> x=722,2838 moved=320`), and Pose.noteGround accumulates ground from exactly
+  //    those echoes. A track that crawls one square per send while the character is already at the
+  //    declared position plans every later route from behind its own feet — which is how the stride
+  //    engine measured 0.89 squares per packet, the step engine's own rate, with the engine correct
+  //    and the suite green.
+  //
+  // The three assertions this replaces demanded (23,19) and divergence 64 — the crawl — and were
+  // written ok('message', condition) into a suite whose signature is ok(condition, message). The
+  // condition parameter received a message string, was always truthy, and they were counted as
+  // passes for a day, including across the edit that introduced the crawl.
+  // What is decidable here is not 'which value was seeded' — after a send the track is at the
+  // declaration either way, and the old assertion ignored the send it had just performed. What the
+  // e70dd99 fix actually guarantees is that the seed is BOUNDED by the echo: seeding from the aim
+  // could put the track a whole stride from any confirmation, seeding from the echo cannot put it
+  // further than one send's worth. That is testable, and it is what keeps the divergence guard able
+  // to see a bad seed.
+  ok(c.col === 23 && c.row === 23, 'a send moves the seeded track to the declaration',
+     `${c.col},${c.row}`);
+  ok(p.divergence() <= 384,
+     'and the seed is anchored close enough to the echo that the divergence guard can still see it',
+     `divergence ${p.divergence()} vs threshold 384`);
+  p.reset();
+  p.updateServer({ col: 23, row: 18, x: 23 * 64 + 32, y: 18 * 64 + 32 });
+  p.reset();
+  p.advance(1472, 1472);
+  const seeded = p.current();
+  ok(seeded.col === 23 && seeded.row === 23,
+     'after anchoring on the echo, a send takes the track to the position we declared',
+     `${seeded.col},${seeded.row} (declared 23,23; the crawl gave 23,19)`);
+  ok(p.divergence() <= 384, 'and the seeded track stays inside the divergence guard',
+     p.divergence());
 }
 
 // 13. With no echo at all (a fresh join, before the first BP_MOVE) the aim is the
@@ -167,9 +214,8 @@ function ok(cond, msg) {
 {
   const p = new Pose();
   p.advance(1472, 1472);
-  ok('no echo: seeding falls back to the aim rather than staying null',
-    p.sim != null && p.sim.x === 1472 && p.sim.y === 1472, JSON.stringify(p.sim));
-  ok('and current() reports it as predicted', p.current().predicted === true);
+  ok(p.sim != null && p.sim.x === 1472 && p.sim.y === 1472, 'no echo: seeding falls back to the aim rather than staying null', JSON.stringify(p.sim));
+  ok(p.current().predicted === true, 'and current() reports it as predicted');
 }
 
 // 14. The invariant the frozen mover violated: the square current() reports must
@@ -180,10 +226,9 @@ function ok(cond, msg) {
   p.reset();
   p.advance(1472, 1472);
   const c = p.current();
-  ok('current().col is floor(sim.x / 64)', c.col === Math.floor(p.sim.x / 64));
-  ok('current().row is floor(sim.y / 64)', c.row === Math.floor(p.sim.y / 64));
-  ok('so a caller cannot see a position the sim does not have',
-    c.x === p.sim.x && c.y === p.sim.y);
+  ok(c.col === Math.floor(p.sim.x / 64), 'current().col is floor(sim.x / 64)');
+  ok(c.row === Math.floor(p.sim.y / 64), 'current().row is floor(sim.y / 64)');
+  ok(c.x === p.sim.x && c.y === p.sim.y, 'so a caller cannot see a position the sim does not have');
 }
 
 console.log('\nPose.confirmed — the one commitment read');
@@ -197,35 +242,29 @@ console.log('\nPose.confirmed — the one commitment read');
 
   p.updateServer({ col: 3, row: 2, x: 224, y: 160 });
   const c1 = Pose.confirmed(session);
-  ok('with an echo it reports the echo', c1.source === 'echo' && c1.col === 3 && c1.row === 2,
-    `${c1.source} ${c1.col},${c1.row}`);
+  ok(c1.source === 'echo' && c1.col === 3 && c1.row === 2, 'with an echo it reports the echo', `${c1.source} ${c1.col},${c1.row}`);
 
   // The whole point: the sim advances on every SEND, so a commitment read must ignore it.
   p.advance(544, 160, 64);
   const cur = p.current();
   const c2 = Pose.confirmed(session);
-  ok('current() follows the sim after a send', cur.source === 'sim', cur.source);
-  ok('confirmed() ignores the sim and still reports the echo',
-    c2.source === 'echo' && c2.col === 3 && c2.row === 2, `${c2.source} ${c2.col},${c2.row}`);
-  ok('so a send cannot be mistaken for the server having moved us',
-    !(cur.col === c2.col && cur.row === c2.row), `current=${cur.col},${cur.row} confirmed=${c2.col},${c2.row}`);
+  ok(cur.source === 'sim', 'current() follows the sim after a send', cur.source);
+  ok(c2.source === 'echo' && c2.col === 3 && c2.row === 2, 'confirmed() ignores the sim and still reports the echo', `${c2.source} ${c2.col},${c2.row}`);
+  ok(!(cur.col === c2.col && cur.row === c2.row), 'so a send cannot be mistaken for the server having moved us', `current=${cur.col},${cur.row} confirmed=${c2.col},${c2.row}`);
 }
 {
   // A session with no Pose wired at all: client.self is the designated last resort, and
   // it is a real server source — BP_MOVE writes the room object, moveTo never does.
   const session = { client: { self: { col: 7, row: 4, x: 7 * 64 + 32, y: 4 * 64 + 32 } } };
   const c = Pose.confirmed(session);
-  ok('falls back to client.self when there is no Pose', c.source === 'client' && c.col === 7, `${c.source} ${c.col},${c.row}`);
-  ok('derives x/y in protocol units when the object carries only squares',
-    c.x === 7 * 64 + 32 && c.y === 4 * 64 + 32, `${c.x},${c.y}`);
+  ok(c.source === 'client' && c.col === 7, 'falls back to client.self when there is no Pose', `${c.source} ${c.col},${c.row}`);
+  ok(c.x === 7 * 64 + 32 && c.y === 4 * 64 + 32, 'derives x/y in protocol units when the object carries only squares', `${c.x},${c.y}`);
 }
 {
   const none = Pose.confirmed({});
-  ok('reports none rather than inventing a position', none.source === 'none' && none.col === null, none.source);
-  ok('and a caller can test one field instead of three Number.isFinite guards',
-    Object.keys(none).join(',') === 'col,row,x,y,source', Object.keys(none).join(','));
-  ok('Pose.confirmed survives a missing session entirely',
-    Pose.confirmed(undefined).source === 'none' && Pose.confirmed(null).source === 'none');
+  ok(none.source === 'none' && none.col === null, 'reports none rather than inventing a position', none.source);
+  ok(Object.keys(none).join(',') === 'col,row,x,y,source', 'and a caller can test one field instead of three Number.isFinite guards', Object.keys(none).join(','));
+  ok(Pose.confirmed(undefined).source === 'none' && Pose.confirmed(null).source === 'none', 'Pose.confirmed survives a missing session entirely');
 }
 
 

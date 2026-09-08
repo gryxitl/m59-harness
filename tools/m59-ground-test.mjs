@@ -6,6 +6,19 @@ import { isGrounded, isEmbedded, nearestGrounded, segHeightOk } from './tick/m59
 
 let pass = 0, fail = 0;
 function ok(cond, msg) {
+  // ARGUMENT-ORDER GUARD. This suite's signature is ok(cond, msg). Seven other suites in this
+  // directory use the OPPOSITE order, ok(what, cond, detail). Writing a call in the other style
+  // produces no error and no failure — a non-empty message string is truthy, so the assertion can
+  // never fail and is still counted as a pass. That is not hypothetical: 28 assertions in this
+  // file and m59-ground-test.mjs were written that way and reported 'passed' through a full day of
+  // changes to the code underneath every claim made from them. A vacuous assertion is worse than a
+  // missing one precisely because it is counted.
+  if (typeof cond === 'string') {
+    fail++;
+    console.log(`  FAIL ok() got a string as its CONDITION — argument order is inverted, so this ` +
+                `assertion cannot fail: ${cond.slice(0, 70)}`);
+    return;
+  }
   if (cond) { pass++; console.log(`  ok   ${msg}`); }
   else { fail++; console.log(`  FAIL ${msg}`); }
 }
@@ -57,11 +70,11 @@ console.log('\nsegHeightOk honors only the climb refusal');
   const steep = { traceFineMoveClient: () => ({ blocked: true, reason: 'step_too_high' }) };
   const wall = { traceFineMoveClient: () => ({ blocked: true, reason: 'geometry_blocked' }) };
   const clear = { traceFineMoveClient: () => ({ blocked: false, arrived: true }) };
-  ok('cliff refused', segHeightOk(steep, 160, 160, 320, 160) === false);
-  ok('wall passes (doors must)', segHeightOk(wall, 160, 160, 320, 160) === true);
-  ok('clear passes', segHeightOk(clear, 160, 160, 320, 160) === true);
-  ok('no trace passes (old behavior)', segHeightOk({}, 160, 160, 320, 160) === undefined);
-  ok('no geometry passes', segHeightOk(null, 160, 160, 320, 160) === undefined);
+  ok(segHeightOk(steep, 160, 160, 320, 160) === false, 'cliff refused');
+  ok(segHeightOk(wall, 160, 160, 320, 160) === true, 'wall passes (doors must)');
+  ok(segHeightOk(clear, 160, 160, 320, 160) === true, 'clear passes');
+  ok(segHeightOk({}, 160, 160, 320, 160) === undefined, 'no trace passes (old behavior)');
+  ok(segHeightOk(null, 160, 160, 320, 160) === undefined, 'no geometry passes');
 }
 
 console.log('\nisEmbedded: sub-body-width cracks are not walkable');
@@ -82,13 +95,13 @@ console.log('\ntransitBanned: thickets pass, holes and walls refuse');
     standable: () => stand,
     standPoint: () => point,
   });
-  ok('thicket (standable false, point) passes', transitBanned(mk(false, { x: 1, y: 2 }, true), 1, 1) === false, 'thicket');
-  ok('hole (standable false, no point) banned', transitBanned(mk(false, null, true), 1, 1) === true, 'hole');
-  ok('wall (fine false) banned even with point', transitBanned(mk(true, { x: 1 }, false), 1, 1) === true, 'wall');
-  ok('ground passes', transitBanned(mk(true, { x: 1 }, true), 1, 1) === false, 'ground');
-  ok('oob banned', transitBanned({ inBounds: () => false }, 1, 1) === true, 'oob');
+  ok(transitBanned(mk(false, { x: 1, y: 2 }, true), 1, 1) === false, 'thicket (standable false, point) passes', 'thicket');
+  ok(transitBanned(mk(false, null, true), 1, 1) === true, 'hole (standable false, no point) banned', 'hole');
+  ok(transitBanned(mk(true, { x: 1 }, false), 1, 1) === true, 'wall (fine false) banned even with point', 'wall');
+  ok(transitBanned(mk(true, { x: 1 }, true), 1, 1) === false, 'ground passes', 'ground');
+  ok(transitBanned({ inBounds: () => false }, 1, 1) === true, 'oob banned', 'oob');
   const legacy = { inBounds: () => true, standable: () => false };
-  ok('no standPoint fn: legacy strictness', transitBanned(legacy, 1, 1) === true, 'legacy');
+  ok(transitBanned(legacy, 1, 1) === true, 'no standPoint fn: legacy strictness', 'legacy');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

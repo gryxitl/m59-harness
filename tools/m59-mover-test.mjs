@@ -9,6 +9,7 @@
 // around the segment.
 
 import { Mover, MOVEUNITS_PROTO } from './tick/m59-mover.mjs';
+import { readFileSync } from 'node:fs';
 import { Pose } from './tick/m59-pose.mjs';
 
 let pass = 0, fail = 0;
@@ -1354,15 +1355,31 @@ console.log('\nOWNERSHIP: an abandoned owner does not freeze movement');
     console.error = orig;
   }
   const ts = lines.filter((l) => l.includes('[tick-state]'));
-  ok(ts.length >= 1, 'tickLogged reports the state it returned');
-  ok(ts.every((l) => l.includes('zebra')), 'the tick-state line carries the session name');
-  ok(!ts.some((l) => /\bt3\b/.test(l)), 'and no baked-in character name survives in it');
+  ok('tickLogged reports the state it returned', ts.length >= 1, `got ${ts.length} lines`);
+  ok('the tick-state line carries the session name', ts.every((l) => l.includes('zebra')), ts[0]);
+  ok('no baked-in character name survives in it', !ts.some((l) => /\bt3\b/.test(l)), ts.join(' | ').slice(0, 120));
 }
 {
   const probe = new Mover({ name: 'zebra', policy: {} }, { reportIntervalMs: 0 });
-  ok(probe.logName === 'zebra', 'logName reads through the session');
+  ok('logName reads through the session', probe.logName === 'zebra', String(probe.logName));
   const anon = new Mover({}, { reportIntervalMs: 0 });
-  ok(anon.logName === '?', 'a session with no name is ? rather than a wrong name');
+  ok("a session with no name is '?' rather than a wrong name", anon.logName === '?', String(anon.logName));
+}
+
+
+// A cleanup that searches for one spelling of a bug and reports zero hits is not a cleanup.
+// The diagnostics in this class had a character's name baked into the format string, in BOTH
+// 't3' and 't4' spellings; a sweep for 't3' alone reported the file clean while the destination
+// setter still said 't4'. Scan the source for the shape of the bug.
+{
+  const src = readFileSync(new URL('./tick/m59-mover.mjs', import.meta.url), 'utf8');
+  const baked = src
+    .split('\n')
+    .map((l, i) => [i + 1, l])
+    .filter(([, l]) => /console\.error\(`\[[a-z-]+\] t\d\s/.test(l));
+  ok('no console.error template bakes a character name', baked.length === 0,
+     `found ${baked.length}: ` +
+     baked.slice(0, 3).map(([n, l]) => n + ':' + l.trim().slice(0, 40)).join(' | '));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
