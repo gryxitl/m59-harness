@@ -1305,3 +1305,50 @@ Two things follow, and neither is flattering:
 
 If the pair has to come back down, the retracted narrative is the first place to look and the
 instrumentation is the last.
+
+## The destination-churn ratio, which was the goal's own done-criterion
+
+The objective asked for t3 and t4 in game with destination changes and sends in a sane ratio,
+compared against the original pathology in `keeper-t1.log` (13,619 destination changes against
+244,021 sends, 0.0558 dests per send). Measured in the current session, from lines that carry a
+name the code can be trusted to have set correctly:
+
+| | destination changes | packets | dests per send |
+|---|---|---|---|
+| t2 | 1 | 270 | **0.0037** |
+| t1, t3, t4, t5 | 0 | 0 | n/a — never asked to move |
+
+t2's ratio is **fifteen times better than the pathology**, and one destination change over 270
+packets is what a route that is walked rather than re-litigated looks like.
+
+## A measurement I had to throw away, and why it matters more than the one above
+
+Before that, the same measurement over the whole `keeper-t2.log` gave:
+
+```
+destination changes:            6,496
+aim returns to where it was two changes ago: 2,332   (35.9%)
+most-visited destinations: (3,58) 889 times, (3,57) 882 times
+```
+
+which reads as a two-square oscillation surviving every fix, at twelve times the pathology ratio.
+It is none of those things. The lines behind it say:
+
+```
+[movedbg] t4 to() -> 3,58 (was 15,66) by=router
+[movedbg] t4 to() -> 3,58 (was 12,66) by=router
+[movedbg] t4 to() -> 3,58 (was 25,64) by=router
+[movedbg] t4 to() -> 3,58 (was 33,29) by=router
+```
+
+**in `keeper-t2.log`.** The name was baked into the format string, so all five characters wrote
+`t4` into whichever file the broker was tailing, and the `was` values are squares 15, 12, 25, 19 and
+33 columns apart — five different characters aiming at the same square, not one character flipping
+between two. The oscillation was an artefact of the mislabelling, and the fix that made it visible
+is the `logName` change made an hour earlier for what looked like a cosmetic reason.
+
+The general rule, which this session violated repeatedly: **a log whose lines do not say who wrote
+them cannot support a claim about a character.** Whole-file counts across a log that spans builds
+and characters are not measurements of anything, and the counts that looked worst — 6,496 changes,
+35.9% oscillation, 20,173 no-routes — need the session boundary and the name applied before they
+mean what they appear to mean.
