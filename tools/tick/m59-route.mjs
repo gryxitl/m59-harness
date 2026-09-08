@@ -874,6 +874,23 @@ export class Router {
     // Convert aim to {col, row} if it's the edgeTarget ({x, y} protocol units).
     const aimCol = aim.col ?? Math.floor(aim.x / 64);
     const aimRow = aim.row ?? Math.floor(aim.y / 64);
+    // ONE-SHOT DIAGNOSTIC, and it exists because the fleet has been standing in an escape fan
+    // for the length of this session with `plan ... found=false reason='no fine path'`, and
+    // nothing in the log says WHERE the aim came from. The aim is (26,54) while the character
+    // is at (59,7): a square that is in bounds in 57 map rooms and in none of the ones the
+    // character has occupied. The router's own contract is that the aim is `leg.standOn`,
+    // planned from `me`, so it should be in the current room. This names which of those is
+    // false. Logged once per leg rather than every tick, because a per-tick line for a
+    // condition that never changes is how a 387MB log got written.
+    if (this._aimDiagLeg !== this.leg) {
+      this._aimDiagLeg = this.leg;
+      try {
+        console.error(`[aim-dbg] dest=${this.dest} me=(${me.col},${me.row}) aim=(${aimCol},${aimRow}) ` +
+          `standOn=${JSON.stringify(this.leg?.standOn)} edgeTarget=${JSON.stringify(this.leg?.edgeTarget ?? null)} ` +
+          `subWp=${this.subWp ? this.subWp.length : 'null'} subWp0=${JSON.stringify(this.subWp?.[0] ?? null)} ` +
+          `at=${this._at ?? '?'} inBounds=${this._geo()?.inBounds?.(aimRow, aimCol)}`);
+      } catch {}
+    }
     this.mover.to(aimCol, aimRow, { standOn: isStandOn, edgeTarget: this.leg.edgeTarget, by: 'router' });
     const mr = this.mover.tick({ col: me.col, row: me.row, x: me.x, y: me.y });
     if (mr.state === 'blocked')

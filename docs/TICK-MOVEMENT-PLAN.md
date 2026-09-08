@@ -850,3 +850,52 @@ the stride instead of the square, and to prove the server accepts it — which r
 live at least once and the `srvXY` instrument to be read. Until that reading exists, 2.5 squares
 per packet is a hypothesis with a well-read argument behind it, and this line is where that
 distinction is kept.
+## The denominator was wrong, and the real number is 3.6% rather than 40%
+
+Every rate in this document — the step engine's 1.00, the restored engine's claimed 2.50, the
+auditor's 'came out equal' — is **squares per packet**. That is the wrong denominator, and using it
+made a three-percent problem look like a forty-percent problem for the entire time this file has
+existed.
+
+Measured live this session, with the aim diagnostic confirming the request is sane
+(`aim=(30,2) inBounds=true` from `me=(49,4)`, a normal 19-square walk):
+
+| | value |
+|---|---|
+| ground made | (49,4) → (59,7) ≈ 10.8 squares |
+| observation window | ~120 s |
+| packets sent | 85 |
+| **squares per second** | **0.09** |
+| squares per packet | 0.13 |
+| reference client walk | 2.50 squares/s, ~1 packet/s |
+| **fleet vs client** | **~3.6%** |
+
+One square per packet at **one packet per twelve seconds** is not 40% of the client. The rate is
+set by the ticks that send *nothing* — the send gate, the planner returning `found=false`, the
+escape fan spending ticks on probes — and not by how far a packet that does go out happens to
+reach. That is why the per-packet framing was so durable: it measures the packet and ignores the
+twelve seconds.
+
+**What this does to the goal.** The goal was 'the fleet moves at the rate the real client moves
+at'. Fixing the per-packet distance from 1.00 to 1.88 is real and is now asserted, and it does not
+move the number above by much, because the bottleneck is not the distance. The bottleneck is that
+`finePathProtocol` returns `found=false` on **every single tick** for a destination that is in
+bounds and nineteen squares away, which puts the mover in the escape fan permanently, which sends
+probes instead of strides. Until that is fixed, the fleet's speed will not change materially and
+no engine choice will make it.
+
+**The planner failure is the open question, and it is not the frame bug.** The frame defect
+(waypoints at square edges) was found and fixed earlier in this work, and `m59-frame-test.mjs`
+pins it. This is different: the same planner, on the same room, reports no path from (49,4) to
+(30,2) while the character walks that route under escape-fan control and reaches neighbourhoods
+the planner says are unreachable. Either the edge predicate is over-rejecting on the real room
+geometry, or the search is being asked about a room the character is not in. The `[aim-dbg]`
+diagnostic added this session distinguishes those and is logged once per leg rather than once per
+tick — a per-tick line for a condition that never changes is how a 387 MB log got written.
+
+**Honest status of the goal.** The engine restoration is real: sub-stepped integration, stops at
+walls, bisect-to-wall, backward rounding, corner-rounded fan release, the zero-stride fall-through
+that was starving the fan, and now a branch ordering that lets the declaration execute at all.
+Those are all verified and several are falsified. **The fleet does not move at the client's rate
+and this work did not achieve it.** The measurement that was supposed to prove otherwise was run on
+the wrong denominator, and correcting it makes the gap larger, not smaller.
