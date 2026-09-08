@@ -497,7 +497,11 @@ export const INTENTS = {
           // Drive the mover this tick so it actually steps toward the merchant (the
           // router is not involved — same-room approach, and the tick loop does not
           // call mover.tick on its own; the intent must).
-          mv.tick({ col: me.col, row: me.row, x: me.x, y: me.y });
+          // tickLogged, not tick: tick() is 1,430 lines with 29 exits that log nothing, so a
+          // character standing still for three minutes is undiagnosable. This is the site the live
+          // keeper actually drives (m59-keeper-process calls intend('travel')), which is why the
+          // wrapper added on the Router/Combat sites produced zero output.
+          mv.tickLogged({ col: me.col, row: me.row, x: me.x, y: me.y });
         }
         return { sent: true, what: `approach ${target.name ?? 'merchant'} at (${target.col},${target.row})` };
       }
@@ -2017,7 +2021,7 @@ function fleeExits(session, ws) {
                 if (!mv.active || mv.dest?.col !== _recoveryTarget.col || mv.dest?.row !== _recoveryTarget.row) {
                   mv.to(_recoveryTarget.col, _recoveryTarget.row, { by: 'recovery' });
                 }
-                const mr = mv.tick(pos);
+                const mr = mv.tickLogged(pos);
                 onDecision?.({ ticks, goal: 'hunt', action: 'travel',
                   what: `void recovery (mover ${mr.state} to ${_recoveryTarget.col},${_recoveryTarget.row})`,
                   sent: mr.state === 'moving' || mr.state === 'raw-move' || mr.state === 'crossing' });
@@ -2049,7 +2053,7 @@ function fleeExits(session, ws) {
               if (nc != null) {
                 _patrolTarget = { col: nc, row: nr };
                 mv.to(nc, nr, { by: 'patrol' });
-                const mr = mv.tick(pos);
+                const mr = mv.tickLogged(pos);
                 session._lastHuntNudge = now;
                 onDecision?.({ ticks, goal: 'hunt', action: 'travel',
                   what: `patrolling hunt room (mover ${mr.state} to ${nc},${nr})`, sent: true });
@@ -2064,7 +2068,7 @@ function fleeExits(session, ws) {
             // don't claim its destination in the log).
             if (mv?.active && me) {
               const preDest = mv.dest ? { col: mv.dest.col, row: mv.dest.row } : null;
-              const mr = mv.tick(pos);
+              const mr = mv.tickLogged(pos);
               const ours = _patrolTarget && preDest?.col === _patrolTarget.col && preDest?.row === _patrolTarget.row;
               onDecision?.({ ticks, goal: 'hunt', action: 'travel',
                 what: ours ? `patrolling hunt room (mover ${mr.state} -> ${_patrolTarget?.col},${_patrolTarget?.row})`
