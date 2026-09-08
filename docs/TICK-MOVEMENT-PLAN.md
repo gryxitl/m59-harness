@@ -1224,3 +1224,43 @@ The guard fires every second and reports success by construction, because what i
 divergence is move the track to the server's position, which erases the distance it just measured.
 It cannot accumulate a signal. The only number that grows is the count of declarations nobody
 confirmed.
+
+## And the routing "gap" is not a gap: it is the safety guard, and the decider is the bug
+
+`findPath` answers the blocked destinations directly, offline, no server:
+
+```
+106 -> 1013: found=false  reason=no route from 106 to 1013 in the graph without crossing 555
+              (The Forest Shrine — acid gas puzzle, kills outright (e5.kod:452 PunishPlayer);
+               the safe row is random and moves, and is only learnable by asking LadyPheonix)
+534 -> 1013: same.   201 -> 1013: same.   556 -> 1013: same.   1012 -> 377: same.
+556 ->  555: found=false  reason=refusing to route to 555: The Forest Shrine — acid gas puzzle…
+```
+
+Every destination the fleet is blocked on sits behind room 555, The Forest Shrine, which the map
+model refuses to route through because it kills the character outright. The model is correct to
+refuse. `556 -> 555` is not a missing edge either — that is the guard declining to walk a character
+into the room it is standing next to.
+
+The defect is that nothing upstream distinguishes **"no route"** from **"no safe route"**. The
+decider reads `no-route` as `stuck`, chooses a different goal, and asks again fifteen seconds later —
+20,173 times in t4's log. It is retrying a route that would kill the character, forever, and
+reporting the refusal as a movement failure. That is also why `armed -> buy` says *"smith unreachable
+recently; hunting unarmed"*: the smith is in 1013, and 1013 is on the far side of a room that kills
+them.
+
+So the chain that explains the fleet standing still is:
+
+1. the characters want the smith in room 1013;
+2. the only graph path crosses room 555, which kills them outright;
+3. `findPath` correctly refuses;
+4. the decider cannot tell a safety refusal from a missing edge, so it treats it as being stuck;
+5. it re-asks every 15 s, having never once considered that the destination is unreachable on purpose.
+
+**None of this is locomotion.** The mover is never given a destination, which is why every
+sends-per-square figure in this document describes a character that is not representative of the
+fleet: the only ones that moved are the ones whose destination happened not to require the Shrine.
+
+The fix is not in this document's scope. It is a distinct reason code for a safety refusal, and a
+decider that stops asking instead of retrying — which is a different goal, and is recorded here so
+the next person does not spend a day on the mover first.
