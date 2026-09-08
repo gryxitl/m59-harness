@@ -673,3 +673,49 @@ cut short by a wall. In a maze the restored engine's stride is shortened by the 
 the honest expectation is that it will sometimes fall below the step engine's one square — a stride
 that stops at a wall covers less than a stride that never tries. Step 6 is where that shows up, and
 if the fleet is not faster in game, the straight-line number above is not a defence.
+
+## In game, on the restored engine (step 6)
+
+The fleet was restarted onto the new code and observed in game. t3 and the other three characters
+came back 5/5 in game; t4's tick errors went from **2,361 of 2,461 ticks to 0** once `buy()`'s
+out-of-scope `frame` was fixed, which is what had been reporting as `no route from 106 to 1013`.
+
+**Destination-to-send ratio, t3, one session on the new code: 3 destination changes / 148 packets
+= 0.0203.** The baseline quoted throughout this goal — 13,619 dests / 244,021 sends = 0.0558 — is
+**not a comparable number, and the reason is the finding.** It was produced by counting occurrences
+of the string `moveTo sent` in `keeper-t1.log`. This mover has nine `moveTo` call sites and
+exactly one of them logged, and that one logged with that sentence. So the baseline is a count of
+lines matching one branch's log text: it is not a packet count, and it changed when the sentence
+was rewritten during this work with no change in behaviour whatsoever. Counting `moveTo sent` in
+the new logs returns zero, which looks like a mover that never sends and is only a changed string.
+
+The instrument is now `[move-sent] n=… aim=… from=…`, emitted from `_recordSend` — the one place
+every send must pass through on pain of the teleport detector misfiring — so the count cannot drift
+from the code the way a log pattern can.
+
+**The measurement that actually answers the goal, from that instrument:**
+
+| | value |
+|---|---|
+| ground declared per packet, median | **143 protocol units = 2.24 squares** |
+| the official client's walk stride | 160 units = 2.50 squares |
+| the step engine's | 64 units = 1.00 square |
+| packets declaring zero ground | 3 of 148 |
+| longest run of an identical declared aim | 16 packets |
+
+At 2.24 squares per packet the mover is at **90% of the client's walk rate**, where the step engine
+was at 40%. The shortfall is real and expected: the integration stops at walls, so a stride that
+hits a wall declares less than a full stride. That is the correct behaviour and the whole point of
+the integration — the pre-fix engine declared full strides into walls.
+
+**The freeze that started this goal is gone.** `keeper-t3.log` held 790 of 879 sends declaring the
+identical aim `(1472,1152)` — a character shouting at a point inside its own square. The longest run
+of an identical declared aim in the new window is 16 packets, and the destination is reached rather
+than abandoned.
+
+**What this window does not settle.** t4 sat idle with no destination and sent nothing, so it
+contributes no rate; a single session of t3 is one route, and the median hides a distribution with
+a 5,525-unit outlier (a room transition, where "from" is in the old room's coordinates — the same
+trap that made a naive ground total read 3,829 squares for 169 packets). A second live session, and
+a route that goes through a door, are what would make the 90% figure a rate rather than an
+observation.
