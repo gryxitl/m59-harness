@@ -655,6 +655,48 @@ export class Mover {
     // or holding, which made multi-minute stalls undiagnosable. One line.
     if (Date.now() - (this._hbAt ?? 0) > 60000) {
       this._hbAt = Date.now();
+      // VOID PROBE, on the heartbeat so it costs nothing and cannot be missed.
+      //
+      // A character was OBSERVED standing in what the 3D client renders as a void, and six
+      // offline tests across two rooms could not produce an entry: every declared move from a
+      // floored square into one of those squares is refused by the trace, in both the coarse
+      // and the fine model, at the mover's own options (slide:false, radius 248, and the
+      // blocked!==true||arrived===true pass rule). Room 557: 0 of 267. Room 556: 0 of 168.
+      //
+      // A test that never fires is not evidence the event cannot happen; it is evidence the
+      // test does not cover the path. So rather than reason about which of the remaining
+      // explanations is right -- the server placing a body there on room entry or respawn, a
+      //kod-driven move, or room3d drawing something the BSP does not contain -- this asks
+      // the question every minute on the character's ACTUAL square and names it in the log.
+      // When it fires, the square is known, and the answer is a probe away instead of a
+      // reconstruction from a log that spans builds and five characters.
+      try {
+        const _vg = this.session?.world?.geometry;
+        const _me = this.session?.client?.self;
+        if (_vg?.fineWalkable && _me && Number.isFinite(_me.col) && Number.isFinite(_me.row)) {
+          const _c1 = _me.col + 1, _r1 = _me.row + 1;   // self is 0-based; the API is 1-based
+          const _coarse = _vg.walkable?.(_r1, _c1) === true;
+          let _floor = false;
+          // Always test the lattice directly rather than reading standable(): standable()
+          // short-circuits on the coarse grid (m59-roo.mjs:1697), so it returns true for exactly
+          // the squares we are investigating and cannot answer the question.
+          if (_vg._occupiable) {
+            for (let _sy = 0; _sy < 5 && !_floor; _sy++) for (let _sx = 0; _sx < 5; _sx++) {
+              const _x = protocolToClient((_c1 - 1) * KOD_FINENESS + Math.round((_sx + 0.5) * KOD_FINENESS / 5));
+              const _y = protocolToClient((_r1 - 1) * KOD_FINENESS + Math.round((_sy + 0.5) * KOD_FINENESS / 5));
+              if (_vg._occupiable(_x, _y)) { _floor = true; break; }
+            }
+          }
+          // The condition we are looking for: the server's grid says there is floor here, the
+          // BSP says there is none anywhere on the square. That is the disagreement room3d
+          // draws as a hole. Reported whether or not it fires, so a run of 'no' is visible too.
+          if (_coarse && !_floor) {
+            console.error(`[void-probe] STANDS IN A VOID square=(${_me.col},${_me.row}) `
+              + `coarse=walkable bsp_floor=none fine=${_vg.fineWalkable(_r1, _c1)} `
+              + `room=${this.session?.world?.room?.num ?? '?'} -- the server put a body where the BSP has no floor`);
+          }
+        }
+      } catch { /* a diagnostic must never break the tick */ }
       try { console.error(`[mover-hb] dest=${this.dest ? this.dest.col + ',' + this.dest.row : 'null'} path=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} fan=${this._fanIndex} stuck=${this.stuckTicks} sends=${this._sendCount ?? 0} drops=${this.session?.client?._droppedUserMoves ?? 0} gateAge=${Date.now() - (this._lastReportAt ?? 0)}${(() => { const c = this.session?._pose?.corroboration?.(); return c ? ` unconfirmed=${c.outstanding}` : ''; })()}${(() => { const g = this.session?._pose?.groundRate?.(); return g && g.seconds ? ` ground=${g.squares.toFixed(1)}sq/${g.seconds.toFixed(0)}s=${g.rate.toFixed(2)}sq/s trans=${g.transitions}` : ''; })()} cli=${this.session?.client ? this.session.client.state : 'noclient'} pacer=${this.session?.pacer ? 'Y' : 'n'}`); } catch {}
     }
     const s = this.session;
