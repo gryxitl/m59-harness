@@ -899,6 +899,32 @@ export class Mover {
     const holdWp = this.path ? this.path[this.pathIdx] : null;
     let aimX = holdWp ? holdWp.x : this.destProto.x;
     let aimY = holdWp ? holdWp.y : this.destProto.y;
+    // LOOK DOWN THE ROUTE, HERE, ABOVE THE STRIDE CLAMP. Where this call sits is the whole
+    // finding, so it is written out rather than implied:
+    //
+    // An earlier attempt put the lookahead down near the declaration and had the step branch
+    // above hand it over through a field. That read the PREVIOUS tick's heading — the aim is
+    // built 700 lines before the step branch runs — and produced an oscillation
+    // (832,800,960,992,1056,992): a mover walking backward and forward on a straight road. A
+    // heading decided after the thing that consumes it is not a heading, it is a memory.
+    //
+    // The reason a lookahead is needed at all: the planner emits one waypoint per square
+    // because that is what a square-centre path IS, and a walk stride is 2.5 squares. Without
+    // consuming several waypoints per tick the stride budget is spent on a one-square heading,
+    // which is precisely the 1.00 squares-per-packet the fleet has been running at.
+    //
+    // It chooses a HEADING. The clamp below still bounds it by what the elapsed time buys and
+    // the integration still decides what is legal, so a lookahead can name a destination but
+    // never authorise a position.
+    {
+      const _g = this.session?.world?.geometry;
+      if (this.path && this.pathIdx < this.path.length) {
+        const _v = s.client?.vitals?.()?.vigor?.value ?? 0;
+        const _r = s?.policy?.allowRun !== false && _v >= RUN_VIGOR_FLOOR;
+        const _ahead = this._routeAhead(_g, myProtoX, myProtoY, _r ? RUN_STRIDE_PROTO : WALK_STRIDE_PROTO);
+        if (_ahead) { aimX = _ahead.x; aimY = _ahead.y; }
+      }
+    }
     // OFFICIAL STRIDE, NO HOLD GATE. The server never carries (each packet IS
     // one accepted position), so holding after one step freezes — the observed
     // one-step-then-stop. Instead clamp the aim to one per-second stride:
@@ -1322,6 +1348,19 @@ export class Mover {
     // If path is null (no fine path found), go directly to
     // the destination. The server is client-authoritative.
     const wp = this.path ? this.path[this.pathIdx] : null;
+
+    // THE HEADING IS DECIDED ONCE, ABOVE ALL THREE ENGINES, so that whichever of them
+    // returns first does not win the tick merely by sitting earlier in the file. `ahead` is
+    // the farthest waypoint this tick's stride can legally reach. An engine below may send it
+    // or decline it, but none of them can leave the mover aimed at one square because that is
+    // where its own branch happened to be.
+    let ahead = null;
+    {
+      const _g = this.session?.world?.geometry;
+      const _v0 = s.client?.vitals?.()?.vigor?.value ?? 0;
+      const _run0 = s?.policy?.allowRun !== false && _v0 >= RUN_VIGOR_FLOOR;
+      ahead = this._routeAhead(_g, myProtoX, myProtoY, _run0 ? RUN_STRIDE_PROTO : WALK_STRIDE_PROTO);
+    }
     // RAW-MOVE DOOR PUSH: if we are CLOSE to the dest (within 4 squares) and the dest is
     // FINE-UNREACHABLE (a door alcove, a walled gap — the fine model says no path), do a
     // raw move toward the dest, bypassing the fine model. The server is client-
@@ -1563,13 +1602,59 @@ export class Mover {
         this._sendWaypoint(this.destProto.x, this.destProto.y, c, s, me);
         return { state: 'moving', to: { x: Math.round(this.destProto.x), y: Math.round(this.destProto.y) } };
       }
-      // Send the next waypoint.
+      // Send the next waypoint — unless the route ahead is clear for further than a square,
+      // in which case this branch is the WRONG BRANCH AND MUST NOT RUN.
+      //
+      // This is the ordering finding, and it is what the fleet's rate actually turned on. This
+      // branch owned every tick after the first and sent exactly one square per packet — 1.00
+      // squares per packet, 40% of the reference client — and the velocity declaration below it
+      // never executed because this branch returns first. Which engine is correct was never
+      // the question; which branch is REACHED was, and the answer was always this one.
+      //
+      // It cannot simply be deleted: with it disabled two assertions fail with 'never arrives',
+      // because it also owns waypoint consumption and arrival. And it must not be made to send
+      // `ahead` directly — an earlier attempt did that and measured 1.50 squares per packet,
+      // which is a FALSE RESULT even though the number moved. `_sendWaypoint` declares the
+      // destination we are HEADING FOR; the reference client declares the position it has
+      // REACHED (move.c MoveUpdatePosition sends player.x/player.y, its own integrated
+      // position). Those are different packets with different meanings, and a far waypoint sent
+      // as a position is a claim about where we are that we have not earned. The integration is
+      // what earns it. So this branch steps a square, and strides are left to the branch that
+      // integrates them.
+      // WHEN THE ROUTE AHEAD IS CLEAR BEYOND ONE SQUARE, THIS BRANCH TAKES THE TICK AND MUST
+      // NOT SPEND IT. It is the ordering finding, and it is what the fleet's rate turned on.
+      //
+      // This branch owned every tick after the first and sent exactly one square per packet —
+      // 1.00 squares per packet, 40% of the reference client — while the velocity declaration
+      // 180 lines below it never executed, because this branch returns. Which engine is
+      // correct was never the question; which branch is REACHED was, and the answer was always
+      // this one. That is also why a committed measurement tool reported both engines at 1.00:
+      // it was observing the same branch twice.
+      //
+      // Two wrong fixes were tried and rejected before this one:
+      //   * Deleting it. Two assertions then fail with 'never arrives', because this branch
+      //     also owns waypoint consumption and arrival. It is necessary.
+      //   * Making it send `ahead` via _sendWaypoint. That measured 1.50 squares per packet —
+      //     a moved number and a FALSE result. `_sendWaypoint` declares the destination we are
+      //     heading FOR; the reference client declares the position it has REACHED (move.c
+      //     MoveUpdatePosition sends its own integrated player.x/player.y). A far waypoint sent
+      //     as a position is a claim about where we are that we have not earned, and the
+      //     integration is what earns it.
+      //
+      // So: aim at the far heading, and let control fall through to the branch that
+      // integrates. `aimX`/`aimY` are what the declaration below reads, and it still runs the
+      // geometry before sending anything — the fall-through buys rate, never permission.
+      if (ahead && Math.hypot(ahead.x - myProtoX, ahead.y - myProtoY) > KOD_FINENESS) {
+        // Fall through: the declaration below integrates this heading and sends the position
+        // it stopped at. See the note above for why stepping a far waypoint is not a stride.
+      } else {
       const nextWp = this.path[this.pathIdx];
       if (nextWp) {
         this._sendWaypoint(nextWp.x, nextWp.y, c, s, me);
         return { state: 'moving', to: { x: Math.round(nextWp.x), y: Math.round(nextWp.y) } };
       }
       return { state: 'moving' };
+      }
     }
 
     // EN ROUTE TO WAYPOINT: walk one ADJACENT square at a
@@ -1734,69 +1819,6 @@ export class Mover {
     // ==========================================================================
     {
       const geo = this.session?.world?.geometry;
-
-      // LOOK DOWN THE ROUTE BEFORE AIMING. This is what makes the stride real.
-      //
-      // Without it the mover aims at waypoint 0 for the entire path. There is exactly one
-      // `pathIdx++` in this file and it sits in the step engine, BELOW the return this branch
-      // makes — so under velocity the index never moves, and the only reason the character
-      // travels at all is that the stride clamp measures from its own moving sim position.
-      // Measured, that produces 0.94 squares per packet on a ten-waypoint straight-line plan
-      // with every square walkable: the same rate as the step engine, which is the number this
-      // whole restoration was supposed to make unnecessary.
-      //
-      // The deleted version had this block and named the failure precisely: "Advance past
-      // reached waypoints HERE: the shared advance block below is unreachable past this return.
-      // Without this, pathIdx freezes on a reached waypoint, aim == position, the send gate
-      // closes forever — the observed one-step-then-stop." It was lost in the removal and I did
-      // not notice, because nothing asserted it.
-      //
-      // CONSUME BY REACHABILITY, NOT BY PROXIMITY. A waypoint is spent when the stride can get
-      // to it and keep going, which is what lets one packet cover 2.5 squares instead of
-      // parking at the first square centre. The aim is the FARTHEST waypoint within this
-      // tick's stride; the integration below still decides whether that position is legal, so
-      // a lookahead can never authorise a position inside a wall — it only chooses a heading.
-      // This is the distinction the whole design rests on: lookahead is an aim, integration is
-      // an approval, and they must not be collapsed into each other.
-      if (this.path && this.pathIdx < this.path.length) {
-        const budget = strideNow;
-        let far = -1;
-        for (let i = this.pathIdx; i < this.path.length; i++) {
-          const w = this.path[i];
-          if (Math.hypot(w.x - myProtoX, w.y - myProtoY) > budget) break;  // ordered; no further
-          // TRACE-GATED, AND THIS IS THE PART THAT MUST NOT BE DROPPED. Distance says a
-          // waypoint is reachable; only the geometry says the heading to it is walkable. An
-          // earlier draft of this block consumed on proximity alone and aimed at the second
-          // waypoint of an L-turn because it was 143 units away — inside the stride — while the
-          // beeline to it cut the corner through a wall. The integration then stopped that
-          // heading at the wall, which is SAFE but not CORRECT: the mover declares a position
-          // partway into a wall it was never in, loses the ground, and the corner is rounded at
-          // the speed of the fan. The original lookahead asked the same question the trace asks
-          // and took the last waypoint whose own beeline was clear.
-          if (geo?.traceFineMoveClient) {
-            try {
-              const t = geo.traceFineMoveClient(
-                protocolToClient(myProtoX), protocolToClient(myProtoY),
-                protocolToClient(w.x), protocolToClient(w.y),
-                { slide: false, playerRadius: PLAYER_WALL_CLEARANCE_CLIENT_UNITS });
-              if (t && t.blocked === true && t.arrived !== true) break;
-            } catch { break; }   // an unknown trace is not a licence to look further
-          }
-          far = i;
-        }
-        // Only advance when the lookahead actually sees further than we are aiming. Advancing
-        // on a zero-length or blocked lookahead is how a mover ends up declaring the position
-        // it is already at, which the send gate then refuses — the freeze, in a different costume.
-        try { console.error(`[lookahead-dbg] idx=${this.pathIdx} far=${far} len=${this.path.length} sim=${Math.round(myProtoX)}`); } catch {}
-        if (far >= this.pathIdx) {
-          const w = this.path[far];
-          aimX = w.x; aimY = w.y;
-          // Spend the waypoints strictly BEFORE the aim: the aim square itself is not reached
-          // until the character is in it, and spending it early makes the next tick aim at the
-          // destination through a wall it has not yet turned the corner around.
-          if (far > this.pathIdx) this.pathIdx = far;
-        }
-      }
 
       // The heading: toward the current waypoint if a path exists, else the destination. The
       // stride is what the elapsed time buys at the current gait, so the declaration cannot
@@ -2096,6 +2118,53 @@ export class Mover {
 // Returns the furthest position along the line that the geometry's own trace will vouch for,
 // in PROTOCOL units, plus how far it actually got. `distance` is the most the client could
 // cover in the elapsed time at the current gait; the result is never further than that.
+  // LOOK DOWN THE ROUTE: consume every waypoint this tick's stride can reach AND whose
+  // beeline the geometry clears; return the farthest such waypoint as the heading.
+  //
+  // WHY A METHOD AND NOT A BLOCK INSIDE THE DECLARATION. tick() holds three engines in
+  // sequence, each of which returns: a raw door push, a one-square step (its own comment:
+  // 'walk one ADJACENT square at a time, same as the GOAP driver's act.step()'), and the
+  // velocity declaration. This lookahead used to live inside the third one, BELOW the other
+  // two, so from the second tick of any route onward the step branch ran first, returned, and
+  // neither the lookahead nor the declaration executed. That is the whole explanation of a
+  // committed measurement reporting 1.00 squares per packet for both engines, and of an
+  // independent audit being unable to make any suite notice the declaration being switched
+  // off: both were observing code that never ran. Restoring the declaration's source did not
+  // restore its execution, because in this function execution is decided by ORDER. A shared
+  // decision needs a shared helper placed above the things that share it.
+  //
+  // IT PICKS A HEADING AND APPROVES NOTHING. The caller still integrates. A lookahead that
+  // could authorise a position would be the wall-declaration defect re-admitted through the
+  // front door. The trace gate below is not there for safety — the integration would stop at
+  // the wall anyway — it is there for CORRECTNESS: halting a heading at a wall is safe and
+  // still wrong, and it spends the tick grinding a corner at the escape fan's speed instead
+  // of aiming at the waypoint the route actually goes through.
+  _routeAhead(geo, fromX, fromY, budget) {
+    if (!this.path || this.pathIdx >= this.path.length) return null;
+    let far = -1;
+    for (let i = this.pathIdx; i < this.path.length; i++) {
+      const w = this.path[i];
+      // The path is ordered, so once one waypoint is out of stride none further can be in.
+      if (Math.hypot(w.x - fromX, w.y - fromY) > budget) break;
+      if (geo?.traceFineMoveClient) {
+        try {
+          const t = geo.traceFineMoveClient(
+            protocolToClient(fromX), protocolToClient(fromY),
+            protocolToClient(w.x), protocolToClient(w.y),
+            { slide: false, playerRadius: PLAYER_WALL_CLEARANCE_CLIENT_UNITS });
+          if (t && t.blocked === true && t.arrived !== true) break;
+        } catch { break; }   // an unknown trace is not a licence to look further
+      }
+      far = i;
+    }
+    if (far < 0) return null;
+    // Spend the waypoints strictly BEFORE the aim: the aim's own square is not reached until
+    // the character is in it, and spending it early makes the next tick aim past the corner
+    // it has not yet turned.
+    if (far > this.pathIdx) this.pathIdx = far;
+    return this.path[far];
+  }
+
   _integrateToward(geo, fromProtoX, fromProtoY, toProtoX, toProtoY, distance, {
     // move.c:52-53. 200 sub-steps per second, capped at 20 per move, so a 100ms tick walks
     // 256 client units in 20 sub-steps of 12.8. The cap is the point: sub-steps exist so a

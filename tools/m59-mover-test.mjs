@@ -817,6 +817,55 @@ console.log('\nCORNER FLOW (trace-gated lookahead)');
     `idx=${mover._fanIndex}`);
 }
 
+console.log('\nTHE RATE: A PACKET MUST CARRY A STRIDE, NOT A SQUARE');
+{
+  // THE ASSERTION WHOSE ABSENCE COST THE MOST. The velocity engine was 'restored' — code
+  // present, comments written, suites green — and the fleet did not move one inch faster,
+  // because the step branch 180 lines ABOVE the declaration owned every tick and returned.
+  // Every test in this file passed the whole time. A suite that cannot tell whether the
+  // engine it is testing is executing is not testing the engine, and that is exactly what an
+  // independent audit found when it disabled the declaration and got 123/0.
+  //
+  // So this asserts the OUTCOME the engine exists to produce, on the one geometry where the
+  // answer is unambiguous: open ground, a straight route, waypoints at every square centre
+  // (which is what a square-centre planner emits), a walk stride of 2.5 squares. The mover
+  // must cover more than one square per packet. If it covers one, it is stepping.
+  const openGeo = {
+    collisionReady: true,
+    fineWalkable: () => true,
+    standable: () => true,
+    inBounds: () => true,
+    traceFineMoveClient: () => ({ blocked: false, moved: true, arrived: false }),
+    finePathProtocol: () => ({
+      found: true,
+      waypoints: Array.from({ length: 10 }, (_, i) => ({ x: (11 + i) * 64 + 32, y: 10 * 64 + 32 })),
+    }),
+  };
+  const { mover, sent, session } = rig({ col: 10, row: 10, geo: openGeo });
+  if (session._pose) session._pose.sim = { x: 10 * 64 + 32, y: 10 * 64 + 32 };
+  mover.to(20, 10, { by: 'router' });
+  const pts = [];
+  for (let i = 0; i < 6; i++) {
+    clock(1050);
+    mover.tick();
+    for (let j = 0; j < 8; j++) await Promise.resolve();
+  }
+  for (const p of sent) if (Array.isArray(p)) pts.push(p);
+  let ground = 0;
+  for (let i = 0; i + 1 < pts.length; i++)
+    ground += Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]);
+  const perPacket = ground / 64 / Math.max(1, pts.length - 1);
+  ok('on open ground a packet carries more than one square of ground',
+     perPacket > 1.2, `${perPacket.toFixed(2)} sq/packet over ${pts.length} sends (${pts.map(p => Math.round(p[0])).join(',')})`);
+  // And the ground must be MONOTONIC: a mover that walks 2 forward and 1 back has a high
+  // total-variation figure and goes nowhere, which is the failure mode an earlier attempt at
+  // this ordering produced (832,800,960,992,1056,992 — a straight road walked backward and
+  // forward). Total variation alone would have passed that.
+  const net = pts.length > 1 ? Math.abs(pts[pts.length - 1][0] - pts[0][0]) : 0;
+  ok('and the ground is made FORWARD, not by oscillation',
+     pts.length < 2 || net >= ground * 0.7, `net ${Math.round(net)} vs total ${Math.round(ground)}`);
+}
+
 console.log('\nSTRIDED NO-PATH DECLARATION');
 {
   // Planner failed but the beeline validates clean: declare a full stride,
