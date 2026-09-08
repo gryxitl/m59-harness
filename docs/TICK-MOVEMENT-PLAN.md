@@ -755,3 +755,32 @@ The three are broker-lock assertions that read real lock files from the machine,
 checkout has a live fleet that writes them. It is an environment dependency in a suite
 advertised as offline, which is worth fixing on its own terms: a test that reads `substrate/`
 is not offline, and the fix is a fixture directory rather than a change to `m59-which.mjs`.
+
+## The two 'not recovered' blocks, settled by testing rather than by re-pasting
+
+The audit correctly noted that two blocks from the pre-removal velocity section were not
+recovered: the **slide-along-wall check** and the **raycast-ahead check**, the latter including
+the clause *"corner rounded → release the fan"*. They are not the same case and they resolved
+differently.
+
+**The corner-rounded release was genuinely lost and has been restored.** It is the only thing
+that releases an engaged escape fan when the direct path becomes clear. Without it the fan
+fires on dither and never lets go, so the character oscillates. It now requires three things —
+the direct trace clear, the fan's own heading still walkable, and a fan with actual history —
+and the assertion is falsified: disabling it takes the suite 117 → 116.
+
+**The persistent slide was never lost** — `mover.mjs:856`, unchanged.
+
+**Raycast-ahead is subsumed, and that was tested rather than assumed.** The old check took one
+point one stride ahead, asked `fineWalkable` — a *square-centre* test — and fired the fan
+instead of declaring. The current mover integrates the heading in sub-steps and stops at the
+wall, so the illegal position is never constructed in the first place. Measured on the case it
+existed for (a wall one step ahead with a clear direct line to the aim): the mover steps around
+the wall and sends, and never declares a position inside it. Restoring the old block would add
+a coarser second opinion that disagrees with the integration on the same geometry — two
+predicates for one question, which is the defect this whole effort was opened to remove.
+
+So it is recorded as **deliberately not restored**, with the test that decided it, rather than
+re-pasted to satisfy a checklist item. If a case appears where the mover declares into a wall
+that the old point-check would have caught, that is a new bug and this section is the place
+that claim gets re-examined.
