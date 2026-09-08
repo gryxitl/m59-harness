@@ -784,3 +784,27 @@ So it is recorded as **deliberately not restored**, with the test that decided i
 re-pasted to satisfy a checklist item. If a case appears where the mover declares into a wall
 that the old point-check would have caught, that is a new bug and this section is the place
 that claim gets re-examined.
+
+**The number that is actually defensible is 1.00 square per packet, measured offline.**
+
+An earlier draft of this document claimed 2.24 and then 2.83 squares per packet from live logs.
+Both were wrong, and the error is worth keeping on the record because it is the same mistake the
+historical '244,021 sends' was made of: the figure was taken from whatever the log happened to
+carry. `[move-sent]` logged `from=`, the mover's **sim** position, which jumps to wherever the
+last declaration aimed. Differencing it measures the estimate, not the character. A live reading
+of 'STRIDE 4.99 squares' — twice the legal walk stride, which would have been alarming — turns
+out to be consecutive packets in different rooms, and the log carries no room id per packet, so
+that reading is not refutable from the log at all.
+
+Measured where the geometry is controlled instead — open ground, straight route, walk speed,
+positions taken from the wire — the mover declares **1.00 square per packet**, and the maximum
+declared delta is 64 units. That is within the client's 2.5-square walk stride and is the figure
+this document stands behind.
+
+It is also why the mover is not faster than the step engine yet. `MOVEUNITS_PROTO` is 16
+protocol units = one square, so the integration is asked to advance one square per tick no
+matter what the stride would allow. Reaching the client's rate means raising that constant to
+`MOVEUNITS/16 = 10` client units per MOVE_DELAY and letting the ten-tick report carry 2.5
+squares. That is a deliberate change to the speed the mover declares, with speedhack exposure
+attached, and it should not be done as a side effect of a refactor. It is left undone and named
+here rather than quietly shipped.
