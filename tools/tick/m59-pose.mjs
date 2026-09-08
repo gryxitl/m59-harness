@@ -104,6 +104,8 @@ export class Pose {
       // not a no-send gap — the divergence guard owns the drifted-sim case.)
       // GROUND IS ACCUMULATED ON EVERY ECHO, not only on the ones that moved. See noteGround.
       this.noteGround(this.server.x, this.server.y);
+      // And every echo is an answer to the declaration we still have outstanding.
+      this._corroborate(this.server.x, this.server.y);
       if (this.sim != null && this.simAt < prevUpd) {
         const scol = Math.floor(this.sim.x / KOD_FINENESS);
         const srow = Math.floor(this.sim.y / KOD_FINENESS);
@@ -164,6 +166,9 @@ export class Pose {
   // no way to know which send it is an answer to.
   noteDeclared(x, y) {
     this.lastDeclared = { x, y };
+    // Every declaration is also a claim about where we will be, which the next echo can confirm or
+    // deny. See corroboration().
+    this.noteSend(x, y);
   }
 
   // The position a seeded track starts from, exposed because it stopped being observable through
@@ -232,8 +237,56 @@ export class Pose {
     void step;
   }
 
+  // CORROBORATION: does the server ever confirm us where we said we were?
+  //
+  // This is the protection the divergence guard was never able to be. The guard compares our track
+  // to the last echo and fires when they are far apart, but a track fabricated from a declaration is
+  // BY CONSTRUCTION close to the declaration, so the largest possible bad seed (one stride, 320) sits
+  // under its threshold (384) and the guard is blind to its own cause — the finding that produced the
+  // frame fix, stated in docs/TICK-MOVEMENT-PLAN.md and left unaddressed ever since. Every attempt to
+  // test the anchor ran into this: with the advance going to the declaration, an anchored track and a
+  // fabricated one are indistinguishable by distance.
+  //
+  // They are not indistinguishable by HISTORY. A track that is telling the truth gets confirmed: the
+  // echo arrives at or near the position we declared. A track that is inventing positions never does.
+  // So this counts sends put on the wire since the last echo that landed within \`tol\` of the
+  // position they declared, and reports how many are outstanding. It is a claim about two observable
+  // quantities, which makes it testable in both directions — feed it confirmations and it reads zero,
+  // feed it denials and it climbs.
+  noteSend(x, y) {
+    this._pending = this._pending ?? [];
+    this._pending.push({ x, y, at: Date.now() });
+    // Bounded so a character that never gets corroborated cannot grow the array for the life of the
+    // session; the oldest outstanding declaration is the one that matters and it is kept.
+    if (this._pending.length > 32) this._pending.shift();
+  }
+
+  // Called from updateServer with every echo that carries a position. An echo corroborates the most
+  // recent declaration it is near; anything it is near nothing leaves the count alone, because a
+  // missing echo is not a denial — the server is silent while resting, and reading silence as refusal
+  // would fire this on every vigor stop.
+  _corroborate(px, py) {
+    if (!this._pending || this._pending.length === 0) return;
+    const tol = this.corroborateTol ?? (2 * KOD_FINENESS);
+    const last = this._pending[this._pending.length - 1];
+    if (Math.hypot(px - last.x, py - last.y) <= tol) this._pending.length = 0;
+    else this._pending.push({ x: last.x, y: last.y, at: last.at, denied: true });
+  }
+
+  // { outstanding, oldest_ms, corroborated } — the number of sends the server has not put us at,
+  // and how long the oldest has been waiting. A mover that sends a stride every second and is
+  // corroborated within one or two sends reads 0-1; a mover whose declarations the server ignores
+  // climbs without limit, which is the signature of the walk-in-place failure that was watched for
+  // hours with stuck=0 because the sim advanced on every send and the static check could not see it.
+  corroboration() {
+    const p = this._pending ?? [];
+    const oldest = p.length ? Date.now() - p[0].at : 0;
+    return { outstanding: p.length, oldest_ms: oldest };
+  }
+
   // Called on teleport / blink / room change. Our feet are no longer valid.
   reset() {
+    this._pending = [];
     this.sim = null;
     this.simAt = 0;
   }
