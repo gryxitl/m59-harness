@@ -143,6 +143,37 @@ export const SF = {
 // not zero. The height is what decides whether you fit UNDER something.
 export const PLAYER_WIDTH = 31 * KOD_FINENESS / 4;   // 496 client units
 export const PLAYER_RADIUS = PLAYER_WIDTH / 2;       // 248 — move.c:122
+
+// THE CLEARANCE IS 248, IN THE SPACE THE BSP WALLS ARE IN. NOT 3968.
+//
+// This is written down because a scaling factor was invented here once, and the reasoning that
+// produced it is the mistake worth remembering rather than the number.
+//
+// The argument was: PLAYER_RADIUS is 248, the trace works in the space where a square is 1024,
+// PLAYER_WIDTH's comment says its own space has a square of 64, therefore multiply by 16. Every
+// premise is true and the conclusion is wrong, because the spaces are not what they looked like.
+//
+// From the reference client:
+//   drawdefs.h:42  FINENESS = 1024      (a square, the client's own space)
+//   drawdefs.h:52  KOD_FINENESS = 64    (a square, the wire's space)
+//   bspload.c:448  wall->x0 = readValue(buf, room_version)   — loaded with NO scale conversion
+//   move.c:511     if ((newDistance > min_distance) ...      — compared to a BSP plane distance
+//   move.c:580     if ((d1 < min_distance2) ...              — compared to a BSP vertex distance
+//   game.c:261     player.width = 31 * KOD_FINENESS / 4; // FINENESS >> 1
+//
+// So the BSP walls are in the 1024-space and min_distance is compared DIRECTLY against them: the
+// clearance is 248 in the 1024-space, which is a quarter of a square. The 16x conversion the trace
+// needs applies to a COORDINATE being moved between spaces; it does not apply to a length that was
+// already written in the destination space. game.c:261's own trailing comment — `// FINENESS >> 1`
+// = 512 — is the author saying the figure means roughly half a square in the FINENESS space, and
+// 496 was written with KOD_FINENESS because the two are a factor of sixteen apart and easy to
+// reach for. A length is not a coordinate, and scaling it was wrong.
+//
+// The consequence of getting this backwards is not subtle: 3968 client units is 3.875 squares of
+// dead zone on each side of a wall, so no corridor in the game is walkable and the mover refuses
+// rooms it walks fine. That is the exact failure mode this whole goal started from, and I nearly
+// reintroduced it while fixing a bug of the same family.
+export const PLAYER_TRACE_CLEARANCE = PLAYER_RADIUS;
 export const PLAYER_HEIGHT = 3 * CLIENT_FINENESS / 4; // 768 — game.c:262
 export const MIN_NOMOVEON = CLIENT_FINENESS / 4;     // 256 — move.c:62
 export const MIN_SIDE_MOVE = CLIENT_FINENESS / 16;   // 64 — MOVEUNITS / 4

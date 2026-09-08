@@ -586,59 +586,35 @@ same way — a number copied between the two spaces:
 | 256 | a quarter square | right order of magnitude, wrong quantity, arrived at by coincidence with `PLAYER_HEIGHT / 3` |
 | 248 | `m59-roo.mjs:145`'s `PLAYER_RADIUS` | the right quantity in the wrong space — 0.24 squares in the trace's units, 3.875 in the protocol units its own comment is written in |
 
-The client's real clearance, converted into the space the trace uses, is **3968 client units —
-exactly two squares**. Measured: a radius of 3968 stops precisely 2.000 squares short of a wall
-line, and a radius of 248 stops 0.242 short.
+**And the figure I wrote here first was wrong, which is worth more than the number.** The
+paragraph above this one claimed the clearance was *3968 client units — exactly two squares*, and
+that a four-square corridor was therefore not walkable by trace. Every step of that derivation was
+arithmetically correct and the conclusion was false. The error is the same one the table above is
+about, one level up: it converted a **length** as though it were a **coordinate**.
 
-That number has a consequence that looks like a regression and is not one. **A four-square
-corridor is not walkable by trace at a clearance of two squares on each side.** The player
-cylinder does not fit. So the trace cannot be the thing that decides where the character walks
-in a maze — the coarse walkable-square graph already does that, and it has to keep doing it. The
-trace owns only the last few units before a wall, which is what an integration needs it for and
-what it is the only mechanism for.
+Settled from the reference client rather than from my arithmetic:
 
-This is the open question the step ends on, and it is a design question rather than a bug: at
-what clearance does the mover stop trusting the trace and start trusting the coarse graph? It
-should be answered before the velocity engine is used in a maze, because at the wrong value the
-mover will refuse rooms it can walk, which is the failure mode this whole task started from.
+| | |
+|---|---|
+| `drawdefs.h:42` | `FINENESS = 1024` — a square, the client's own space |
+| `drawdefs.h:52` | `KOD_FINENESS = 64` — a square, the wire's space |
+| `bspload.c:448` | `wall->x0 = readValue(buf, room_version)` — loaded with **no** scale conversion, so BSP walls are in the 1024-space |
+| `move.c:511` | `if ((newDistance > min_distance) ...)` — compared directly against a BSP plane distance |
+| `move.c:580` | `if ((d1 < min_distance2) ...)` — compared directly against a BSP vertex distance² |
+| `game.c:261` | `player.width = 31 * KOD_FINENESS / 4; // FINENESS >> 1` |
 
-## The two laws that settled Step 3
+`min_distance` is compared *directly* against coordinates that are already in the 1024-space, so
+the clearance is **248 in the 1024-space — a quarter of a square** — and no conversion applies.
+The ×16 conversion is for moving a *coordinate* between spaces; a length written in the destination
+space does not take it. `game.c:261`'s own trailing comment is the author annotating the FINENESS
+figure (`FINENESS >> 1` = 512) beside the KOD one (496) — the two constants are a factor of sixteen
+apart and easy to reach for, which is how the mistake was available to make in the first place.
 
-Step 3 opened with a question the summary carried as a blocker — Model A or Model B, does the
-server accept a declared position or walk the character toward it — and three tests that could
-not pass until it was answered. Both halves turned out to be already written down in this
-repository, in files I had not read.
-
-**The server carries the character.** `m59-game.mjs:207-222`, worked out from `move.c:184/49/53`
-and `draw3d.h:53`: `MOVEUNITS` is `FINENESS>>2` = 256 client units per `MOVE_DELAY` = 100 ms, so
-walking is 2.5 squares/s and running 5.0, and `move.c:59` reports at most once per
-`MOVE_INTERVAL` = 1000 ms. One packet covers about five squares. The file's own sentence is the
-corrected diagnosis of everything before it: *"one packet covering about five squares, not five
-packets covering one square each."* The rig in `m59-mover-test.mjs` asserted the opposite in a
-comment and then implemented the opposite in the four lines below it. A rig that contradicts
-itself in consecutive lines is not a specification, and two of the three failures were that rig
-pinning the step model's behaviour — a guaranteed second send — as though it were a law.
-
-**The player is a cylinder, and its clearance is already exported.** `m59-roo.mjs:143-145` has
-`PLAYER_WIDTH = 31 * KOD_FINENESS / 4` and `PLAYER_RADIUS = 248`, citing the same `move.c:122` I
-had derived from independently. The mover imported that constant on line 33 from its first commit
-and passed `playerRadius: 1` to the trace anyway. Four drafts of the clearance were wrong the
-same way — a number copied between the protocol space (a square is 64) and the trace's client
-space (a square is 1024) without converting:
-
-| draft | what it was | what it did |
-|---|---|---|
-| 1 | a point | a point can be placed on a wall line and a player cannot; the mover parked one client unit from a wall and the test reported that as stopping *at* it |
-| 48 | `move.c:100`'s `min_distance` | `move.c:122` overwrites it two lines later; the initialiser is not the value in force |
-| 256 | a quarter square | right magnitude, wrong quantity, matched `PLAYER_HEIGHT / 3` by coincidence |
-| 248 | `PLAYER_RADIUS` | the right quantity, and the codebase's own answer — taken in the space its own comment is written in |
-
-The consequence of the last row is worth stating because it looks like a regression and is not
-one: at the client's clearance converted into the trace's units, the dead zone on each side of a
-wall is a large fraction of a square, so **the trace cannot be what routes a maze**. The coarse
-walkable-square graph owns corridors and has to keep owning them; the trace owns the last units
-before a wall, which is what an integration needs and the only thing it is for. Asking the trace
-to plan a route is asking a collision test to do pathfinding.
+The consequence of the wrong figure is not a rounding detail: 3968 client units is 3.875 squares of
+dead zone on each side of every wall, so **no corridor in the game is walkable** and the mover
+refuses rooms it walks perfectly well. That is the exact failure mode this whole goal started from,
+reintroduced while fixing a bug of the same family — and the only thing that caught it was a test
+that disagreed with the implementation, which is the reason the test was worth writing.
 
 **Rounding has to know whether it stopped.** `_roundBackward` rounds away from the wall, because
 the integration returns a fractional protocol position and the wire carries whole units

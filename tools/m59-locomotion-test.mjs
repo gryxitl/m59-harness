@@ -40,7 +40,7 @@
 // day someone reintroduces the behaviour. `git checkout 2d44a48^ -- tools/tick/m59-mover.mjs`
 // is then a real check that this suite can see the bug at all, which is exactly how it was
 // verified: with the baseline mover restored, this file fails.
-import { Mover as CurrentMover, STEPS_PER_MOVE as STEPS_PER_MOVE_CONST, WALK_STRIDE_PROTO, MOVEUNITS_PROTO, PLAYER_WALL_CLEARANCE_CLIENT_UNITS } from './tick/m59-mover.mjs';
+import { Mover as CurrentMover, STEPS_PER_MOVE as STEPS_PER_MOVE_CONST, WALK_STRIDE_PROTO, MOVEUNITS_PROTO } from './tick/m59-mover.mjs';
 // The pre-fix mover, kept as a separate module so the before/after comparison can be run in
 // one process. It is evidence for the diagnosis, not the thing under audit.
 import { Mover as PreFixMover } from './tick/m59-mover-preFix.mjs';
@@ -70,6 +70,15 @@ import { Mover as PreFixMover } from './tick/m59-mover-preFix.mjs';
 // reading the send sites, and the answer is asserted against the live mover below.
 import { Pose } from './tick/m59-pose.mjs';
 import { ReferenceRoom, referenceGeometry, protocolToClient, clientToProtocol, KOD_FINENESS, MOVE_INTERVAL, STEPS_PER_MOVE } from './m59-locomotion-oracle.mjs';
+// THE CLEARANCE COMES FROM THE PLAYER, NOT FROM THE ENGINE UNDER TEST.
+//
+// This used to import PLAYER_WALL_CLEARANCE_CLIENT_UNITS from './tick/m59-mover.mjs', which made
+// the whole suite unfalsifiable in a way no test result can show. Swapping in the pre-fix mover
+// this suite was written to catch did not produce a failure — it produced a SyntaxError at import,
+// because the older mover does not export that symbol. An import error is neither a pass nor a
+// fail; it is the absence of a test, and it is invisible to a harness that greps for a summary
+// line. The clearance is a property of the player, and m59-roo.mjs owns the player.
+import { PLAYER_TRACE_CLEARANCE } from './m59-roo.mjs';
 
 let pass = 0, fail = 0;
 const ok = (what, cond, detail) => {
@@ -614,6 +623,60 @@ let velocitySends = 0;
   ok(`DIAGNOSTIC (wall the mover can see): branch ran=${tookBranch}, violations=${velocityViolations.length}`, true);
 }
 
+console.log('\nTHE WALL LAW, AGAINST BOTH FORMULAS (the assertion that can actually fail)');
+{
+  // WHY THIS SECTION EXISTS RATHER THAN ANOTHER RUN OF THE MOVER.
+  //
+  // The contract for this step asked for an assertion proving a character walking at a wall sends
+  // a position AT the wall rather than past it. The sections above appear to do that and do not:
+  // they import STEPS_PER_MOVE, WALK_STRIDE_PROTO and MOVEUNITS_PROTO from the mover, symbols
+  // that only exist in the code written to fix the bug. Pointed at the mover that HAD the bug the
+  // suite did not fail — it threw a SyntaxError at import. An import error is neither a pass nor a
+  // fail; it is the absence of a test, and it is invisible to anything that reads a summary line.
+  // A test that cannot be run against the defect it was written for cannot catch it, and this one
+  // was written for a defect it in fact never observed.
+  //
+  // So the law is asserted against the two FORMULAS, side by side, on one geometry. The old one is
+  // transcribed from 2d44a48^: `beelineClear` stopped its lookahead at the first blocked waypoint
+  // and then fell back to a full stride projected along the aim, consulting no collision at all.
+  // The new one is the mover's integration. If a future change reintroduces the fallback, the
+  // first assertion below is the one that says so, and it can say so without loading the old file.
+  const me = { x: 6 * KOD_FINENESS + 32, y: 3 * KOD_FINENESS + 32 };
+  const dest = { x: 11 * KOD_FINENESS + 32, y: 3 * KOD_FINENESS + 32 };
+  const d = Math.hypot(dest.x - me.x, dest.y - me.y);
+  const ux = (dest.x - me.x) / d, uy = (dest.y - me.y) / d;
+
+  // 2d44a48^ mover: the fallback that declared a position inside the wall.
+  const legacy = Math.round(me.x + ux * WALK_STRIDE_PROTO);
+  const legacyClient = protocolToClient(legacy);
+
+  // The restored engine: same heading, same stride, sub-stepped and collision-checked.
+  const geoA = referenceGeometry(makeRoom());
+  const WALL_LINE_A = WALL_X;
+  // One sub-step of the integration: a stride divided by the client's own STEPS_PER_MOVE. This is
+  // the resolution the law can be expected to have, and the tolerance is not generosity — asking
+  // for better than one sub-step is asking the integration for a precision it does not claim.
+  const ONE_SUBSTEP = protocolToClient(WALK_STRIDE_PROTO / STEPS_PER_MOVE) - protocolToClient(0);
+  const probe = new CurrentMover({ name: 'law', policy: {}, world: { geometry: geoA } }, {});
+  const moved = probe._integrateToward(geoA, me.x, me.y, dest.x, dest.y, WALK_STRIDE_PROTO,
+    { dt: 1000, numSteps: STEPS_PER_MOVE, playerRadius: PLAYER_TRACE_CLEARANCE });
+  const repaired = probe._roundBackward({ ...moved, fromX: me.x, fromY: me.y }, dest);
+
+  const legal = WALL_LINE_A - PLAYER_TRACE_CLEARANCE;
+  console.log(`  old fallback: protocol ${legacy} = client ${legacyClient.toFixed(0)} (legal line ${legal})`);
+  console.log(`  new engine:   protocol ${repaired.x} = client ${protocolToClient(repaired.x).toFixed(0)} stopped=${moved.stopped ?? 'clear'}`);
+
+  // THE ASSERTION THAT MAKES THE OTHER ONE MEANINGFUL. If both formulas agreed there would be
+  // nothing to prove and this block would be deleted rather than kept as decoration.
+  ok('the old fallback would have sent past the wall (the law can fail)',
+     legacyClient > legal, `old fallback client ${legacyClient.toFixed(0)} vs legal ${legal}`);
+  ok('the restored engine sends AT the wall, not past it',
+     protocolToClient(repaired.x) <= legal && protocolToClient(repaired.x) > legal - ONE_SUBSTEP,
+     `new engine client ${protocolToClient(repaired.x).toFixed(0)} vs legal ${legal}`);
+  ok('and it stopped for a reason rather than arriving clear',
+     moved.stopped != null, String(moved.stopped));
+}
+
 console.log('\nthe same room, the current step engine');
 {
   const r = rig(CurrentMover, {});
@@ -801,7 +864,7 @@ console.log('\nA CHARACTER WALKING AT A WALL SENDS A POSITION AT THE WALL (step 
   // drift from the implementation again. If the mover's clearance changes, what "at the wall"
   // means changes with it, in the same commit, or the suite will say so.
   const WALL_LINE = WALL_X;
-  const CLEARANCE = PLAYER_WALL_CLEARANCE_CLIENT_UNITS;
+  const CLEARANCE = PLAYER_TRACE_CLEARANCE;
   const WHERE_IT_MAY_REST = WALL_LINE - CLEARANCE;
   // The wire carries WHOLE protocol units (protocol.h:75 passes an int), and one protocol unit
   // is 16 client units, so the closest position that can physically be declared is up to one
