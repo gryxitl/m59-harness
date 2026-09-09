@@ -542,3 +542,36 @@ Until (2) is fixed, no `travel` order can be delivered to t4 or t5 at all — wh
 this goal could not put a destination in front of t4 even though t3 accepted one immediately. It
 also means the audit's "t4: 0 destinations" is not a mover defect and cannot be closed by any
 change to the mover.
+
+## 14. t3 walking a live route: 1.23 squares/s, 49% of the client's walk rate
+
+Measured on `substrate/keeper-t3.log` with `node tools/m59-rate-live.mjs --contig`, after giving t3
+a destination it actually accepted (`travel to 535` on its own port). t3 left the Brownestone Inn,
+reached **101 North Barloque**, and kept walking:
+
+```
+   760 packets, 1135.1 squares in  950 s = 1.19 sq/s (48% of walk)
+   547 packets,  839.7 squares in  684 s = 1.23 sq/s (49% of walk)
+   580 packets,  889.7 squares in  726 s = 1.23 sq/s (49% of walk)
+   490 packets,  754.7 squares in  613 s = 1.23 sq/s (49% of walk)
+   576 packets,  889.7 squares in  721 s = 1.23 sq/s (49% of walk)
+   636 packets,  973.5 squares in  793 s = 1.23 sq/s (49% of walk)
+```
+
+**This is the number the goal was after, and it is four times the 0.31 sq/s measured on t1.** The
+difference is not the engine — t1 and t3 run the same mover — it is that t3 was given a destination
+it could actually route to and was left alone to walk it. t1 spends its time in the escape fan and
+the decider's rest cycles. **The fleet's speed is dominated by how much of its time is spent with a
+route it can walk, not by squares per packet.**
+
+Squares per packet on t3 is **1.43**, against the offline fixture's 2.00 and the client's 2.5. The
+gap between 1.43 and 2.00 is real terrain: walls, doorways and the fan eating sends.
+
+**A FALSE ALARM I RAISED AND WITHDRAW, recorded because it nearly threw away a good result.** These
+windows all report 0.800 packets/second, and I read that as a sampling artefact — a fixed grid
+faking a rate — and nearly reported the measurement as circular. It is not: 0.800 pk/s is the mover's
+own send cadence (one send per 1250 ms, by design), and the varying quantity is squares per packet,
+which does vary (1.4936, 1.5351, 1.5340, 1.5402, 1.5446, 1.5307). The instrument differences
+`r[i].srv` — **server** positions, with room transitions excluded by distance — not declarations.
+My alarm came from dividing by a stale figure I had in my head (1.4738) instead of the one printed.
+Retracted on the same turn it was raised.
