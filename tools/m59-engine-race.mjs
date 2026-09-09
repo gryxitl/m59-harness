@@ -67,6 +67,11 @@ async function race(MoverClass, label) {
   const geo = openGeometry();
   const sent = [];
   const self = { col: 1, row: 2, x: 1 * KOD + 32, y: 2 * KOD + 32 };
+  // KEPT, not just used to build `self`. The ground measurement has to difference from where the
+  // character actually started, and recomputing `1 * KOD + 32` at the far end of this function would
+  // be a second copy of the origin — the same class of bug as the two 1050 literals, where one copy
+  // gets edited and the other quietly becomes false.
+  const start = { x: self.x, y: self.y };
   let clockMs = 0;
   const realNow = Date.now;
   Date.now = () => clockMs + realNow.call(Date);
@@ -114,9 +119,29 @@ async function race(MoverClass, label) {
   Date.now = realNow;
 
   // Ground from the positions the SERVER was told, which is the only ground that counts.
+  //
+  // THE FIRST PACKET CARRIES GROUND AND THIS USED TO THROW IT AWAY. The loop began at i = 1 and
+  // differenced consecutive sends, so the ground covered between the character's starting position
+  // and the first declaration was never counted — while `sec` below divides by the FULL elapsed
+  // time including that first interval. N packets of ground over N+1 intervals' worth of time.
+  //
+  // The size of the error is one packet's worth of ground, which at a 5-square stride on a 30-square
+  // road is 17% of the total. It is also NOT uniform: it scales inversely with road length, so short
+  // roads were understated worst and the numbers were never comparable across lengths. Every rate
+  // this harness has ever printed was low by that much, including the 4.17 sq/s and the "83% of the
+  // client" in the plan document, and including the step engine's 0.97 — which means the step engine
+  // was also understated and the RATIO between engines was roughly right while both absolutes were
+  // wrong. A ratio of two wrong numbers in the same direction is how a measurement survives being
+  // wrong for this long: the comparison looked sound and the headline number was not.
+  //
+  // Fixed by seeding the differencing chain with the position the character actually started at,
+  // which the rig knows and previously did not need to keep.
   let ground = 0;
-  for (let i = 1; i < sent.length; i++)
-    ground += Math.hypot(sent[i].x - sent[i - 1].x, sent[i].y - sent[i - 1].y) / KOD;
+  let prev = { x: start.x, y: start.y };
+  for (let i = 0; i < sent.length; i++) {
+    ground += Math.hypot(sent[i].x - prev.x, sent[i].y - prev.y) / KOD;
+    prev = sent[i];
+  }
   const sec = (arrivedAt ?? (sent.length ? sent[sent.length - 1].t : 0)) / 1000;
   const rate = sec > 0 ? ground / sec : 0;
   return { label, packets: sent.length, ground, sec, rate, arrived: arrivedAt !== null };
