@@ -1960,3 +1960,68 @@ elapsed time.
 never carried a timestamp, so the inter-packet gap has never been recorded anywhere in the history of
 this project; the histogram is the first evidence, and it needs a day of live running before anyone
 should treat "the margin is fine" as established rather than as a hypothesis with a counter attached.
+
+---
+
+## 2026-09-08 (later still) — there was no 8% left. The harness was eating the first packet
+
+Asked to "provide the correct distance to hit max speed", I went to find the missing distance and
+there wasn't one. **The engine is at the client's speed in both gaits.** The 8% deficit reported two
+sections ago was an off-by-one in the measurement.
+
+### The bug
+
+```js
+for (let i = 1; i < sent.length; i++)          // starts at 1
+  ground += Math.hypot(sent[i] - sent[i-1]) / KOD;
+const sec = arrivedAt / 1000;                   // full elapsed, first interval included
+```
+
+Starting the differencing chain at `i = 1` never counts the ground between the character's **starting
+position** and the **first declaration** — while the denominator includes that first interval. N
+packets of ground divided by N+1 intervals. The first packet of every run was free labour.
+
+The error is one packet's ground: at a 5-square stride over 30 squares, **17% of the total**. It is
+not a constant offset either — it scales inversely with road length, so short roads were understated
+worst and figures from different lengths were never comparable.
+
+### Measured, correctly, at 1000 ms cadence
+
+| gait | step engine | velocity engine | client | % of client |
+|---|---|---|---|---|
+| walk | 1.00 (40%) | **2.50 sq/s** | 2.5 | **100%** |
+| run | 1.00 (20%) | **5.00 sq/s** | 5.0 | **100%** |
+
+`velocity / step` = 2.50x walking, 5.00x running.
+
+### What this invalidates, and what it does not
+
+The step engine was understated by the **same mechanism** (0.97 → 1.00). So the velocity/step *ratio*
+was roughly right throughout — which is precisely why the error survived every check available. A
+ratio of two numbers wrong in the same direction looks sound. Every `% of the client` figure this
+harness ever printed was low, and every one was cited as evidence we were short of the client's rate.
+
+Corrections to the record in this document: the "87% of the client", "83% of the ceiling" and "92% of
+the client walk" figures are all superseded. They were low by one packet's ground.
+
+### Falsified before being believed
+
+I wrote the harness minutes before reading a perfect number off it, so the number got checked. The
+rig adopts declared positions without argument (`moveTo` sets `self.x = x`), so it **cannot detect a
+server that refuses a 320-unit declaration** — the one thing that would make 5.00 fictional. Checked
+against the live shard instead: the range probe declared 1–5 squares per packet at t4 on the real
+server and returned **16/16, 12/12, 12/12, 12/12, 12/12** landings at the full declared distance. Five
+squares per packet is proven on the live server, not assumed by a rig.
+
+### The answer to the question as asked
+
+"Provide the correct distance to hit max speed" — the distance was already correct.
+`RUN_STRIDE_PROTO = 320` protocol units = 5 squares, and the per-packet log shows hops of exactly 320
+on **every** packet including the first. We are simultaneously at the packet cap (one per 1000 ms) and
+at the distance the client covers in a second. There was no distance left to find.
+
+### The lesson, stated where it can be read twice
+
+`5.00 sq/s` looked **too good to be true**, so it was checked. `4.17 sq/s` looked plausible enough not
+to be, and it was wrong. A measurement that flatters the work is the one that needs the adversarial
+check, and plausibility is not evidence — it is the feeling that stops people looking.
