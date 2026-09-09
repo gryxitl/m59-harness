@@ -18,6 +18,14 @@ node_modules/
 # plain text, and the flight recordings are one server's history, not reference.
 /substrate/fleet-state.json
 /substrate/fleet-state.json.*
+# Manual backups of the roster. This directory exists because the live characters'
+# plaintext passwords are in fleet-state.json, NOT in fleet-accounts.json as the
+# project instructions say — so the file the docs tell us never to lose is not the one
+# that would lose them. The rule naming only fleet-state.json and its dot-suffixes does
+# not cover a copy under a new directory name, and a `git add substrate/credential-backup`
+# would push five account passwords to the remote in plaintext. Ignore the directory
+# itself, not just files that happen to share the original's name.
+/substrate/credential-backup/
 # Named fleets (--fleet <name>) keep a roster each under here. Same plaintext
 # passwords as the file above, one file per server, so the whole directory goes —
 # a rule naming only fleet-state.json stops covering the roster the moment anyone
