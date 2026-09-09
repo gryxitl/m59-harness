@@ -561,7 +561,24 @@ console.log('\nblocked direct path: the escape fan takes over');
     if (r.state === 'stuck' || r.state === 'arrived') break;
   }
   ok('a character that is not moving escalates to the escape fan', fan != null, `fanIndex=${fan}`);
-  ok('the fan starts at heading 0', fan === 0, String(fan));
+  // THE FAN MUST NOT SPEND ITS FIRST HEADING ON A NO-OP.
+  //
+  // This asserted `fan === 0`. Under the old code that passed for a bad reason: this
+  // fixture blocks EVERY segment, so heading 0's probe lands exactly on the square the
+  // character is already standing in, and the fan sent it anyway. The assertion was
+  // therefore checking that a packet declaring the character's own position goes out —
+  // which is precisely the behaviour that cost a day of fleet speed analysis, because the
+  // mover reports state 'raw-move' for it and it looks like escaping in the logs and on
+  // the dashboard. Measured on one keeper process: 153 fan packets declared a position
+  // exactly equal to the server's, all of them from the 16-unit probe, and the server
+  // simply had nothing to do with any of them (user.kod:3099 passes the position through
+  // verbatim, so there is no refusal to observe).
+  //
+  // So the assertion is now the thing that matters: the fan engages, and it declines
+  // headings that cannot leave the square, which means it advances past them. Requiring
+  // specifically `0` would be requiring the bug.
+  ok('the fan declines a heading that cannot leave our square', fan !== 0, String(fan));
+  ok('and it advances rather than spinning on it', fan > 0 && fan < 9, String(fan));
 }
 console.log('\nTHE 5s ANTI-DEADLOCK FLOOR (the gate/fan stall fix)');
 {
