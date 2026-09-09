@@ -690,3 +690,65 @@ The corollary matters for what to work on next: **the fleet's rate is a property
 does, not of how it moves.** Making the characters fight less, or rest less, or pick targets they can
 kill without a long fight, moves the number. Making the mover declare further has already been done
 and is nearly free of loss when it fires.
+
+## 18. The step engine WAS slow, and my metric is what said otherwise
+
+Someone who watched the characters said the step engine ran at one square per second and was
+"suuuper slow and janky." That is a direct observation of the artefact. My session-wide numbers
+said the restored velocity engine was *slower end-to-end* (0.91 vs 0.95 sq/s), and I accepted my own
+number over the observation. It was wrong, and here is the experiment that settles it.
+
+`node tools/m59-engine-race.mjs` — both real mover classes, on identical open ground, 30 squares,
+one virtual clock so nothing but walking happens and there is no denominator to argue about. The
+pre-fix class is `tools/tick/m59-mover-preFix.mjs`, byte-identical to `git show 2d44a48^` (an
+independent audit verified diff = 0 lines), so this is the engine that shipped, not a reconstruction.
+
+```
+engine      arrived  packets   ground      time      sq/s     % of client walk
+step        true         30    29.0 sq   31.5 s    0.92      37%
+velocity    true         15    27.5 sq   15.8 s    1.75      70%
+
+velocity / step = 1.90x on identical ground
+```
+
+**1.90x, and it arrives in half the packets — 15 against 30.** The observation was right.
+
+**Why the session-wide metric hid it.** It divides ground by the session's WALL-CLOCK duration,
+which is 72% combat and 13% resting. A per-packet improvement is *suppressed* by that denominator:
+the more idle time in the window, the less a doubled stride shows. Two engines measured that way are
+compared through how much of their time was spent not moving, which has nothing to do with either
+engine. Worse, the step-engine figure (0.95) and the velocity figure (0.91) were taken at different
+times, on different characters, over different sessions — they were never a controlled comparison at
+all, and I wrote a section titled "the verdict on this goal, stated as a failure" on the strength of
+it. That section is superseded by this one.
+
+**What the live numbers say now, measured per walk (`tools/m59-point-to-point.mjs`):**
+
+| | median walk | % of client walk |
+|---|---|---|
+| t2 | 1.15 sq/s | 46% |
+| t3 | 0.68 sq/s | 27% |
+| t1 | 0.46 sq/s | 18% |
+| t4 | 0.35 sq/s | 14% |
+| t5 | 0.28 sq/s | 11% |
+
+Against the offline 1.75 sq/s on open ground, the live spread is terrain: the same engine earns 46%
+on one character's routes and 11% on another's. That is now a question about routes, and it is
+measurable per walk instead of averaged into a session.
+
+**Three measurement errors made while building this, all mine, all recorded rather than deleted:**
+
+1. `tools/m59-point-to-point.mjs` first matched `srv=(20,40)` from the `[movestuck]` diagnostic — a
+   SQUARE, not a fine coordinate — and divided by 64 again, reporting 0.01 sq/s for a character the
+   other instrument measured crossing six thousand squares. It looked plausible because it was bad
+   news I expected.
+2. It then reported "best single walk 11.57 sq/s (463% of client walk)" — two lines stamped in the
+   same millisecond divided at each other. Now guarded by a minimum duration and a ceiling above the
+   client's RUN speed, with exclusions printed by reason.
+3. A run-detector that reset on any non-stride line, including diagnostics, reported "0 contiguous
+   stride runs" and nearly sent me looking for an alternating-packet defect that does not exist.
+
+And one claim I made in the previous section and withdraw: "0 of 6,222 declarations adopted by the
+server." `srv=` is logged at submit time, before the server has moved. Counted properly, 5,894 server
+readings land on positions we declared, across 534 distinct declarations. The server does adopt. The
+declarations are not being ignored.
