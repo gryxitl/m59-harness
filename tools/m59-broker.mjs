@@ -946,7 +946,106 @@ class KeeperProxy {
     // still understands this. They disagreed once and every journey silently failed.
     return keeperAction(this.name, this._index, 'travel', { to: toRoomNum, toRoomNum, ...opts });
   }
+
+  // THE TRAVEL JOB SLOT, FOR A CHARACTER WE DO NOT DRIVE IN-PROCESS.
+  //
+  // `Session.travelJob` (m59-game.mjs:1182) claims a job slot and stands the keeper inert
+  // for the walk. Neither half of that transfers here, and pretending otherwise is what
+  // broke travel for every keeper-backed agent: the router belongs to the KEEPER process,
+  // which owns the tick loop, so the broker has no loop to stand down and no hold that
+  // could survive being wrong.
+  //
+  // WHAT THIS ONE DOES INSTEAD, AND WHY IT IS NOT WEAKER.
+  //
+  // It records the order, refuses a SECOND ORDER FROM THE SAME CALLER while one is live,
+  // and resolves when the character ARRIVES or the keeper REFUSES. It does not try to own
+  // the character for the duration of the walk, because it cannot: the keeper goes on
+  // hunting, resting and taking safe spots throughout, and `router.to()` — the single
+  // authority on where a character is going — overwrites `dest` for whoever asks last
+  // (m59-route.mjs:165). A broker-side slot that outlives that fact is a claim about the
+  // world the world is not obliged to honour.
+  //
+  // THE FIRST VERSION OF THIS HELD THE SLOT FOR THE WHOLE TIMEOUT, AND THAT WAS A BUG I
+  // SHIPPED AND FOUND LIVE. `maxHops: 25` bought a 37-minute slot. The rejoin path
+  // (see the `apply` caller) re-issues an assigned room at startup through this same
+  // method, so every character came back from a broker restart un-orderable for half an
+  // hour, and the operator's travel was refused by a walk they never asked for — with the
+  // destination rendered as "undefined", because that caller passes `where: o.room_name`
+  // and the room name is not always known. Refusing a human for the convenience of a
+  // background assignment is backwards. So an operator call takes the slot over, and the
+  // superseded job resolves as superseded rather than hanging.
+  //
+  // Returns the SAME SHAPE as Session.travelJob — an object with a `.promise` — so the
+  // travel tool has ONE code path. A tool that had to branch on which kind of session it
+  // held is how the foreground arm ended up calling a method that does not exist and
+  // reporting "Cannot read properties of null (reading 'promise')".
+  travelJob(dest, { where = `room ${dest}`, maxHops = 25, timeoutMs = 0, takeover = false } = {}) {
+    const prior = this._travelJob;
+    if (prior && !prior.done && !takeover) {
+      throw new Error(`${this.name} is already walking to ${prior.where ?? `room ${prior.dest}`}`
+        + ' — cancel_movement first, pass takeover:true to send it somewhere else instead,'
+        + ' or use another character');
+    }
+    // A TAKE-OVER ENDS THE OLD JOURNEY EXPLICITLY. Its own waiter is still polling, and
+    // without this it would keep reporting progress for a walk that has been re-pointed,
+    // then resolve as if it had arrived.
+    if (prior && !prior.done) prior.superseded = true;
+    const job = { kind: 'travel', label: `walk to ${where}`, where, dest,
+                  startedAt: Date.now(), done: false, superseded: false };
+    this._travelJob = job;
+    job.promise = (async () => {
+      const r = await this.travel(dest, { maxHops });
+      // A REFUSAL IS NOT A JOURNEY. Release the slot at once so the operator can re-order
+      // instead of waiting out a timeout on a walk that never started. This is the case
+      // that matters most: `router.to()` refuses a hazard room and says why, and that
+      // answer is the whole point of the call.
+      if (r?.error || r?.sent === false) return r;
+      const budget = timeoutMs || Math.min(num(maxHops, 25) * 90000, 900000) + 120000;
+      return this._awaitArrival(dest, budget, job).then(out => ({ ...r, ...out }));
+    })().finally(() => { job.done = true; job.finishedAt = Date.now(); });
+    // Nobody is obliged to await it — background travel and the rejoin path do not — so
+    // absorb the rejection here or a failed journey becomes an unhandled rejection and
+    // takes the broker, and every session in it, down with it.
+    job.promise.catch(() => {});
+    return job;
+  }
+
+  // POLL THE KEEPER FOR ARRIVAL. The keeper's room is the only authority: the proxy's
+  // own `_state` carries a TTL and would report the room the character left seconds ago.
+  // The keeper refreshes its server-side cache every 2s (keeper-process.mjs:1477), so a
+  // 1.5s poll cannot step over a room and cannot miss an arrival by more than one poll.
+  async _awaitArrival(dest, budgetMs, job) {
+    const deadline = Date.now() + budgetMs;
+    const want = Number(dest);
+    let lastRoom = this._state?.room?.num ?? null;
+    const visited = [];
+    while (Date.now() < deadline) {
+      // SUPERSEDED: an operator re-pointed this character, or the keeper restarted. Say so
+      // rather than reporting success for a walk somebody stopped.
+      if (job.superseded || this._travelJob !== job) {
+        return { arrived: false, superseded: true, path: visited };
+      }
+      const s = await keeperState(this.name, this._index);
+      const room = s?.room?.num ?? null;
+      if (room != null && room !== lastRoom) {
+        lastRoom = room;
+        visited.push({ at: Date.now(), room, name: s?.room?.name ?? null });
+        if (visited.length > 40) visited.shift();
+        if (room === want) return { arrived: true, hops: visited.length, path: visited };
+      }
+      await new Promise(res => setTimeout(res, 1500));
+    }
+    return { arrived: false, timedOut: true, hops: visited.length,
+             last_room: lastRoom, path: visited };
+  }
+
   async cancelMovement(token) {
+    // RELEASE THE TRAVEL SLOT AS WELL AS THE MOVEMENT. The keeper cancels the walk, but
+    // the job slot lives here, and _awaitArrival only lets go when the job object is no
+    // longer the live one. Without this line a cancelled character stays "already
+    // walking to X" for the whole timeout, and every later travel is refused by a busy
+    // guard for a journey that ended two minutes ago.
+    if (this._travelJob && !this._travelJob.done) this._travelJob.cancelled = true;
     return keeperAction(this.name, this._index, 'cancel', {});
   }
 
@@ -2905,6 +3004,42 @@ async function factionSpeech(s, text) {
   return c.eventsSince(before).filter(event => event.text).map(event => event.text);
 }
 
+// HOP COUNT FOR A CHARACTER WE MAY OR MAY NOT DRIVE IN-PROCESS.
+//
+// `s.world.route()` was the only way this tool could ask how long a trip is, and
+// `KeeperProxy.world` is a summary object — `{ room: { name, num, id } }` — with no
+// methods on it at all. So for every keeper-backed agent this line threw, which meant
+// background travel reported `isError` AFTER the journey had already been handed to the
+// keeper: the character was walking and the caller was told it failed. Foreground travel
+// threw one line later for the same reason and never started anything.
+//
+// Ask the map directly instead. `findPath(map, from, to)` needs only the two room
+// NUMBERS, both of which a proxy already has — the destination from the caller and the
+// current room from the keeper's state — so it works for a Session and a KeeperProxy
+// without either one having to grow a World.
+//
+// IT RETURNS AN OBJECT WITH `.hops`, NOT AN ARRAY. `s.world.route(dest)?.length` was
+// therefore wrong even for a real Session, where it evaluated to `undefined` on every
+// successful route: the field silently lied for the in-process characters too. Read
+// `.hops.length`, which is what m59-game.mjs:7191 does.
+//
+// A hop count is a courtesy, not a promise: the keeper re-plans on arrival and may take a
+// different road, so `null` on failure is correct and must not stop the walk. The search
+// is expensive on its FIRST call per pair (~4s, the lazy reverse-edge build) and free
+// afterwards; the broker pre-builds that at startup (see the `[routes]` line), so on a
+// running broker this is sub-millisecond and cannot stall a keeper's HTTP.
+function plannedHops(s, dest) {
+  try {
+    const from = s?.world?.room?.num ?? s?._state?.room?.num ?? null;
+    if (from == null) return null;
+    const p = findPath(worldMap, from, Number(dest));
+    return p?.found ? (p.hops?.length ?? null) : null;
+  } catch {
+    // Never let a routing estimate break a journey that is already underway.
+    return null;
+  }
+}
+
 const TOOLS = [
   {
     name: 'join',
@@ -3149,15 +3284,27 @@ const TOOLS = [
       // Both the slot and the keeper hold now live on `Session.travelJob`, because this
       // tool having its own private copy of them is precisely why every other caller in
       // the file had neither. ONE definition, two ways to wait for it.
+      // AN EXPLICIT TRAVEL CALL IS AN OPERATOR ORDER AND OUTRANKS A BACKGROUND ONE.
+      //
+      // The slot exists to stop two callers driving one character, not to let a stale
+      // background assignment veto the human who is talking to us. `router.to()` — the
+      // keeper's own authority — re-points on request regardless of what the broker thinks
+      // is in flight, so refusing here does not prevent a redirection, it only hides one.
+      // The superseded journey resolves as `superseded` so whoever issued it learns.
+      //
+      // `runErrands` STAYS ON THIS CALL SITE EVEN THOUGH A PROXY IGNORES IT. It is a real
+      // feature — bank the takings and stock up before a long trip — and the in-process
+      // `Session` characters use the same call. Dropping it to keep the proxy's signature
+      // tidy quietly switched errands off for those characters, which is exactly the kind
+      // of silent behaviour loss m59-resumetravel-test exists to catch, and did.
       const startTravel = () => s.travelJob(dest, {
-        where: where.name, maxHops: num(a.max_hops, 25), controlToken: a.control_token,
+        where: where.name, maxHops: num(a.max_hops, 25), takeover: true,
         runErrands: a.run_errands !== false,
       });
 
       if (a.background) {
         startTravel();
-        const hops = s.world.route(dest)?.length ?? null;
-        return { started: true, destination: where, hops,
+        return { started: true, destination: where, hops: plannedHops(s, dest),
                  note: 'walking now; poll `fleet` or `status` — do not re-issue while busy' };
       }
       const r = await startTravel().promise;
