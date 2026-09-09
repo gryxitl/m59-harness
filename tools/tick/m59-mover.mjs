@@ -2742,9 +2742,50 @@ export class Mover {
   // that bypass the pacer to avoid queue delay).
   _claimMoveSlot() {
     const t = Date.now();
-    if (t - (this._lastMoveSubmitAt ?? 0) < (this._moveCapMs ?? 1050)) return false;
+    const cap = this._moveCapMs ?? 1050;
+    if (t - (this._lastMoveSubmitAt ?? 0) < cap) return false;
+    // THE ONE MEASUREMENT THAT DECIDES WHETHER THE CADENCE IS LEGAL, AND WE HAVE NEVER HAD IT.
+    //
+    // user.kod:2937 keeps piMovesCounter = (c + 1) - iDelta, where iDelta is the WHOLE SECONDS
+    // since the last packet, and raises an ALERT above 2. Two packets inside one server second give
+    // iDelta = 0, so the counter climbs 1, 2, ALERT. A 1000 ms cadence is therefore safe in the
+    // average and unsafe under jitter, and the margin is exactly one packet.
+    //
+    // Every squares-per-second claim in this project has been made without knowing the answer, and
+    // the reason is boring: our own log lines carry no timestamps at all. The inter-packet gap has
+    // never been recorded, so "is our cadence inside the server's tolerance" has been argued from
+    // the constant rather than measured, which is how 1050 ms came to be defended as a law when
+    // nothing in the source requires it and nothing here has ever shown it was needed.
+    //
+    // So record the gap. A histogram of gaps, and a count of gaps below the server's own one-second
+    // unit, is the whole evidence base for the rate contract. It is cheap, it is per-send, and it
+    // turns a standing argument into a number.
+    if (this._lastMoveSubmitAt != null) {
+      const gap = t - this._lastMoveSubmitAt;
+      this._gapHist = this._gapHist ?? new Map();
+      const bucket = Math.floor(gap / 50) * 50;
+      this._gapHist.set(bucket, (this._gapHist.get(bucket) ?? 0) + 1);
+      this._gapMin = Math.min(this._gapMin ?? Infinity, gap);
+      if (gap < 1000) this._subSecondGaps = (this._subSecondGaps ?? 0) + 1;
+      // Three packets in one server second is what actually trips the ALERT. Two is the warning.
+      if (gap < 500) this._dangerGaps = (this._dangerGaps ?? 0) + 1;
+    }
     this._lastMoveSubmitAt = t;
     return true;
+  }
+
+  /** Cadence evidence: the distribution of inter-packet gaps since the mover started. */
+  cadence_report()
+  {
+    const buckets = [...(this._gapHist ?? new Map())].sort((a, b) => a[0] - b[0]);
+    const total = buckets.reduce((s, [, n]) => s + n, 0);
+    return {
+      sends: total,
+      min_gap_ms: this._gapMin === Infinity ? null : this._gapMin,
+      under_1000ms: this._subSecondGaps ?? 0,
+      under_500ms: this._dangerGaps ?? 0,
+      histogram_ms: buckets.map(([ms, n]) => `${ms}-${ms + 49}:${n}`).join(' '),
+    };
   }
 
   // SERVER-STATIC TRACKING (shared): the raw direct-send sites bypassed
