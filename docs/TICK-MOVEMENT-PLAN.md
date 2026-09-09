@@ -1794,3 +1794,76 @@ they cannot reach, resting, fighting — not stride length. The stride fix remov
 deficit. It does not remove the others, and the fleet will not get 87% of the client's speed until
 the decider stops handing the mover unreachable destinations.
 
+---
+
+## 2026-09-08 (later still) — and the number above was the wrong gait against the wrong denominator
+
+Asked "can we get to run speed?", I went to measure it and found `policy: { allowRun: false }`
+hardcoded on line 74 of `m59-engine-race.mjs` — the only harness in this repository that prints a
+squares-per-second number.
+
+### The harness was pinning the gait the fleet opts out of
+
+`m59-mover-preFix.mjs:102` documents the mover's rule in words: **"RUN IS THE DEFAULT
+(`policy.allowRun === false` opts out)"**. So every figure that harness ever printed, including the
+2.18 sq/s and the "87% of the client" in the section directly above, is a **WALK-mode** number for a
+fleet that **runs**. The section above is not wrong; it is a walk-mode measurement that was labelled
+as if it were the speed of the thing.
+
+### The denominator was off by a factor of two in the same direction
+
+The client's rates are `move.c:184` (`2 * MOVEUNITS`, the fast actions) against `move.c:188`
+(`MOVEUNITS`, everything else), with `draw3d.h:53` `MOVEUNITS = FINENESS >> 2 = 64`, scaled by
+`dt / MOVE_DELAY` (100 ms) at `move.c:216`:
+
+| gait | units per 100 ms | squares/second |
+|---|---|---|
+| walk | 64 | **2.5** |
+| run | 128 | **5.0** |
+
+"The client's walk rate" and "the client's speed" are **a factor of two apart**, and the `%` column
+divided by 2.5 unconditionally, whatever gait had been run. Any percentage in this document quoted
+against "the client" without naming the gait is suspect for exactly that reason.
+
+### Both gaits, measured
+
+| gait | engine | packets | time | sq/s | % of that gait's client rate |
+|---|---|---|---|---|---|
+| walk | step | 30 | 31.5 s | 0.92 | 37% of 2.5 |
+| walk | velocity | 12 | 12.6 s | 2.18 | 87% of 2.5 |
+| run | step | 30 | 31.5 s | 0.92 | 18% of 5.0 |
+| run | **velocity** | **6** | **6.3 s** | **3.97** | **79% of 5.0** |
+
+`velocity / step = 4.31x` in run mode. The per-packet log shows `ground=320 stride=320 run=true`, so
+the full 5-square stride is being declared.
+
+### The ceiling, which is the actual answer
+
+One packet per 1050 ms is the rate contract, so the fastest legal locomotion is `stride / 64 / 1.05`:
+
+| gait | stride | ceiling | % of client that is | we are at |
+|---|---|---|---|---|
+| walk | 160 u = 2.5 sq | 2.38 sq/s | 95% of walk | 92% of ceiling |
+| run | 320 u = 5.0 sq | 4.76 sq/s | 95% of run | **83% of ceiling** |
+
+**We cannot legally close the rest.** The client reaches 5.0 because it reports every 1000 ms; we
+are bound to 1050 ms by `MOVEMENT_COUNT_THRESHOLD = 2`, and the entire remaining gap is that 50 ms.
+Spending it would mean moving faster than a legitimate player is permitted to, which is the same
+class of thing as the 320-unit-into-a-wall declarations that started this whole investigation.
+
+### Is the fleet actually in run mode? Checked, not assumed
+
+`RUN_VIGOR_FLOOR = 25`. Across **6,164** logged vigor samples in `substrate/keeper-t1.log`: median 60,
+max 200, and **zero samples below the floor**. The fleet runs continuously. It is not walking with the
+option switched off, so the run-mode number is the one that describes it.
+
+### The near miss that nearly hid this
+
+The mover suite's rig sets **no `policy` object at all**, so all 183 assertions run in the default
+**run** gait while the race was measuring **walk**. Two suites were measuring different gaits under
+one name, and a suite comment at `m59-mover-test.mjs:509` — "No `policy.ownPhysics` — the default
+step model" — describes a test that is in fact running at the 320-unit run stride, because the gait
+flag is `allowRun` and its default is run. A flag whose default is the interesting value, read with
+`!== false`, means "nobody set it" and "everybody wants it" are indistinguishable in the logs.
+
+
