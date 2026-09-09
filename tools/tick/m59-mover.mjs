@@ -2505,11 +2505,103 @@ export class Mover {
       far = i;
     }
     if (far < 0) return null;
+    const last = this.path[far];
+
+    // THE LEFTOVER HALF SQUARE, WHICH COST 20% OF THE FLEET'S SPEED ON EMPTY GROUND.
+    //
+    // The planner emits waypoints one square apart, and this function had to return one of
+    // them. With a 160-unit (2.5 square) walk stride and 64-unit spacing, the furthest waypoint
+    // that fits inside the budget is 128 units away — two squares. The remaining 32 units, half
+    // a square, was thrown away EVERY PACKET because there was no waypoint to aim at out there.
+    // Measured on flat, empty, wall-free ground — the case with no terrain excuse at all — the
+    // mover declared 128 units per packet in steady state and ran at 1.75 squares/second against
+    // the client's 2.5. Waypoint quantisation, not geometry, not the integration, not the server.
+    //
+    // The reference client does not have this problem because it does not aim at waypoints.
+    // move.c:266 `UserMovePlayer` integrates a HEADING for the interval and move.c:764 reports
+    // where it actually got to; the waypoints are a planning artefact we invented and were then
+    // paying rent on. So the fix is to extend the aim down the same heading by the distance the
+    // budget still allows, and let the integration decide whether it is legal: aim further, let
+    // `_integrateToward` stop at the wall. Aiming short is the only way to lose ground that the
+    // geometry never asked for.
+    //
+    // TWO GUARDS, BOTH LEARNED FROM A REGRESSION RATHER THAN FROM REASONING.
+    //
+    // (1) ONLY ALONG A STRAIGHT RUN. The heading extended is from..last. If a waypoint follows
+    //     `last`, the route TURNS there, and extending past a turn point walks off the route —
+    //     in the wall fixture it drove straight at the segment the mover had just routed around,
+    //     and in the corner fixture it sailed east past a waypoint where the route turns north.
+    //     The first version extended unconditionally and failed both. So: extend only when
+    //     `last` is the FINAL waypoint in budget, where there is demonstrably no turn to miss.
+    //     A corner costs half a square; a corner cut costs the run.
+    //
+    // (2) ONLY OVER GROUND THE TRACE VOUCHES FOR. The loop traced the line to `last`, never
+    //     PAST it, and the extension is by construction the unexamined remainder. Trace it, and
+    //     accept only a result that is not a refusal. `pathIdx` is advanced AFTER the aim is
+    //     final: spending waypoints while the aim was still in question charged the route for
+    //     ground we then refused to walk to.
+    //
+    // (3) NEVER PAST THE GOAL. On a short hop the last waypoint in budget IS the destination, and
+    //     extending the budget beyond it aims at ground we were never asked to walk to. The first
+    //     version did, the next tick came back, and a monotonicity test caught the round trip:
+    //     736 units of ground sent, 416 of it forward. A stride that overshoots is not fast, it is
+    //     lost. So the extension is capped at the final waypoint, which on a straight run is the
+    //     destination itself.
+    // (1) ONLY PAST A STRAIGHT CONTINUATION, NEVER PAST A TURN. The heading extended is
+    //     from..last. If the route CHANGES DIRECTION at `last`, extending past it walks off the
+    //     route — in the wall fixture it drove straight at the segment the mover had just routed
+    //     around, and in the corner fixture it sailed east past a waypoint where the route turns
+    //     north. The first version extended unconditionally and failed both.
+    //
+    //     The first correction to that — extend only when `last` is the last waypoint in the
+    //     route — was too broad in the other direction and bought nothing: the planner emits one
+    //     waypoint per square, so on a 30-square road the final waypoint is reached on hop 30 and
+    //     the extension never fires. Measured: still 1.75 squares/second, unchanged. A guard that
+    //     only permits the last hop of a straight road is not a guard, it is a disabled feature.
+    //
+    //     So the test is geometric, not positional: is the next leg a continuation of this one?
+    //     Waypoints one square apart on a straight run are collinear and extend freely; a corner
+    //     is a direction change and stops the extension dead. A corner costs half a square; a
+    //     corner cut costs the run.
+    const _dx = last.x - fromX, _dy = last.y - fromY;
+    const _dl = Math.hypot(_dx, _dy);
+    let aim = last;
+    let straight_run = far + 1 >= this.path.length;
+    if (!straight_run && far + 1 < this.path.length) {
+      // Cosine of the turn at `last`. Collinear legs give 1; a 90-degree corner gives 0. The
+      // tolerance admits the shallow kinks a grid path makes without ever admitting a corner:
+      // cos 60 degrees = 0.5, so this extends only when the heading moves by less than 60 degrees.
+      const nx = this.path[far + 1];
+      const bx = nx.x - last.x, by = nx.y - last.y;
+      const bl = Math.hypot(bx, by);
+      if (bl > 0 && _dl > 0) {
+        straight_run = (_dx * bx + _dy * by) / (_dl * bl) > 0.5;
+      }
+    }
+    if (_dl > 0 && straight_run) {
+      const _goal = this.path[this.path.length - 1];
+      const _to_goal = Math.hypot(_goal.x - fromX, _goal.y - fromY);
+      const _spare = Math.min(budget, _to_goal) - _dl;
+      if (_spare > 0 && geo?.traceFineMoveClient) {
+        const _ex = last.x + (_dx / _dl) * _spare;
+        const _ey = last.y + (_dy / _dl) * _spare;
+        try {
+          const t = geo.traceFineMoveClient(
+            protocolToClient(fromX), protocolToClient(fromY),
+            protocolToClient(_ex), protocolToClient(_ey),
+            { slide: false, playerRadius: PLAYER_WALL_CLEARANCE_CLIENT_UNITS });
+          if (!(t && t.blocked === true && t.arrived !== true)) aim = { x: _ex, y: _ey };
+        } catch {
+          // An unvouched-for extension is not taken. Falling back costs the half square;
+          // it does not cost the wall.
+        }
+      }
+    }
     // Spend the waypoints strictly BEFORE the aim: the aim's own square is not reached until
     // the character is in it, and spending it early makes the next tick aim past the corner
     // it has not yet turned.
     if (far > this.pathIdx) this.pathIdx = far;
-    return this.path[far];
+    return aim;
   }
 
   _integrateToward(geo, fromProtoX, fromProtoY, toProtoX, toProtoY, distance, {

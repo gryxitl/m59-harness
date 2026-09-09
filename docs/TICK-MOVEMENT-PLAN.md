@@ -1713,3 +1713,84 @@ daemon is down, and there is no `blakserv` process on this machine. So:
 
 The remaining question on t3 needs either the server log or an in-game experiment on a character
 nobody else is driving.
+
+---
+
+## 2026-09-08 (later still) — the 20% that was left was a waypoint, not a wall
+
+The race in the section above put the velocity engine at 1.75 squares/second against the step
+engine's 0.92, and called it a 1.90x win. It was a win. It was also **leaving a fifth of the walk
+on the table for a reason that had nothing to do with the engine**, and it took being asked "can it
+hit 2.5 on flat empty ground?" to go and look.
+
+### The deficit was waypoint quantisation
+
+`_routeAhead` had to return **a waypoint**. The planner emits waypoints one square apart (64 fine
+units), and the walk stride budget is 160 units — 2.5 squares. The furthest waypoint inside a
+160-unit budget is the one at 128 units. So every packet spent 128 and threw away 32, and on the
+flattest, emptiest ground there is — the case with no terrain excuse available at all — the mover
+declared **2.00 squares where it was allowed 2.50**.
+
+The reference client does not have this problem and cannot have it: `move.c:266 UserMovePlayer`
+integrates a *heading* for the interval and `move.c:764 MoveUpdatePosition` reports where it
+actually got to. It never aims at a waypoint. The waypoints are a planning artefact we invented and
+were then paying rent on, at 20% of the fleet's speed.
+
+### Three versions of the fix, two of them wrong, all three caught by tests
+
+The fix is to extend the aim down the same heading by whatever the budget still allows and let
+`_integrateToward` stop at the wall — aim further, which is the shape the code already had, rather
+than clamp at the send site, which is the shape that produced the original 790-send freeze.
+
+1. **Extend unconditionally.** Failed three tests at once: the mover walked straight at the wall
+   segment it had just routed around, and in the corner fixture it sailed east past the waypoint
+   where the route turns north. Extending past a *turn* leaves the route.
+2. **Extend only on the final waypoint of the route.** Passed every test and bought nothing: the
+   planner emits one waypoint per square, so on a 30-square road the last waypoint arrives on hop
+   30. Measured 1.75 again, unchanged. A guard that only permits the last hop of a straight road is
+   not a guard, it is a disabled feature — and it is the kind of "fix" that survives review because
+   the suite is green and the number never moves.
+3. **Extend past a straight continuation only** — decided geometrically, by the cosine of the turn
+   at the waypoint (`> 0.5`, i.e. a heading change under 60 degrees), so collinear grid waypoints
+   extend freely and a corner stops the extension dead. Plus two clamps, each from a failure:
+   never past the destination (the first version overshot on a short hop, the next tick came back,
+   and a monotonicity test caught the round trip at 736 units of ground sent for 416 units of
+   ground made), and only over ground `traceFineMoveClient` vouches for, because the loop traced
+   the line *to* the waypoint and never past it.
+
+`pathIdx` is now advanced **after** the aim is final. Spending waypoints while the aim was still in
+question charged the route for ground we had already decided to refuse.
+
+### The number
+
+`node tools/m59-engine-race.mjs` — 30 squares of open ground, virtual clock, identical geometry,
+one engine per run:
+
+| engine | packets | ground | time | sq/s | % of client walk |
+|---|---|---|---|---|---|
+| step | 30 | 29.0 sq | 31.5 s | 0.92 | 37% |
+| velocity | **12** | 27.5 sq | **12.6 s** | **2.18** | **87%** |
+
+**2.37x the step engine, and 87% of the official walk rate.** The per-packet log confirms the
+mechanism rather than the outcome: `ground=160` on every packet, the full stride, where it read
+`ground=128` before.
+
+The ceiling is 2.38 sq/s — 160 units per 1050 ms send — so 87% is 95% of what our own cadence
+allows. The remaining 5% is the destination clamp on the final hop, which is correct behaviour:
+1856 units of road at 160 per packet is 11 full strides plus a 96-unit remainder.
+
+We do not reach 2.50 and should not try. The client moves at 2.5 squares/second because it sends
+every 1000 ms; we send every 1050 ms because `MOVEMENT_COUNT_THRESHOLD = 2` makes anything faster a
+speedhack, and the server's own monster locomotion runs at 1.05 squares/second on a one-second
+cadence. The gap to 2.5 is the 50 ms, and buying it back would mean breaking the rate contract for
+two ticks an hour.
+
+### What this does *not* claim
+
+This is a measurement of the **engine on synthetic ground**. It is not a claim that the fleet is
+now walking at 2.18 squares/second: the fleet's point-to-point median walk was 46%/27%/18% of the
+client's, and that deficit is *routing and decision-making* — characters being given destinations
+they cannot reach, resting, fighting — not stride length. The stride fix removes one term from that
+deficit. It does not remove the others, and the fleet will not get 87% of the client's speed until
+the decider stops handing the mover unreachable destinations.
+
