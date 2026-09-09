@@ -319,5 +319,164 @@ console.log('\nTOWN_SMITH: buy routes to the town smith shop');
   ok('Raza inn/field -> 1013', TOWN_SMITH[1011] === 1013 && TOWN_SMITH[1012] === 1013, 'raza');
 }
 
+
+// ---------------------------------------------------------------------------
+// A HUNT JOURNEY PUTS THE CHARACTER IN TRAVEL MODE, SO IT DOES NOT SIT DOWN
+// BETWEEN ROOMS.
+//
+// `healthy` and `vigor_low` both yield when `ws._travelMode === true`. That flag
+// was stamped only by the operator's /action travel handler, so a character
+// hunting on its own initiative was never in travel mode and rested mid-corridor.
+// Measured on one keeper process: `healthy->rest` was 369 of 595 decisions — the
+// most-taken action in the decider — over 12 episodes with a 30-second median,
+// 286 seconds standing still while the router held a destination three rooms away.
+// ---------------------------------------------------------------------------
+console.log('\na hunt journey is travel mode');
+{
+  const healthy = DEFAULT_GOALS.find(g => g.goal === 'healthy');
+  const vigorLow = DEFAULT_GOALS.find(g => g.goal === 'vigor_low');
+  ok('both rest goals exist', healthy != null && vigorLow != null);
+
+  // Hurt (below restBelow, 70%) and no target: the exact state that made him sit down.
+  const hurtNoTarget = { _travelMode: false, hurt: true, has_target: false, _vigor: 80 };
+  ok('a hurt character with no target does rest when not traveling',
+     healthy.when(hurtNoTarget) === true, String(healthy.when(hurtNoTarget)));
+
+  // The change: the same character, on a journey.
+  ok('but NOT once it is on a journey',
+     healthy.when({ ...hurtNoTarget, _travelMode: true }) === false,
+     String(healthy.when({ ...hurtNoTarget, _travelMode: true })));
+  ok('and vigor_low does not rest mid-journey either',
+     vigorLow.when({ ...hurtNoTarget, _travelMode: true }) === false,
+     String(vigorLow.when({ ...hurtNoTarget, _travelMode: true })));
+
+  // THE DANGER CASE, which must NOT have been weakened: a mob on top of him at low
+  // HP must still be answered. flee_hurt is a motion goal and travel mode does not
+  // suppress it, so the character runs rather than dying in place.
+  const flee = DEFAULT_GOALS.find(g => g.goal === 'flee_hurt');
+  ok('flee_hurt still fires at critical HP with a target in reach',
+     flee.when({ below_flee: true, has_target: true, in_reach: true, _travelMode: true }) === true,
+     String(flee.when({ below_flee: true, has_target: true, in_reach: true, _travelMode: true })));
+
+  // And travel mode must not be a permanent state that switches resting off forever:
+  // it is a freshness window on a destination, so it expires.
+  const fresh = { dest: 575, at: Date.now() };
+  const stale = { dest: 575, at: Date.now() - 901000 };
+  const mode = (man) => man != null && Date.now() - (man.at ?? 0) < 900000;
+  ok('travel mode is fresh within 15 minutes and expires after',
+     mode(fresh) === true && mode(stale) === false, `${mode(fresh)}/${mode(stale)}`);
+}
+
+// ---------------------------------------------------------------------------
+// THE STAMP ITSELF. The assertions above only exercise the goal ladder, which was
+// ALWAYS correct — `healthy` has yielded to travel mode since it was written. The
+// bug was one file and one function away: nothing ever stamped `_manualDest` except
+// the operator's /action travel handler, so a hunting character was never in the
+// mode the ladder was waiting for. A test of the ladder passes on the broken code;
+// this one does not.
+// ---------------------------------------------------------------------------
+console.log('\nhunt travel stamps the journey so the rest goals yield to it');
+{
+  // ROOM 556 (Deep Forest of Farol) is a TRANSIT room: it is not itself a hunt room,
+  // so `nearestHuntRoom` sends the character one hop away to 545. That is the case
+  // under test. The first three rooms I tried this in — 7, 534 and 535 — each failed
+  // for a different reason that was the test's fault, not the code's: room 7 is not in
+  // the hunt table at all (the ladder takes `armed -> buy` and routes to the town
+  // smith), and 534/535 ARE hunt rooms, so the character takes the `patrolling` branch
+  // which nudges within the room and never calls router.to with a journey.
+  //
+  // ARMED, too. `armed` sits above `hunt` in the ladder (2312 vs 2321), so an unarmed
+  // character goes to buy a weapon first — which is the 1013 dead end, since 201 has no
+  // route out of the map that does not cross room 555. A weapon stands it down.
+  const huntRoomOf556 = 545;
+
+  const route = (session) => {
+    const routed = [];
+    session._router = { dest: null, to(n) { this.dest = n; routed.push(n); return true } };
+    return routed;
+  };
+  const run = (session, room) => makeDecider({ session, goals: DEFAULT_GOALS })(
+    { room: { num: room, name: null } }, new Actuator(session), { stop() {} });
+
+  // 1. A healthy character in a transit room takes the hunt journey, and the journey
+  //    is stamped so the next tick's rest goals can see it.
+  const { session } = world({ hp: 20, maxHp: 20, equipped: [{ name: 'mace' }] });
+  const routed = route(session);
+  run(session, 556);
+  ok('the hunt branch routed to its hunt room', routed.length === 1 && routed[0] === huntRoomOf556,
+     JSON.stringify(routed));
+  ok('and stamped that destination as a journey',
+     session._manualDest != null && session._manualDest.dest === huntRoomOf556,
+     JSON.stringify(session._manualDest));
+  ok('the stamp is fresh, so the rest goals honour it on the next tick',
+     session._manualDest != null && Date.now() - session._manualDest.at < 900000);
+
+  // 2. THE POINT OF THE FIX: hurt mid-journey, he keeps walking.
+  const hurt = world({ hp: 8, maxHp: 20, equipped: [{ name: 'mace' }] });
+  const hurtRouted = route(hurt.session);
+  hurt.session._manualDest = { dest: huntRoomOf556, at: Date.now() };   // from tick 1
+  run(hurt.session, 556);
+  ok('a hurt character with a stamped journey travels rather than rests',
+     hurtRouted.length === 1 && hurtRouted[0] === huntRoomOf556, JSON.stringify(hurtRouted));
+
+  // 3. THE CONTROL, which is what makes 2 mean something: the identical character with
+  //    no stamp sits down instead. If this ever passes while 2 fails, the stamp is not
+  //    the cause and something else changed the ladder.
+  //
+  // Asserted on whether router.to was CALLED, not on the goal the decider returned.
+  // Both characters take the `healthy` GOAL — with a stamp it yields to `hunt`, and
+  // without one it takes `healthy -> poke+rest`, which never touches the router. The
+  // first version of this test asserted `taken.goal !== 'healthy'` and failed on the
+  // CONTROL for the wrong reason: `healthy` is the goal in both cases, so the
+  // assertion could not tell the two outcomes apart. The router call can.
+  const unstamp = world({ hp: 8, maxHp: 20, equipped: [{ name: 'mace' }] });
+  const unRouted = route(unstamp.session);
+  run(unstamp.session, 556);
+  ok('while the identical character with no stamp rests and never routes anywhere',
+     unRouted.length === 0, JSON.stringify(unRouted));
+
+  // 4. Startup must not put a character in travel mode with nowhere to go, or rest
+  //    would be switched off permanently — which is worse than what this fixes.
+  const idle = world({ hp: 20, maxHp: 20, equipped: [{ name: 'mace' }] });
+  route(idle.session);
+  run(idle.session, 556);
+  ok('and a journey is stamped only when a journey was actually taken',
+     idle.session._manualDest != null);
+}
+
+// ---------------------------------------------------------------------------
+// THE REST GOALS YIELD TO TRAVEL MODE, AND THE DANGER CASES DO NOT.
+// The ladder itself was always correct here — `healthy` has yielded to travel mode
+// since it was written. The bug was that nothing stamped the mode. These pin the
+// ladder so a future change cannot quietly drop the yield OR drop the survival
+// reflex that the yield must not suppress.
+// ---------------------------------------------------------------------------
+console.log('\ntravel mode yields rest but never yields flight');
+{
+  const healthy = DEFAULT_GOALS.find(g => g.goal === 'healthy');
+  const vigorLow = DEFAULT_GOALS.find(g => g.goal === 'vigor_low');
+  const flee = DEFAULT_GOALS.find(g => g.goal === 'flee_hurt');
+  ok('the rest goals exist', healthy != null && vigorLow != null && flee != null);
+
+  const hurt = { _travelMode: false, hurt: true, has_target: false, _vigor: 80 };
+  ok('hurt with no target, not traveling: rest', healthy.when(hurt) === true);
+  ok('hurt with no target, ON a journey: do not rest',
+     healthy.when({ ...hurt, _travelMode: true }) === false);
+  ok('and vigor_low does not rest mid-journey either',
+     vigorLow.when({ ...hurt, _travelMode: true }) === false);
+
+  // A mob on top of him at critical HP must still be answered. travel mode is a
+  // motion flag, not an invulnerability: flee_hurt is a motion goal and stays live.
+  ok('flee_hurt still fires at critical HP with a target in reach',
+     flee.when({ below_flee: true, has_target: true, in_reach: true, _travelMode: true }) === true);
+
+  // The mode is a freshness window on a destination, so it expires rather than
+  // switching resting off for the rest of the session.
+  const mode = (man) => man != null && Date.now() - (man.at ?? 0) < 900000;
+  ok('travel mode is fresh within 15 minutes and expires after',
+     mode({ dest: 575, at: Date.now() }) === true
+       && mode({ dest: 575, at: Date.now() - 901000 }) === false);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

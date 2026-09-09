@@ -1970,6 +1970,41 @@ function fleeExits(session, ws) {
               }
             } catch { /* fall through to hunt routing */ }
             router.to(hunt.room);
+            // A HUNT JOURNEY IS A JOURNEY. Stamp it so travel mode covers it.
+            //
+            // `session._manualDest` is what puts a character in travel mode, and travel mode
+            // is what stops `healthy` and `vigor_low` from sitting the character down mid-
+            // crossing (see the two goal lambdas: `ws._travelMode === true ? false : ...`).
+            // It was stamped ONLY by the operator's /action travel handler, so it described
+            // "somebody told this character to go somewhere" and not "this character is on a
+            // journey". A character hunting on its own initiative — which is every character,
+            // every day — was never in travel mode, and so rested like one.
+            //
+            // Measured on one keeper process: `healthy->rest` was 369 of 595 decisions, the
+            // single most-taken action in the whole decider. Twelve rest episodes, median 30
+            // seconds each, 286 seconds sitting still while the router held a destination
+            // three rooms away. The fleet's "moves, then pauses, then moves" is this.
+            //
+            // WHY THIS IS SAFE RATHER THAN MERELY FASTER. The yield was written so that a
+            // hurt-rest stop mid-crossing is not mistaken for a stall (the comment on the
+            // `healthy` goal says exactly that) — it was never a claim that resting is wrong.
+            // Resting is still available: the goal ladder keeps `healthy` and `vigor_low`
+            // below, and both fire the moment the character is IN its hunt room and not
+            // traveling, which is where resting actually belongs. What changes is only that a
+            // character does not sit down in the middle of a corridor between rooms.
+            //
+            // And the danger case is already handled by a different goal: `flee_hurt` fires
+            // when HP is below the flee threshold WITH A TARGET IN REACH, and travel mode does
+            // not suppress it (it is a motion goal). A character at 30% HP with a mob on top of
+            // it still runs away. This only removes the reflex to sit down at 50% HP in an
+            // empty room because the next room is two hops away.
+            //
+            // Same 15-minute freshness window the operator path uses, re-stamped on every
+            // travel decision, so it cannot go stale while a journey is genuinely in progress
+            // and does expire once the character stops asking to go anywhere.
+            try {
+              session._manualDest = { dest: Number(hunt.room), at: Date.now() };
+            } catch { /* a dest we cannot stamp is still a dest the router holds */ }
             onDecision?.({ ticks, goal: 'hunt', action: 'travel',
               what: `hunt ${hunt.creature} lv${hunt.level} in room ${hunt.room} (hops=${hunt.hops})`,
               sent: true });
