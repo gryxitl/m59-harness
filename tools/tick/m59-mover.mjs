@@ -2271,6 +2271,22 @@ export class Mover {
           // it. This records it.
           this._serverPos = this.session?._pose?.server ?? null;
           this._recordSend(aimX, aimY, myProtoX, myProtoY, back.x, back.y, 'stride-declaration');
+          // SIM ADVANCE DIAGNOSTIC — read-only, prints what the Pose believes before and
+          // after the report that is supposed to move it. Added because `me=(30,38)` was
+          // logged on four consecutive sends while the declaration moved 320 units each
+          // time, which is what a character that is NOT advancing looks like. Four theories
+          // (the adopt, the divergence guard, a missing advance() call, a wrong `me`) were
+          // each REFUTED by testing the Pose in isolation, where the sim advances and
+          // survives. That makes this a question about the running object, not the code, and
+          // the only way to answer it is to look at the running object.
+          if (process.env.M59_SIM_TRACE === '1') {
+            const _b = this.session?._pose?.sim;
+            const _c = p => p ? `(${Math.round(p.x)},${Math.round(p.y)})` : 'null';
+            // Print BEFORE the report, then re-print from a microtask after it, so the
+            // normal _recordReport below stays the only thing that mutates the track.
+            this._simTraceBefore = _c(_b);
+            this._simTraceLine = `[sim-trace] ${this.logName} declared=(${Math.round(back.x)},${Math.round(back.y)}) integration=(${Math.round(moved.x)},${Math.round(moved.y)}) simBefore=${this._simTraceBefore}`;
+          }
           this._recordReport(moved.x, moved.y);
           // A stride stopped by a wall is not progress made, and stuckTicks is the counter
           // that decides whether the escape fan engages. Counting a walled stride as progress
@@ -2450,6 +2466,14 @@ export class Mover {
       ? KOD_FINENESS
       : (Math.hypot(protoX - _prevX, protoY - _prevY) || KOD_FINENESS);
     try { this.session?._pose?.advance(protoX, protoY, _step); } catch {}
+    // Completion of the SIM ADVANCE DIAGNOSTIC above: the "before" was captured at the
+    // send site, the "after" is here, immediately after the only call that moves the track.
+    if (process.env.M59_SIM_TRACE === '1' && this._simTraceLine) {
+      const _a = this.session?._pose?.sim;
+      const _c = p => p ? `(${Math.round(p.x)},${Math.round(p.y)})` : 'null';
+      console.error(this._simTraceLine + ` simAfter=${_c(_a)}`);
+      this._simTraceLine = null;
+    }
     // LOCAL SIMULATION (official client model, move.c): our own feet are
     // authoritative between server echoes. Every send advances the sim to
     // the declared point; planning reads it while fresh (<2s) so waypoints
