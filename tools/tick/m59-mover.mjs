@@ -2565,6 +2565,33 @@ export class Mover {
       const w = this.path[i];
       // The path is ordered, so once one waypoint is out of stride none further can be in.
       if (Math.hypot(w.x - fromX, w.y - fromY) > budget) break;
+      // A WAYPOINT WE ARE ALREADY AT IS NOT A HEADING.
+      //
+      // This is the pause, and it took a live character to see it. `far` started at -1 and
+      // the loop began at `pathIdx`, which after any re-anchor IS the square the character
+      // is standing in — distance 0, trivially inside budget, trivially unblocked. So the
+      // lookahead happily returned the character's own position as its answer, the
+      // integration bought 0.00 squares, `pathIdx` never advanced, and the next tick asked
+      // the same question and got the same answer. Reproduced exactly, room 557, standing
+      // on waypoint 0 of a path north:
+      //
+      //   _routeAhead(budget 320) -> (1632,1888)   <- that IS fromX,fromY
+      //   _integrateToward        -> moved 0.00 squares
+      //   pathIdx after           -> 0
+      //
+      // The server-confirmed walk rate was 1.48 squares/s against the client's 5, with
+      // 47% of packets declaring a position identical to the one before. A stride aimed at
+      // where we already are is not slow, it is nil, and it looks in the logs exactly like
+      // a server that will not move us.
+      //
+      // Skip waypoints inside the square we occupy. Not `> 0`: the position is continuous
+      // and a waypoint a few units away would be a heading of a few units, which the
+      // integration would spend as nothing and the gate would still count as a send.
+      // One square is the smallest displacement the server itself reports as a move.
+      if (Math.abs(w.x - fromX) < KOD_FINENESS && Math.abs(w.y - fromY) < KOD_FINENESS) {
+        if (far < 0 && i > this.pathIdx) this.pathIdx = i;   // consume it; it is behind us
+        continue;
+      }
       if (geo?.traceFineMoveClient) {
         try {
           const t = geo.traceFineMoveClient(
@@ -2576,6 +2603,12 @@ export class Mover {
       }
       far = i;
     }
+    // NOTHING IN BUDGET IS AHEAD OF US. On a one-square path — a short hop, a final
+    // approach — every waypoint is in our own square, and returning null here used to fall
+    // through to `aim = myProto + stride * unit(aim)`, which is the bug this whole file is
+    // about: a point the geometry never cleared. Letting the caller fall back to a raw
+    // stride is how a character ends up inside a wall. So say null and let the caller use
+    // the step path, which is short but legal.
     if (far < 0) return null;
     const last = this.path[far];
 
