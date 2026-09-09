@@ -637,3 +637,56 @@ files **were** modified during the goal, which is what the constraint prohibited
 state is not the same as compliance. Writing code into a file you were told to only read, and
 reverting it only when challenged, is the breach — the revert is just its cleanup. The lesson is to
 check the constraint before writing, not to take comfort from the diff being empty now.
+
+## 17. "Why are we slow if we can just tell the server where we're moving next?"
+
+Because we already do, and it is not the bottleneck. The question is worth answering with the
+decomposition rather than a narrative, because the intuition is right about the mechanism and wrong
+about which term is small.
+
+Speed is a product of exactly two terms:
+
+```
+squares/second  =  (squares per packet)  x  (packets per second)
+```
+
+The server's anti-speedhack counts **packets, not distance** — `MOVEMENT_COUNT_THRESHOLD = 2` with a
+one-per-second decay (`user.kod:61`), and every `BP_REQ_MOVE` bumps it. So distance per packet is
+free: the range probe landed 1, 2, 3, 4, 5, 7 squares, 8 out of 8 attempts at each distance, mean 3.29
+squares. Our own constants are already at the client's stride (`WALK_STRIDE_PROTO = 160` = 2.5
+squares, `RUN_STRIDE_PROTO = 320` = 5 squares). We are not holding back.
+
+| term | achieved | available | used |
+|---|---|---|---|
+| packets per second | 0.59 | 0.952 (our 1050 ms cap) | 62% |
+| squares per packet | 1.31 | 5.00 (proven accepted) | 26% |
+| **product** | **0.77 sq/s** | 4.76 sq/s | **16%** |
+
+**And the reason the product is low is not in either term.** Breaking out the packets that are
+actually strides: 93.9% of integrations run the full stride (`stopped=clear`, 7,064 of 7,520) and
+only 6.1% are cut short by a wall. Stride packets earn ~2.0 squares, which is the walk stride —
+**the engine is doing its job.** The arithmetic reconciles only if the missing ground is in packets
+we never send at all.
+
+Where the time actually goes, counted from the decider's own state log over the session:
+
+| state | ticks | share |
+|---|---|---|
+| `_fight` | 45,265 | **71.7%** |
+| `vigor_low` (resting) | 8,050 | 12.8% |
+| `hunt` | 5,084 | 8.1% |
+| `healthy` | 1,848 | 2.9% |
+| `armed` | 1,458 | 2.3% |
+| `unstuck` | 1,231 | 2.0% |
+| flee | 169 | 0.3% |
+
+**A character spends 72% of its life in a fight and another 13% sitting down to recover vigor.**
+Neither state involves walking anywhere, and no locomotion engine — velocity, step, or anything
+else — changes a tick on which the character is not trying to move. This is the whole explanation of
+why restoring a 2x-per-packet engine moved the session-wide rate from 0.95 to 0.91: the term that
+doubled was multiplied by a fraction of the clock during which it does not apply.
+
+The corollary matters for what to work on next: **the fleet's rate is a property of what the fleet
+does, not of how it moves.** Making the characters fight less, or rest less, or pick targets they can
+kill without a long fight, moves the number. Making the mover declare further has already been done
+and is nearly free of loss when it fires.
