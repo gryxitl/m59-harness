@@ -845,6 +845,34 @@ class KeeperProxy {
     this._stateAt = 0;
     this._stateTtl = 2000;
     this._world = null;
+    // THERE IS NO FLIGHT RECORDER HERE, AND THAT MUST READ AS ABSENT, NOT AS A STUB.
+    //
+    // `makeKeeperProxy` wraps this object in a Proxy whose get-trap answers every unknown
+    // property with `(...args) => null` (see the trap's own comment). That returns a
+    // FUNCTION, which is truthy, so anything that reads `s.recorder` and asks a question of
+    // it gets a plausible-looking object that is nothing:
+    //
+    //   const rec = sessions.get(a.agent)?.recorder;   // -> () => null, truthy
+    //   rec?.line('call', ...)                         // -> TypeError: rec?.line is not a
+    //                                                  //    function
+    //
+    // That is not a hypothetical: it is how a SUCCESSFUL background travel reported an
+    // error. The journey was handed to the keeper, the tool returned, and the recording line
+    // on the way out threw — so the caller was told a walk it ordered had failed. The
+    // `recording` tool fails the same way one property later, on `r.buf.length`.
+    //
+    // Declaring the property is enough: the trap checks `prop in target` first, so an owned
+    // `null` wins and `rec?.line(...)` short-circuits instead of calling a stub. Deliberately
+    // narrow — the trap still answers everything else as before, because 90 call sites in
+    // this file read a session and none of them was written to expect a new failure mode.
+    //
+    // THE TRAP ITSELF IS THE BUG AND IS STILL THERE. Any missing method on a proxy silently
+    // returns null instead of failing: a typo becomes `null` where a caller expected a
+    // result, which is indistinguishable from "asked and got nothing". It is also why
+    // `travelJob` surfaced as "Cannot read properties of null (reading 'promise')" rather
+    // than the plain truth, `s.travelJob is not a function`. Worth removing; not worth
+    // removing in the middle of a live fleet with 90 callers and no test for the trap.
+    this.recorder = null;
     this.pacer = { submit: async () => { throw new Error('keeper-backed: pacer is in the keeper process'); } };
     this.movementGeneration = 0;
     this._client = null;
