@@ -256,8 +256,48 @@ const HALF = KOD_FINENESS / 2; // 32 protocol units = half a square
  *   mover.tick();                // one step per tick, returns state
  *   mover.clear();               // stop
  */
+// THE MOVE-SUBMIT CADENCE, IN MILLISECONDS. ONE CONSTANT, BECAUSE THERE WERE TWO.
+//
+// The constructor default and the `_claimMoveSlot` fallback both said 1050 independently. Two
+// literals for one policy is how a cadence becomes folklore: change one, and a mover built with the
+// option gets one rate while a mover built without it gets another, silently.
+//
+// IT IS NOW 1000, WHICH IS WHAT THE SERVER'S OWN ARITHMETIC PERMITS AND WHAT THE CLIENT USES.
+//
+// For the whole life of this project 1050 was defended as the speedhack law. The law is
+// user.kod:2937:
+//
+//   piMovesCounter = bound((piMovesCounter + 1) - iDelta, -MOVEMENT_DELTA_LAG_THRESHOLD, $)
+//   if piMovesCounter > MOVEMENT_COUNT_THRESHOLD(2) -> Debug("ALERT! ... Possible speedhacker.")
+//
+// iDelta is the WHOLE SECONDS since the last packet. At a 1000 ms cadence iDelta is 1 for every
+// packet, so the counter is (c + 1) - 1 = c and sits at ZERO forever. It never rises. The ALERT
+// needs a counter above 2, which needs THREE packets inside one server second — and a 1000 ms
+// cadence with sub-second jitter produces two, not three.
+//
+// The 50 ms bought nothing. It cost 4.8% of our locomotion, and it was the ONLY thing standing
+// between us and the client's own rate: 5 squares per packet at 1000 ms is 5.00 squares/second,
+// which is the client's run speed exactly, not 95% of it.
+//
+// WHY THIS IS NOT A SPEEDHACK, WHICH IS A DIFFERENT QUESTION FROM WHETHER IT IS ALLOWED.
+// The server caps nothing: user.kod:3064 detects a squared row/col distance >= 200 and only writes
+// a log line and drains vigor — line 3099 sends SomethingMoved unconditionally afterwards. So we
+// COULD declare 14 squares a second and the server would move us. We do not, because the client's
+// 5 squares per packet is the MEASURED RESULT of one second of locomotion, and our 320-unit stride
+// is the same 5 squares because it is the same stride over the same interval. Matching the client
+// means matching its rate, not exploiting the absence of a cap.
+//
+// THE RISK WE ARE ACCEPTING, STATED RATHER THAN HIDDEN: the margin is one packet. If the network
+// or the pacer ever delivers three position submits inside one server second, the counter reaches
+// 3 and draws an ALERT. That is a LOG LINE naming the character, not a ban and not a refused move,
+// and it is the same line a legitimate player behind a laggy connection can draw — which is why
+// the server tolerates a counter of 2 and decays it by elapsed time. `cadence_report()` now records
+// the real gap distribution so this is a measured risk rather than the unmeasured one it was: our
+// log lines have never carried a timestamp, and the gap has never once been recorded.
+export const MOVE_CAP_MS = 1000;
+
 export class Mover {
-  constructor(session, { reportIntervalMs = MOVE_INTERVAL_MS, moveCapMs = 1050 } = {}) {
+  constructor(session, { reportIntervalMs = MOVE_INTERVAL_MS, moveCapMs = MOVE_CAP_MS } = {}) {
     this.session = session;
     // The central move-submit cap, injectable like the report interval so the
     // rig can tick in microseconds (live default 1050ms: the speedhack law).
@@ -2742,7 +2782,7 @@ export class Mover {
   // that bypass the pacer to avoid queue delay).
   _claimMoveSlot() {
     const t = Date.now();
-    const cap = this._moveCapMs ?? 1050;
+    const cap = this._moveCapMs ?? MOVE_CAP_MS;
     if (t - (this._lastMoveSubmitAt ?? 0) < cap) return false;
     // THE ONE MEASUREMENT THAT DECIDES WHETHER THE CADENCE IS LEGAL, AND WE HAVE NEVER HAD IT.
     //
@@ -2774,13 +2814,28 @@ export class Mover {
     return true;
   }
 
-  /** Cadence evidence: the distribution of inter-packet gaps since the mover started. */
+  /** Cadence evidence: the distribution of inter-packet gaps since the mover started.
+   *
+   * `move_cap_ms` is part of the report on purpose. A test rig builds a mover with `moveCapMs: 0`
+   * to tick in microseconds, and that mover happily records a 0 ms gap between two accepted submits
+   * — which is true of the rig and worthless as evidence about the fleet. Without the cap in the
+   * output, a rig histogram and a live histogram are indistinguishable, and the number we would be
+   * betting the rate contract on could have come from either.
+   */
   cadence_report()
   {
     const buckets = [...(this._gapHist ?? new Map())].sort((a, b) => a[0] - b[0]);
-    const total = buckets.reduce((s, [, n]) => s + n, 0);
+    // GAPS, NOT SENDS. The first accepted submit records no gap because there is nothing before it,
+    // so the histogram holds one fewer entry than the number of submits. I named this field `sends`
+    // an hour ago and an assertion immediately read it as one and was wrong — which is the field
+    // lying, not the test. Both counts are reported now so the off-by-one cannot be re-mistaken for
+    // a lost send, which is the specific thing that would make this evidence look like it dropped
+    // evidence when it did not.
+    const gaps = buckets.reduce((s, [, n]) => s + n, 0);
     return {
-      sends: total,
+      gaps_recorded: gaps,
+      accepted_submits: gaps + (this._lastMoveSubmitAt != null ? 1 : 0),
+      move_cap_ms: this._moveCapMs ?? MOVE_CAP_MS,
       min_gap_ms: this._gapMin === Infinity ? null : this._gapMin,
       under_1000ms: this._subSecondGaps ?? 0,
       under_500ms: this._dangerGaps ?? 0,

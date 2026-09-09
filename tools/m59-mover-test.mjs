@@ -1238,17 +1238,117 @@ console.log('\norderCandidates: monster rule (never step directly away)');
   ok('stuck: backtrack allowed (nothing excluded)', o.length === 8, JSON.stringify(o.length));
 }
 
-console.log('\n_submitMove: central 1050ms cap across all sites');
+console.log('\n_submitMove: central cadence cap across all sites');
 {
+  // THE CADENCE IS IMPORTED, NOT TYPED. This block used to write `mover._moveCapMs = 1050` under a
+  // comment reading "live cap". That is a number copied by hand, so when the live cadence moved to
+  // 1000 the block kept passing while asserting the behaviour of a cadence production no longer
+  // uses — green and blind, the same class of failure as the ok('message', condition) inversions
+  // that hid a real position-truth defect for a day.
+  const { MOVE_CAP_MS } = await import('./tick/m59-mover.mjs');
+  ok('the live cadence is the 1000ms of the official client, not the 1050ms we believed was law',
+     MOVE_CAP_MS === 1000, `MOVE_CAP_MS = ${MOVE_CAP_MS}`);
+
   const { mover } = rig({});
-  mover._moveCapMs = 1050;  // live cap (the rig defaults it off)
+  // The rig builds its mover with `moveCapMs: 0` so it can tick in microseconds, so this asserts
+  // the DEFAULT by reading the exported constant rather than by reading a rig mover that
+  // deliberately overrode it. The production path is `new Mover(session)` from m59-route.mjs:132,
+  // which passes nothing and therefore takes the constructor default — asserted below on a mover
+  // built exactly that way, because asserting it on the rig would have been asserting 0 === 1000.
+  ok('a mover built the way production builds it gets the live cadence',
+     new Mover({ client: {}, pacer: {}, world: {} })._moveCapMs === MOVE_CAP_MS,
+     `got ${new Mover({ client: {}, pacer: {}, world: {} })._moveCapMs}`);
   const s = mover.session, c = s.client;
+  // THE CAP MUST BE SWITCHED ON FOR THIS BLOCK, AND THE ORIGINAL DID THAT WITH A LITERAL.
+  // It read `mover._moveCapMs = 1050`; when the live cadence moved to 1000 I deleted the line along
+  // with the number, which switched the cap OFF entirely (the rig's default is 0 = uncapped) and let
+  // both submits through. Two assertions then failed for a real reason. The lesson is that the line
+  // was doing two jobs — pinning a value AND enabling the mechanism — and only one of them was
+  // obvious from its comment. Enable the mechanism with the constant, so it cannot drift again.
+  mover._moveCapMs = MOVE_CAP_MS;
   let calls = 0;
   s.pacer = { submit: () => { calls++; return Promise.resolve(); } };
   ok('first submit goes', mover._submitMove(s, c, () => {}) === true && calls === 1, 'calls=' + calls);
   ok('immediate second is dropped', mover._submitMove(s, c, () => {}) === false && calls === 1, 'calls=' + calls);
   mover._lastMoveSubmitAt = Date.now() - 2000;
   ok('after the window it goes again', mover._submitMove(s, c, () => {}) === true && calls === 2, 'calls=' + calls);
+
+  // THE ARGUMENT FOR 1000ms, RUN AS AN ASSERTION INSTEAD OF STATED AS AN OPINION.
+  // user.kod:2937:  piMovesCounter = bound((c + 1) - iDelta, -MOVEMENT_DELTA_LAG_THRESHOLD, $)
+  // user.kod:2942:  ALERT when piMovesCounter > MOVEMENT_COUNT_THRESHOLD (2)
+  // iDelta is WHOLE SECONDS since the previous packet, so a packet sent 1000 ms after the last has
+  // iDelta = 1 and the counter is unchanged. Drawing the ALERT takes THREE packets inside one server
+  // second. This asserts the steady state of ten minutes of walking rather than asserting my
+  // optimism about it, and it asserts the counter is ZERO rather than merely under the line.
+  let counter = 0, alerts = 0;
+  for (let i = 0; i < 600; i++) {                       // ten minutes, one packet per cadence
+    const iDelta = Math.floor(MOVE_CAP_MS / 1000);      // what the server derives from our gap
+    counter = Math.max(-5, (counter + 1) - iDelta);
+    if (counter > 2) { alerts++; counter = 0; }
+  }
+  ok('ten minutes at the live cadence draws zero speedhack ALERTs', alerts === 0,
+     `counter=${counter} alerts=${alerts}`);
+  ok('and the counter rests at zero, not merely under the threshold', counter === 0, `${counter}`);
+
+  // THE FALSIFICATION, BECAUSE THE SIMULATION ABOVE WOULD ALSO PASS IF IT MEASURED NOTHING.
+  // Three packets in one second is the shape that trips it. If the rig cannot reproduce the ALERT,
+  // the loop is not modelling the server and the two assertions above are worth nothing.
+  let c2 = 0, alerts2 = 0;
+  for (let i = 0; i < 3; i++) {
+    c2 = Math.max(-5, (c2 + 1) - 0);                    // iDelta = 0: same server second
+    if (c2 > 2) { alerts2++; c2 = 0; }
+  }
+  ok('the same simulation DOES fire on three packets in one second', alerts2 === 1,
+     `alerts=${alerts2}`);
+
+  // THE CADENCE EVIDENCE, READ ON A MOVER WHOSE CAP IS ON — which is the mover this block has been
+  // testing, since line 1262 enables it. My first version of these three assertions expected
+  // `move_cap_ms === 0` and a recorded sub-second gap, i.e. it described the rig as it is built
+  // rather than as this block left it, and failed. That failure was the assertion being wrong: the
+  // whole point of enabling the cap is that the histogram then means something.
+  //
+  // The distinction these assertions have to keep is the one that matters for the rate contract:
+  // a REJECTED submit must not appear as a send, and a gap under the server's one-second unit must
+  // be counted. If rejected submits were counted, the histogram would show the rate at which we
+  // *ask*, which is not the rate the server sees and would have made a capped mover look like a
+  // speedhacker in our own evidence.
+  const rep = mover.cadence_report();
+  ok('cadence_report reports the cap that produced the histogram',
+     rep.move_cap_ms === MOVE_CAP_MS, `cap=${rep.move_cap_ms}`);
+  ok('only the ACCEPTED submits are counted — a rejected one is not a send',
+     rep.gaps_recorded === 1 && rep.accepted_submits === 2,
+     `gaps=${rep.gaps_recorded} accepted=${rep.accepted_submits}`);
+  ok('the 2000ms gap this block manufactured is not booked as sub-second jitter',
+     rep.under_1000ms === 0, JSON.stringify(rep).slice(0, 80));
+
+  // AND THE COUNTER-EVIDENCE FOR THE OTHER SIDE: a mover whose cap is OFF must record the 0ms gaps,
+  // because if the counters silently stayed empty we would have a clean report and no information.
+  const off = rig({});
+  off.mover._lastMoveSubmitAt = null;
+  off.mover._gapHist = new Map(); off.mover._subSecondGaps = 0; off.mover._gapMin = Infinity;
+  off.mover._claimMoveSlot(); off.mover._claimMoveSlot();   // uncapped rig: both accepted, 0ms apart
+  const orep = off.mover.cadence_report();
+  ok('a cadence-disabled rig DOES record its sub-second gaps — the counters are not silently empty',
+     orep.move_cap_ms === 0 && orep.under_1000ms === 1 && orep.min_gap_ms === 0,
+     JSON.stringify(orep).slice(0, 80));
+
+  // The same instrumentation on a mover at the LIVE cadence, which is the only configuration whose
+  // histogram means anything. Three submits a virtual 1000ms apart must show zero sub-second gaps.
+  const live = rig({});
+  live.mover._moveCapMs = MOVE_CAP_MS;
+  const ls = live.mover.session;
+  let vnow = Date.now();
+  const real_now = Date.now;
+  live.mover._lastMoveSubmitAt = null;
+  for (const off of [0, 1000, 2000]) {
+    // Drive _claimMoveSlot at controlled timestamps: this is the function the server's iDelta is
+    // computed against, so it is the right place to test rather than a reimplementation of it.
+    live.mover._lastMoveSubmitAt = vnow + off - 1000;
+    live.mover._claimMoveSlot();
+  }
+  const lrep = live.mover.cadence_report();
+  ok('at the live cadence the histogram shows no sub-second gaps',
+     lrep.move_cap_ms === 1000 && lrep.under_1000ms === 0, JSON.stringify(lrep).slice(0, 90));
 }
 
 console.log('\ndithered: sends with no net progress over a full window');

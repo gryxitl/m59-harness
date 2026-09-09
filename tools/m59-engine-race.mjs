@@ -19,19 +19,31 @@
 // Both movers are the real classes. The pre-fix file is byte-identical to
 // `git show 2d44a48^:tools/tick/m59-mover.mjs` (verified by an independent audit: diff = 0
 // lines), so this is the engine that was in production, not a reconstruction of it.
-import { Mover as VelocityMover } from './tick/m59-mover.mjs';
+import { Mover as VelocityMover, MOVE_CAP_MS } from './tick/m59-mover.mjs';
 import { Mover as StepMover } from './tick/m59-mover-preFix.mjs';
 
 const KOD = 64;
 const CLIENT_WALK = 2.5;   // squares/s
 const CLIENT_RUN = 5.0;    // squares/s — move.c:184 (2*MOVEUNITS) against move.c:188 (MOVEUNITS)
+const MOVE_INTERVAL_CLIENT_MS = 1000;   // move.c:57 — the client's own report interval
 
 // Chosen before the session rig is built, because the rig's `policy` object is what the mover
 // reads to decide the stride. See the comment at the rig.
 const RUN_MODE = process.argv.includes('--run');
 const GAITS = RUN_MODE ? ['run', 'walk'] : ['walk'];
 const DENOM = RUN_MODE ? CLIENT_RUN : CLIENT_WALK;
-const TICK_MS = 1050;      // USER_MOVE_MIN_INTERVAL_MS — the client's own MOVE_INTERVAL
+// THE CADENCE THE RACE CLOCKS AT, READ FROM THE MOVER RATHER THAN TYPED IN.
+//
+// This line used to read `const TICK_MS = 1050;` with the comment "USER_MOVE_MIN_INTERVAL_MS — the
+// client's own MOVE_INTERVAL". Both halves were false. The client's MOVE_INTERVAL is 1000
+// (move.c:57); 1050 was OUR number and nothing else. And because the race builds its mover with
+// `moveCapMs: 0` and drives a virtual clock, the literal here — not the mover's constant — was the
+// thing setting the cadence for every speed figure this harness ever printed.
+//
+// That is how a harness came to report "87% of the client" against a 1050 ms clock while calling
+// that clock the client's own, and to compute a ceiling from a cadence the mover did not use. Import
+// the real one so the number and the engine cannot disagree.
+const TICK_MS = MOVE_CAP_MS;
 
 // OPEN GROUND: no walls, so nothing ever stops the integration and the only difference
 // between the engines is how far each one is willing to say it got.
@@ -142,18 +154,39 @@ if (step.rate > 0) {
     console.log(`FASTER by ${((ratio - 1) * 100).toFixed(0)}%. The session-wide measurement was hiding it`);
   console.log('by averaging in combat and resting, which is not walking.');
 }
-// THE CEILING OUR OWN CADENCE ALLOWS, PRINTED SO IT CANNOT BE FORGOTTEN.
+// THE CEILING OUR OWN CADENCE ALLOWS, PRINTED FROM THE CADENCE IN USE.
 //
-// We are bound to one packet per 1050 ms by MOVEMENT_COUNT_THRESHOLD = 2, so the fastest legal
-// locomotion is stride/64/1.05 squares per second. Quoting "87% of the client" without this line
-// invites the reading that 13% is still on the table: it is not, because the remaining gap is the
-// 50 ms between the client's 1000 ms report interval and our 1050 ms, and buying it back would mean
-// sending faster than a legitimate player is allowed to.
+// This block used to hardcode "1050 ms" and "95%" in its output strings. When the cadence moved to
+// 1000 it went on printing a ceiling computed from a cadence nothing was using, and reported the
+// engine at "175% of that ceiling" — a percentage over 100% for a rate that is simply measured
+// against the wrong denominator. A report that cannot notice its own constant changed is not a
+// report. The cadence, the denominator and the percentage are all derived now.
 for (const [g, u] of [['walk', 160], ['run', 320]]) {
-  const ceil = u / KOD / 1.05;
-  console.log(`\n${g}: stride ${u} units = ${u / KOD} squares -> ceiling at a 1050 ms cadence `
-    + `is ${ceil.toFixed(2)} sq/s = ${(ceil / (u === 320 ? CLIENT_RUN : CLIENT_WALK) * 100).toFixed(0)}% `
-    + `of the client's ${g}. We are at ${(vel.rate / ceil * 100).toFixed(0)}% of that ceiling.`);
+  const client = g === 'run' ? CLIENT_RUN : CLIENT_WALK;
+  const ceil = u / KOD / (TICK_MS / 1000);
+  const measured = (RUN_MODE ? 'run' : 'walk') === g ? vel.rate : null;
+  console.log(`\n${g}: stride ${u} units = ${u / KOD} squares at a ${TICK_MS} ms cadence `
+    + `-> ceiling ${ceil.toFixed(2)} sq/s = ${(ceil / client * 100).toFixed(0)}% `
+    + `of the client's ${g} (${client} sq/s, which is a ${MOVE_INTERVAL_CLIENT_MS} ms cadence)`);
+  if (measured == null) {
+    // NOT MEASURED IN THIS INVOCATION. The gait is selected before the rig is built, so a run-mode
+    // race has no walk figure to report. The first version of this line read
+    // `(g === 'run' ? vel.rate : vel.rate)` — both branches the same expression — and printed the
+    // RUN rate under the WALK heading, which came out as "167% of that ceiling" and looked like a
+    // discovery about the engine when it was a typo about a label. A ternary whose branches agree is
+    // not a condition, and the guard below would have been the only thing that noticed.
+    console.log('   not measured in this invocation (gait selected before the rig is built). '
+      + 'Run with the other flag.');
+    continue;
+  }
+  console.log(`   engine measured ${measured.toFixed(2)} sq/s = ${(measured / ceil * 100).toFixed(0)}% `
+    + `of that ceiling, ${(measured / client * 100).toFixed(0)}% of the client's ${g}.`);
+  if (measured > ceil)
+    console.log('   *** MEASURED ABOVE THE CEILING — the cadence and the measurement disagree. '
+      + 'Check that the race clocks at TICK_MS and not at something else. ***');
 }
+console.log(`\nCadence in use: ${TICK_MS} ms (MOVE_CAP_MS). The official client reports at most once `
+  + `per\nMOVE_INTERVAL = ${MOVE_INTERVAL_CLIENT_MS} ms (move.c:57). At equal cadence and equal stride `
+  + `the rates are\nequal by construction: ${KOD ? '' : ''}${320 / KOD} squares per packet both.`);
 console.log('\nNOT CLAIMED: that the fleet walks this fast. The fleet\'s point-to-point median was');
 console.log('46/27/18% of the client and that deficit is routing and decisions, not stride length.');
