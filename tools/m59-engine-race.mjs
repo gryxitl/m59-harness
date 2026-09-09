@@ -24,6 +24,13 @@ import { Mover as StepMover } from './tick/m59-mover-preFix.mjs';
 
 const KOD = 64;
 const CLIENT_WALK = 2.5;   // squares/s
+const CLIENT_RUN = 5.0;    // squares/s — move.c:184 (2*MOVEUNITS) against move.c:188 (MOVEUNITS)
+
+// Chosen before the session rig is built, because the rig's `policy` object is what the mover
+// reads to decide the stride. See the comment at the rig.
+const RUN_MODE = process.argv.includes('--run');
+const GAITS = RUN_MODE ? ['run', 'walk'] : ['walk'];
+const DENOM = RUN_MODE ? CLIENT_RUN : CLIENT_WALK;
 const TICK_MS = 1050;      // USER_MOVE_MIN_INTERVAL_MS — the client's own MOVE_INTERVAL
 
 // OPEN GROUND: no walls, so nothing ever stops the integration and the only difference
@@ -71,7 +78,16 @@ async function race(MoverClass, label) {
     pacer: { depth: 0, submit: (k, fn) => { fn(); return Promise.resolve(); } },
     walkTo: (c, r) => { session.client.moveTo(c * KOD + 32, r * KOD + 32); return Promise.resolve(); },
     world: { geometry: geo },
-    policy: { allowRun: false },
+    // WALK or RUN. `--run` selects RUN_STRIDE_PROTO (320 protocol units = 5 squares) instead of
+    // WALK_STRIDE_PROTO (160 = 2.5 squares). This harness shipped with allowRun hard-off, which
+    // means every number it ever printed was a WALK-mode number — including the 2.18 squares/second
+    // and the "87% of the client" claim, both of which were measured with the run path switched off
+    // and never separately measured. The client's own rates are move.c:184/188 with draw3d.h:53
+    // MOVEUNITS = FINENESS>>2 = 64 and move.c:216 scaling by dt/MOVE_DELAY(100ms): walk 64 units per
+    // 100 ms = 2.5 squares/second, run 128 units per 100 ms = 5.0 squares/second. So "the client's
+    // walk rate" and "the client's speed" are a FACTOR OF TWO APART, and a percentage quoted against
+    // the wrong one is off by that factor. The denominator is labelled in the output for that reason.
+    policy: { allowRun: RUN_MODE },
   };
 
   const mover = new MoverClass(session, { reportIntervalMs: 0, moveCapMs: 0 });
@@ -106,6 +122,17 @@ for (const r of [step, vel]) {
     + `${(r.rate / CLIENT_WALK * 100).toFixed(0).padStart(6)}%`);
 }
 console.log('');
+console.log(`30 squares of open ground, virtual clock, identical geometry, one engine per run`
+  + `\ngait: ${RUN_MODE ? 'RUN (320-unit stride)' : 'WALK (160-unit stride)'}  `
+  + `— percent column is against the client's ${RUN_MODE ? 'RUN' : 'WALK'} rate of ${DENOM} sq/s`);
+console.log('');
+console.log(`engine      arrived  packets   ground      time      sq/s   % of client ${RUN_MODE ? 'run' : 'walk'}`);
+for (const r of [step, vel]) {
+  console.log(`${r.label.padEnd(11)} ${String(r.arrived).padEnd(9)} ${String(r.packets).padStart(5)}  `
+    + `${r.ground.toFixed(1).padStart(6)} sq ${r.sec.toFixed(1).padStart(6)} s  ${r.rate.toFixed(2).padStart(6)}  `
+    + `${(r.rate / DENOM * 100).toFixed(0).padStart(6)}%`);
+}
+console.log('');
 if (step.rate > 0) {
   const ratio = vel.rate / step.rate;
   console.log(`velocity / step = ${ratio.toFixed(2)}x on identical ground`);
@@ -115,3 +142,18 @@ if (step.rate > 0) {
     console.log(`FASTER by ${((ratio - 1) * 100).toFixed(0)}%. The session-wide measurement was hiding it`);
   console.log('by averaging in combat and resting, which is not walking.');
 }
+// THE CEILING OUR OWN CADENCE ALLOWS, PRINTED SO IT CANNOT BE FORGOTTEN.
+//
+// We are bound to one packet per 1050 ms by MOVEMENT_COUNT_THRESHOLD = 2, so the fastest legal
+// locomotion is stride/64/1.05 squares per second. Quoting "87% of the client" without this line
+// invites the reading that 13% is still on the table: it is not, because the remaining gap is the
+// 50 ms between the client's 1000 ms report interval and our 1050 ms, and buying it back would mean
+// sending faster than a legitimate player is allowed to.
+for (const [g, u] of [['walk', 160], ['run', 320]]) {
+  const ceil = u / KOD / 1.05;
+  console.log(`\n${g}: stride ${u} units = ${u / KOD} squares -> ceiling at a 1050 ms cadence `
+    + `is ${ceil.toFixed(2)} sq/s = ${(ceil / (u === 320 ? CLIENT_RUN : CLIENT_WALK) * 100).toFixed(0)}% `
+    + `of the client's ${g}. We are at ${(vel.rate / ceil * 100).toFixed(0)}% of that ceiling.`);
+}
+console.log('\nNOT CLAIMED: that the fleet walks this fast. The fleet\'s point-to-point median was');
+console.log('46/27/18% of the client and that deficit is routing and decisions, not stride length.');
