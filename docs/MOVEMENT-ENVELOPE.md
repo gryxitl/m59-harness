@@ -752,3 +752,82 @@ And one claim I made in the previous section and withdraw: "0 of 6,222 declarati
 server." `srv=` is logged at submit time, before the server has moved. Counted properly, 5,894 server
 readings land on positions we declared, across 534 distinct declarations. The server does adopt. The
 declarations are not being ignored.
+
+## Why the fleet crawls: it is not the locomotion model (measured 2026-09-09)
+
+This document was written when the fleet moved at 0.07 squares/s, and the goal that
+followed assumed the cause was the step engine integrating one square per packet while
+the velocity engine would integrate five. **That assumption was wrong, and the
+measurement that settled it is worth keeping.**
+
+The mover's own log distinguishes three things that were previously conflated:
+
+| | what it means | where |
+|---|---|---|
+| `at=` | the position we **declared** on the wire | `[move-sent]` |
+| `srv=` | where the **server** says we are, at send time | `[move-sent]` |
+| `aim=` | the route destination — **informational, not a packet** | `[move-sent]` |
+
+`aim=` is `destProto` at three of the four `_recordSend` call sites. Reading it as the
+declared position makes every packet look like a 12-square lunge at the envelope limit.
+It is not a packet field. Read `at=`.
+
+Measured on the live shard, 29,541 same-room moving packets: **median 5.00 squares per
+packet**, which is 100% of the client's run rate. The engine is not the bottleneck.
+
+What was:
+
+1. **Rest share.** The decider rested mid-journey because the travel-mode check was dead
+   code. Rest share 62% -> 3% once `session._manualDest` was stamped on `hunt -> travel`.
+2. **Retry loops with no memory.** A character in the Brownestone Inn (106) spent over
+   twenty minutes between two adjacent squares at a perfect 1000ms cadence — 111 sends
+   in two minutes, 30 squares of ground covered, **net displacement zero**. It declared
+   the same refused step four times, re-planned, chose it again because every static
+   predicate says the square is walkable, and repeated in reverse. Fixed by refusal
+   memory (`_noteRefusedStep`, `orderCandidates({ refused })`): the square is excluded
+   for 45s and the route goes around. t3 then walked from room 106 to room 593 — out of
+   the inn and across the map — at 1.03 squares/s net, 42.5 squares of net progress in
+   the 150s window after the fix, having managed zero before it.
+
+**The server never explains a refusal.** Every predicate in the bake said the refused
+step was legal — `fineWalkable`, `walkable`, `standable`, `moverStepLands`,
+`stepAllowedByCollision`, `heightStepOk`, floor height 2048 on both squares — and an
+adjacent square was legal in both grids. The bake is a snapshot of a `.roo` file; the
+shard is a live world with players, containers, vendors and kod in it. Only the server
+knows what is standing there, and it already told us.
+
+## How to measure this without fooling yourself
+
+Six of seven hypotheses about the two-square pin were disproved by my own probing
+errors. Each is a trap that produces a confident, wrong answer:
+
+- **`fineWalkable` / `walkable` / `standable` take `(row, col)`, not `(col, row)`.**
+  Reversed arguments return a real boolean for a different square. This is the single
+  easiest mistake to make in this codebase, because everything on the wire is `(x, y)`.
+- **`client.self.col/.row` are ZERO-based; the geometry API is ONE-based.** The mover
+  compensates with `_c1 = _me.col + 1`. Forgetting it shifts every answer by one square
+  on both axes.
+- **`heightStepOk(r0, c0, r1, c1)` takes FOUR SCALARS.** Called with two `{row, col}`
+  objects it reads `h1 == null` and returns `false` — a clean-looking "height refuses
+  this step" that is really an arity error.
+- **`traceFineMoveClient` is CLIENT UNITS (1024/square)**, not KOD units (64/square).
+  Passing KOD coordinates asks about square 0.
+- **`slide` DEFAULTS TO TRUE** in `traceFineMoveClient`. With it on, a legal step can
+  come back `blocked: true, slid: true` because the trace slid along the wall instead of
+  entering. The mover passes `slide: false` at all four call sites; a probe that does not
+  is measuring something else.
+- **`geometryFor` exists twice.** `m59-safespots.mjs` returns a geometry with no
+  `roomNum`; `m59-roo.mjs`'s `sharedRoomGeometry` sets `roomNum` from the map record.
+  Offline probes that import the first cannot reproduce what the live process does, and
+  will report `roomNum: undefined` for a room the log prints a number for.
+- **`is_self` in `/room-view` is correct, and the roster keys are not the in-game names.**
+  t1=Gountrug, t2=Kage, t3=JayB, t4=Lee, t5=Sasquatch. Reading an `is_self` object as
+  "another player is blocking us" when it is our own character is a two-minute detour
+  that costs an afternoon if you do not check the names.
+
+**A green test count is not evidence that anything ran.** Twice in one session a suite
+reported success while skipping tests entirely: a `decide-test` rig with no
+`world.geometry` (so `restSpotFor` took its no-geometry path and three versions of a
+change went unnoticed), and a premature `process.exit` at `m59-mover-test.mjs:2083` that
+made every test appended after it silently never run while the suite printed `199
+passed`. When you add a test, grep for its name in the output.
