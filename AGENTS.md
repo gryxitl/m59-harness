@@ -107,6 +107,29 @@ Variants: `--checkpoint` (snapshot only), `--keep-server`, `--label "..."`,
 `--list`, `--restore <id>`. Restore refuses while the server is up. Report where
 the checkpoints went; do not delete old ones unasked.
 
+## A restart destroys the only record of what the fleet did
+
+`substrate/keeper-<name>.log` is written **in place**. There is no rotation and no
+archive. `m59-service.mjs restart` truncates it, and everything the characters did up to
+that moment is gone — including the evidence for whatever you are currently debugging.
+
+```bash
+cp substrate/keeper-*.log /tmp/ && node tools/m59-service.mjs restart --fleet -
+```
+
+This is not a style note. Four restarts during one debugging session destroyed the
+measurements that justified two of the three fixes shipped from it; they are written
+down as reported observations in `docs/HANDOFF-LOCOMOTION.md` rather than as checkable
+numbers, because they cannot be checked any more.
+
+**Volume, if you are grepping:** one keeper log held 649,627 `[movedbg]` lines against
+40,643 `[move-sent]`. The signal is 6% of the file. `M59_MOVE_DEBUG=0` silences the
+per-tick chatter; `move-sent` is the per-packet record and the only faithful speed
+instrument: read `at=` for what we declared and `srv=` for where the server says we are,
+and **not** `aim=`, which is the route destination at three of four call sites and not a
+packet. Reading `aim=` as a packet makes every send look like a 12-square lunge past the
+envelope limit. See `docs/MOVEMENT-ENVELOPE.md` for the full field table.
+
 ## Tell the user, do not work around
 
 - **Steam cannot be automated.** It will not install a game the user does not own
