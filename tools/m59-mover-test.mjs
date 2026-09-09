@@ -2080,5 +2080,81 @@ console.log('\nvelocity engine: five specific behaviours');
      c.col > 2, `ended at col=${c.col} from col=2, dest 22`);
 }
 
+
+// ---------------------------------------------------------------------------
+// REFUSAL MEMORY. The mover could plan, could send, and could read the server's answer,
+// but it had no memory of being told no. On the live shard one character declared the
+// identical step four times in four seconds — n=746..749, at=480,480 from srv=480,416 —
+// and the server moved it nowhere; across eight minutes it reported two squares in total.
+// Every static predicate says that square is walkable (fineWalkable, walkable, standable,
+// moverStepLands, stepAllowedByCollision, heightStepOk, same floor height on both). They
+// are not wrong about the geometry. None of them can see a body, a crate, or a kod
+// script, because the bake is a snapshot of a .roo file and the shard is a live world.
+//
+// The consequence was a two-square ping-pong that looked healthy: perfect 1000ms cadence,
+// 111 sends in two minutes, 30 squares of ground covered, net displacement zero.
+// ---------------------------------------------------------------------------
+{ const { orderCandidates } = await import('./tick/m59-mover.mjs');
+const makeMover = (o) => new Mover({ session: o.session ?? { client: {}, world: {} }, ...o });
+console.log('\nthe mover remembers a step the server refused');
+{
+  ok('orderCandidates excludes a refused square outright',
+     orderCandidates([[8,7],[9,7]], [], 0, { refused: ['8,7'] })
+       .every(([c, r]) => !(c === 8 && r === 7)),
+     JSON.stringify(orderCandidates([[8,7],[9,7]], [], 0, { refused: ['8,7'] })));
+
+  // ...and does it even when the soft taboo would have let it back in. This is the
+  // difference that matters: `taboo` only reorders, and a refused square is the shortest
+  // route, so it sorts to the front again as soon as it leaves the 8-entry window.
+  ok('a refusal is harder than the recent-step taboo',
+     orderCandidates([[8,7],[9,7]], ['8,7'], 5, { refused: ['8,7'] })
+       .every(([c, r]) => !(c === 8 && r === 7)),
+     JSON.stringify(orderCandidates([[8,7],[9,7]], ['8,7'], 5, { refused: ['8,7'] })));
+
+  // If EVERY candidate is refused the character must still move. Freezing in place is the
+  // failure this feature is meant to cure, so trading a ping-pong for a statue would be a
+  // regression dressed as a fix.
+  ok('a fully refused neighbourhood still yields a step rather than freezing',
+     orderCandidates([[8,7],[7,6]], [], 5, { refused: ['8,7', '7,6'] }).length === 2,
+     JSON.stringify(orderCandidates([[8,7],[7,6]], [], 5, { refused: ['8,7', '7,6'] })));
+
+  // The TTL is the other half of the design. A refusal is usually a player who walks away;
+  // a permanent ban turns a temporary crowd into a permanently unreachable room.
+  ok('_noteRefusedStep records the square and _refusedKeys returns it', (() => {
+    const m = makeMover({});
+    m._noteRefusedStep(8, 7, 7, 6);
+    return m._refusedKeys().includes('8,7');
+  })(), 'not recorded');
+
+  ok('an expired refusal is dropped and forgets itself', (() => {
+    const m = makeMover({});
+    m._noteRefusedStep(8, 7, 7, 6);
+    m._refusedSteps.set('8,7', { until: Date.now() - 1, from: '7,6' });
+    return m._refusedKeys().length === 0 && m._refusedSteps.size === 0;
+  })(), 'still present or not cleaned up');
+
+  ok('re-declaring a refused step extends its ban', (() => {
+    const m = makeMover({});
+    m._noteRefusedStep(8, 7, 7, 6);
+    m._refusedSteps.set('8,7', { until: Date.now() + 1000, from: '7,6' });
+    const before = m._refusedSteps.get('8,7').until;
+    m._noteRefusedStep(8, 7, 7, 6);
+    return m._refusedSteps.get('8,7').until > before;
+  })(), 'ban did not extend');
+
+  ok('the refusal map is bounded so a long journey cannot grow it forever', (() => {
+    const m = makeMover({});
+    for (let i = 0; i < 200; i++) m._noteRefusedStep(i, 0, 0, 0);
+    return m._refusedSteps.size <= 64;
+  })(), 'grew past the cap');
+
+  ok('a non-finite square is ignored rather than poisoning the map', (() => {
+    const m = makeMover({});
+    m._noteRefusedStep(NaN, 5, 0, 0); m._noteRefusedStep(null, null, 0, 0);
+    return m._refusedKeys().length === 0;
+  })(), 'garbage got in');
+}
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

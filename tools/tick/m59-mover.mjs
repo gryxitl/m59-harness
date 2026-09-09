@@ -124,9 +124,39 @@ export const OWNER_STALE_MS = 10000;
 // movement, not stuck): applied any earlier it turns straight walks into
 // a drunkard's dither. While the server advances, walk straight at the
 // goal; dead ends backtrack once static.
+/** How long a server-refused step stays excluded from the next plan. See
+ *  Mover._noteRefusedStep. Nine move intervals at the 1000ms cadence. */
+export const REFUSED_STEP_TTL_MS = 45_000;
+
 export function orderCandidates(candidates, recentSteps, stuckTicks, opts = {}) {
   const taboo = stuckTicks >= 3 ? (recentSteps ?? []) : [];
   let list = candidates;
+
+  // SQUARES THE SERVER HAS ACTUALLY REFUSED, which is a different thing from squares we
+  // have recently walked on and must not be conflated with them.
+  //
+  // `taboo` above is SOFT: refused squares are moved to the back and remain eligible.
+  // That is right for our own footfall and wrong for a refusal. Measured on the live
+  // shard, one character declared the same step four times in four seconds (n=746..749,
+  // at=480,480 from srv=480,416) and the server did not move it once; then the mover
+  // re-planned, the new path began with the square it had just come from, and it walked
+  // back. The refused square reappears as a candidate on the next plan because the bake
+  // says it is walkable — fineWalkable, walkable, standable, moverStepLands,
+  // stepAllowedByCollision and heightStepOk all say true, and the two squares are the
+  // same floor height. The bake is not wrong about the geometry; it is silent about the
+  // thing standing there.
+  //
+  // A soft reorder cannot fix that, because the square is the SHORTEST route and so sorts
+  // to the front again the moment it leaves the 8-entry window. It needs to be excluded
+  // outright, for as long as a refusal plausibly still means what it meant.
+  const refused = opts.refused ?? [];
+  if (refused.length) {
+    const hard = list.filter(([cc, rr]) => !refused.includes(cc + ',' + rr));
+    // If EVERY candidate was refused we must still move, or a character with a fully
+    // refused neighbourhood would freeze in place — the failure this is meant to cure.
+    // Fall back to the unfiltered list, which is the pre-existing behaviour.
+    list = hard.length ? hard : list;
+  }
   // MONSTER RULE (monster.kod MoveInDirection): never step 180 degrees
   // from the goal — wall-follow with the perpendiculars instead. Applies
   // only while moving; a genuinely stuck character may backtrack anywhere.
@@ -595,6 +625,73 @@ export class Mover {
   _plan(fromProtoX, fromProtoY) {
     const geo = this.session?.world?.geometry;
     if (!geo?.finePathProtocol) return { found: false, reason: 'no_geometry' };
+
+    // THE GEOMETRY MUST BELONG TO THE ROOM THE CHARACTER IS STANDING IN.
+    //
+    // Why this check exists, stated as a measurement rather than a theory. One character
+    // sat in the Brownestone Inn (106) for over twenty minutes declaring 258 move packets
+    // across five minutes, during which the server saw exactly TWO positions and it never
+    // left one square. Every local predicate said the step was legal — fineWalkable,
+    // walkable, standable, moverStepLands, stepAllowedByCollision, heightStepOk, floor
+    // height 2048 on both squares. It was not blocked by anything in the room it was in.
+    //
+    // It was planning on the geometry of room 575, the room it was trying to REACH. The
+    // destination square (12,17) 0-based is fine-walkable in 575 and NOT coarse-walkable in
+    // 106, so the strict search exhausts a 127-square pocket and reports `no fine path`
+    // with a suspiciously constant expanded=116. The coarse tier then returns 11
+    // waypoints computed on 575's floor, whose first step has moverStepLands=false — an
+    // illegal step in the room the character is actually in. The mover sends it, the server
+    // refuses, movestuck wipes the path, and the next tick re-plans the identical
+    // nonsense. 7,951 movestuck lines against 960 move-sent in thirteen minutes.
+    //
+    // The legacy already names this and I had not read it: m59-game.mjs:3417 returns
+    // `position_outside_room_geometry` with the note that the character is "standing
+    // outside the bounds of the room geometry loaded for it — the two are almost certainly
+    // different rooms, which is a room-change race and not a hole in the map". The tick
+    // driver has zero occurrences of that guard. It checks the AIM against the geometry's
+    // bounds (line ~1734) and never checks the GEOMETRY against the room, which is the
+    // check that matters, because a wrong-room geometry passes every bounds test — 575 is
+    // 48x50 and 106 is 20x21, and (12,17) is in bounds of both.
+    //
+    // Refusing to plan is the correct action, not a workaround. A plan computed on another
+    // room's floor is not a bad plan that sometimes works; it is not a plan about this room
+    // at all. Returning a reason lets the caller wait one tick, by which time the room
+    // change has normally settled. This is a race, and the cure for a race is to re-read,
+    // not to steer around the symptom.
+    {
+      const room = this.session?.world?.room ?? null;
+      const roomNum = room?.num ?? this.s?.client?.room?.num ?? null;
+      // The identity that actually exists on both sides. A RoomGeometry carries the .roo
+      // FILE it was built from (`file`), and the map's room record carries the file it
+      // names (`rooFile`). Neither carries a room NUMBER, which is why a naive
+      // `geo.roomNum !== room.num` check would have been inert — it compares two
+      // undefineds, finds them equal, and never fires. I wrote exactly that inert guard
+      // first and called it a fix; this is the version that can actually fire.
+      //
+      // barinn.roo is room 106 (Brownestone Inn), g5.roo is room 575. Different files, so
+      // the comparison is real and not a tautology.
+      const geoFile = geo?.file ?? null;
+      const roomFile = room?.rooFile ?? room?.roo?.file ?? null;
+      if (geoFile != null && roomFile != null && geoFile !== roomFile) {
+        if (process.env.M59_MOVE_DEBUG !== '0') {
+          console.error(`[geo-mismatch] ${this.logName} standing in room ${roomNum}`
+            + ` (${roomFile}) while planning on ${geoFile}`
+            + ' — room-change race, refusing to plan on another room floor');
+        }
+        return { found: false, reason: 'geometry_room_mismatch',
+          note: `standing in room ${roomNum} (${roomFile}) while holding geometry for ${geoFile}`
+              + ' — room-change race; re-plan next tick' };
+      }
+      // One-shot identity dump, so the question 'which geometry does the mover hold'
+      // is answered by the log instead than by reading assignments that do not exist.
+      if (!this._geoIdLogged && roomNum != null) {
+        this._geoIdLogged = true;
+        if (process.env.M59_MOVE_DEBUG !== '0') {
+          console.error(`[geo-id] ${this.logName} room=${roomNum} roomFile=${roomFile ?? 'unknown'}`
+            + ` geoFile=${geoFile ?? 'unknown'} — ${roomFile == null ? 'UNCHECKABLE: the room record names no .roo, so a wrong-room geometry would pass silently' : 'comparable'}`);
+        }
+      }
+    }
     // If the character is in an invalid square, the fine
     // path will be garbage. Walk to the nearest valid
     // square first. A square is valid if EITHER grid says
@@ -2003,7 +2100,8 @@ export class Mover {
       // (each step avoids the last, so open ground random-walks at ~0 net).
       // While the server position advances, walk straight at the goal.
       const ordered0 = orderCandidates(candidates, this._recentSteps, this.stuckTicks,
-        { meCol: myCol, meRow: myRow, goalCol: destCol, goalRow: destRow });
+        { meCol: myCol, meRow: myRow, goalCol: destCol, goalRow: destRow,
+          refused: this._refusedKeys() });
       for (const [nc, nr] of ordered0) {
         const f = geo?.fineWalkable ? geo.fineWalkable(nr, nc) : undefined;
         const c = geo?.walkable ? geo.walkable(nr, nc) : undefined;
@@ -2168,7 +2266,7 @@ export class Mover {
     // Same stuck-gating as the waypoint branch: straight while moving.
     let stepCol = null, stepRow = null;
     const ordered1 = orderCandidates(candidates, this._recentSteps, this.stuckTicks,
-      { meCol: myCol, meRow: myRow, goalCol: wpCol, goalRow: wpRow });
+      { meCol: myCol, meRow: myRow, goalCol: wpCol, goalRow: wpRow , refused: this._refusedKeys() });
     // REFUSAL ACCOUNTING (motion-only diagnostics): when no candidate
     // survives, the log must say WHICH check walled us in — otherwise
     // "stuck" is a mystery and we can't tell a real wall from an
@@ -2414,6 +2512,50 @@ export class Mover {
           console.error(`[movedbg] ${this.logName} gateOK step=(${stepCol},${stepRow}) ERR ${e.message}`); });
       this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY, enrProtoX, enrProtoY, 'waypoint-step');
       this._recordReport(enrProtoX, enrProtoY);
+
+      // DID THE SERVER ACTUALLY REFUSE THIS STEP? Decided from the server's own position,
+      // not from our model of the room.
+      //
+      // The test is that we declared the SAME square from the SAME square on consecutive
+      // sends and the server put us nowhere else in between. One repeat proves nothing —
+      // the server echoes with a delay and a legitimate 1000ms move has the character
+      // mid-stride. Three consecutive identical declarations with no change in the server
+      // position is not a delay: at a 1000ms cadence that is three seconds of asking for
+      // the same square and being refused.
+      //
+      // Measured on the live shard, exactly this pattern ran for over twenty minutes:
+      // n=746..749 declaring at=480,480 from srv=480,416, the server reporting two squares
+      // total across eight minutes. The mover treated every refusal as a fresh plan and
+      // re-chose the same step, because the bake rates that square walkable by every
+      // predicate it has. It is not wrong about the geometry; it cannot see a body.
+      if (this._lastDecl && this._lastDecl.to === stepCol + ',' + stepRow
+          && this._lastDecl.from === curCol + ',' + curRow) {
+        this._declRepeats = (this._declRepeats ?? 0) + 1;
+        if (this._declRepeats >= 2) {
+          this._noteRefusedStep(stepCol, stepRow, curCol, curRow);
+          if (process.env.M59_MOVE_DEBUG !== '0') {
+            console.error(`[step-refused] ${this.logName} server will not enter (${stepCol},${stepRow})`
+              + ` from (${curCol},${curRow}) after ${this._declRepeats + 1} identical declares`
+              + ` — bake says fine=${geo?.fineWalkable?.(curRow + 1, stepCol + 1)}`
+              + ` coarse=${geo?.walkable?.(curRow + 1, stepCol + 1)}`
+              + `; excluding it for ${Math.round(REFUSED_STEP_TTL_MS / 1000)}s and routing around`);
+          }
+          this._declRepeats = 0;
+          // DROP THE PATH NOW. Waiting for stuckTicks to reach 5 costs four more refused
+          // sends and, worse, keeps the mover declaring a square it has proof it cannot
+          // enter. The path was computed through this square; now that the square is
+          // known-unsafe the path is stale, and the honest thing is to say so and re-plan
+          // from where the server actually has us. The re-plan reads _refusedSteps via
+          // the candidate order below, and the strict/coarse A* will pick a route that
+          // goes around rather than through.
+          this.path = null;
+          this.pathIdx = 0;
+          this._lastWpKey = null;
+        }
+      } else {
+        this._declRepeats = 0;
+      }
+      this._lastDecl = { to: stepCol + ',' + stepRow, from: curCol + ',' + curRow };
       this._noteServerStatic(curCol, curRow);
     } else {
       if (process.env.M59_MOVE_DEBUG !== '0')
@@ -3013,6 +3155,58 @@ export class Mover {
   // SERVER-STATIC TRACKING (shared): the raw direct-send sites bypassed
   // _sendStep/_sendWaypoint, so stuckTicks froze at 0 while sends flowed
   // and the server never moved — fan, diagnostics, and stand logic blind.
+  /**
+   * REMEMBER THAT THE SERVER REFUSED A STEP, so the next plan routes around it.
+   *
+   * Why this exists rather than a bigger retry budget: the mover already re-plans and
+   * already has a taboo list, and neither helps, because both treat a refusal like a
+   * delay. It is not a delay. On the live shard one character sent the identical step
+   * four times in four seconds and the server never moved it, then the mover re-planned
+   * and chose the same step again, because every static predicate in the bake says the
+   * square is walkable. They are all correct about the geometry and none of them can see
+   * a body, a container, or a kod script.
+   *
+   * The evidence for a refusal is the only thing in this system that comes from the
+   * server rather than from our own model: we declared a square, we are still where we
+   * were. That is an observation about the world and it should outrank a prediction
+   * about a file.
+   *
+   * TTL, not permanent. A refusal is probably a player who will walk away, a container
+   * that will be picked up, or a door that will open. A permanent ban would turn a
+   * temporary crowd into a permanently unreachable room, which is a worse and rarer
+   * failure than the ping-pong. 45 seconds is about nine move intervals — enough to
+   * outlast a crowd crossing our path, short enough that a genuinely blocked route is
+   * retried rather than silently abandoned.
+   */
+  _noteRefusedStep(toCol, toRow, fromCol, fromRow) {
+    if (!Number.isFinite(toCol) || !Number.isFinite(toRow)) return;
+    const key = toCol + ',' + toRow;
+    const now = Date.now();
+    if (!this._refusedSteps) this._refusedSteps = new Map();
+    // Re-declaring the same refused step EXTENDS the ban: the server has just refused it
+    // again, which is evidence the obstruction is still there. Without this, a character
+    // that keeps choosing the blocked square would let the ban lapse mid-crowd.
+    this._refusedSteps.set(key, { until: now + REFUSED_STEP_TTL_MS, from: fromCol + ',' + fromRow });
+    if (this._refusedSteps.size > 64) {
+      // Bound the memory. Drop the oldest-expiring entries rather than the whole map, so
+      // a long journey does not lose the refusals it is actively routing around.
+      const stale = [...this._refusedSteps.entries()].sort((a, b) => a[1].until - b[1].until);
+      for (const [k] of stale.slice(0, this._refusedSteps.size - 64)) this._refusedSteps.delete(k);
+    }
+  }
+
+  /** Live, unexpired refusals as 'col,row' keys, for orderCandidates. */
+  _refusedKeys() {
+    if (!this._refusedSteps?.size) return [];
+    const now = Date.now();
+    const out = [];
+    for (const [k, v] of this._refusedSteps) {
+      if (v.until > now) out.push(k);
+      else this._refusedSteps.delete(k);
+    }
+    return out;
+  }
+
   _noteServerStatic(col, row) {
     if (col == null || row == null) return;
     if (this.lastPos && this.lastPos.col === col && this.lastPos.row === row) this.stuckTicks++;
