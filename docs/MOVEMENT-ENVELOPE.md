@@ -514,3 +514,31 @@ Two things follow, and they are bigger than the stride work this document is mos
 The honest summary of this goal, in the auditor's own framing: the locomotion engine was restored
 and is measurably 2x the step engine per packet, and the fleet still does not move at client rate
 — and a large part of the reason is this, which the goal was never scoped to find.
+
+### 13a. What routing doors would buy, measured before writing the fix
+
+BFS from the Brownestone Inn (106) over the route graph, with and without `goExits`:
+
+| adjacency | rooms reachable from 106 |
+|---|---|
+| as the router works today (edges + regions) | **1** — the inn itself |
+| if unlocked doors were routed | **155** of 264 |
+
+t4 and t5 are sitting in a room that the pathfinder believes is the entire world. That is not a
+slow mover; it is a character with nowhere it is allowed to go.
+
+And the check that stops this becoming a fix-on-request: **room 1013, the smith the decider has
+armed 4,441 times, is STILL unreachable even with doors routed.** So there are two independent
+defects and the door fix cures only one:
+
+1. **Router blindness** — doors unrouted, 51% of rooms dead-ended. Fixing it takes the inn from
+   1 reachable room to 155, and makes room 535 reachable at 7 hops.
+2. **Decider not honouring a failed route** — it re-arms an impossible destination every tick,
+   forever, and silently discards every `travel` order sent to it. `stand` does not clear it. This
+   one is not fixed by better routing, because 1013 stays unreachable either way. A `no-route`
+   answer must retire the goal that asked for it, not retry it 4,441 times.
+
+Until (2) is fixed, no `travel` order can be delivered to t4 or t5 at all — which is why step 6 of
+this goal could not put a destination in front of t4 even though t3 accepted one immediately. It
+also means the audit's "t4: 0 destinations" is not a mover defect and cannot be closed by any
+change to the mover.
