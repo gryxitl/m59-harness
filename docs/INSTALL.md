@@ -227,11 +227,14 @@ The client has no credential store, no token, and no way to be handed a login
 except `/W:` on its command line. So every shortcut contains one account's
 password in plain text. `shortcuts/` is gitignored and written `0700` for that
 reason, and the tool masks passwords in its own output unless you pass `--show`.
-Treat the directory exactly like `substrate/fleet-accounts.json` — except that
-this one is disposable, because it is regenerated from the roster in a second.
+Treat the directory exactly like the rosters (`substrate/fleet-state.json`,
+`substrate/fleets/*.json`) — except that this one is disposable, because it is
+regenerated from the roster in a second.
 
-Deleting a fleet's shortcuts loses nothing. Deleting `fleet-accounts.json` loses
-the characters.
+Deleting a fleet's shortcuts loses nothing. Deleting a **roster** loses the
+characters. Note that the roster, not `substrate/fleet-accounts.json`, is where the
+passwords of anything the broker has joined actually live — see the trap in
+`AGENTS.md`.
 
 ### Sprites
 
@@ -339,7 +342,14 @@ that stop a fleet stalling and are both karma-free, so a fresh neutral character
 can actually cast them.
 
 Account passwords are generated and written to `substrate/fleet-accounts.json`,
-which is gitignored. That file is the only record — do not delete it.
+which is gitignored. That file is the only record **of the characters
+`m59-makefleet.mjs` created** — do not delete it.
+
+It is not the only record of the fleet's passwords. When the broker joins a character,
+`rememberJoin()` copies the credential object — password included — into the roster, so
+`substrate/fleet-state.json` and `substrate/fleets/<name>.json` also hold plaintext
+passwords, for characters that exist nowhere in `fleet-accounts.json`. Back up both, or
+just run `node tools/m59-backup.mjs --credentials-only`, which takes all of them.
 
 ## Saving, and why the volume is not optional
 

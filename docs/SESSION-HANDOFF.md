@@ -61,8 +61,13 @@ roo 818/0. (No `timeout` command on macOS — run suites individually.)
   double its rejoin wait (15-min cap). If a keeper won't respawn, do a full
   `m59-service.mjs stop` + `start` to reset the backoff.
 - **Fleet-state save merges fields** present on disk but absent in memory
-  (fix for the credential-loss bug). `substrate/fleet-accounts.json` is the
-  only copy of passwords — never commit, print, or delete it.
+  (fix for the credential-loss bug). **The rosters are the only copy of the
+  passwords, and there are two of them:** `substrate/fleet-state.json` and
+  `substrate/fleets/<name>.json` hold the credentials of every character the broker has
+  joined (`rememberJoin()` writes the whole credential object into the roster), while
+  `substrate/fleet-accounts.json` holds only what `m59-makefleet.mjs` created and is never
+  read by the broker to log anyone in. Never commit, print, or delete any of them; back
+  them up with `node tools/m59-backup.mjs --credentials-only`.
 
 ## 4. Invariants that are easy to break
 

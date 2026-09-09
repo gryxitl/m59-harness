@@ -159,9 +159,20 @@ and most of the time was spent on measurement bugs of our own. The short version
   the real one plays on. Use `tools/m59-mcp-attach.mjs`, which holds no state.
 - **Never call the `leave` tool** on a fleet anyone cares about — it drops the
   roster, and the roster is the only record of the passwords.
-- **`substrate/fleet-accounts.json` is the only copy of the account passwords.**
-  Gitignored. Never commit it, never print it into a shared transcript, never
-  delete it.
+- **The rosters are the only copy of the account passwords — and there are two of
+  them.** `substrate/fleet-state.json` (the unnamed fleet) and
+  `substrate/fleet-state.json`'s named equivalents under `substrate/fleets/<name>.json`
+  hold the credentials of **every character the broker has ever joined**, because
+  `rememberJoin()` (m59-broker.mjs:1242) copies the whole credential object — password
+  included — into the roster and saves it. `substrate/fleet-accounts.json` holds only
+  what `m59-makefleet.mjs` created. **The broker never reads that file to log anyone in.**
+  Backing up only `fleet-accounts.json` — which is what this document used to tell you to
+  do, and what lost a fleet once — leaves the actually-playing characters unbacked.
+  There is no password reset, no email on the account, and no way to ask the server; lose
+  the file and the characters are not deleted, just permanently unreachable.
+  `node tools/m59-backup.mjs --credentials-only` covers all of it and has done since it
+  was written. Gitignored: never commit any of them, never print their contents into a
+  shared transcript, never delete them.
 - **`[Channel] Flush` defaults to `No`**, and with it off every server log stays
   at 0 bytes for ever — which looks exactly like a hook not firing. The container
   turns it on; a native build may not have.

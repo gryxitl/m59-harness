@@ -437,9 +437,20 @@ Guilds — [`docs/m59-guilds.md`](docs/m59-guilds.md):
 - **Never call the `leave` tool** on a fleet anyone cares about. It drops the
   roster, and the roster is the only record of the account passwords.
 
-- **`substrate/fleet-accounts.json` is the only copy of the passwords** for
-  characters `m59-makefleet.mjs` created. It is gitignored. Never commit it,
-  never print its contents into a shared transcript, and never delete it.
+- **The rosters are the only copy of the account passwords — and there are two of
+  them.** `substrate/fleet-state.json` (the unnamed fleet) and `substrate/fleets/<name>.json`
+  (a named one) hold the credentials of **every character the broker has ever joined**:
+  `rememberJoin()` at m59-broker.mjs:1242 copies the entire credential object — password
+  included — into the roster and writes it to disk. `substrate/fleet-accounts.json` holds
+  only the characters `m59-makefleet.mjs` created, and **the broker never reads it to log
+  anyone in.** A previous version of this file named `fleet-accounts.json` as "the only
+  copy", which sends you to back up the smaller of the two and leaves the characters that
+  are actually playing unbacked. There is no password reset, no email on the account, and
+  no way to ask the server — lose the file and the characters are not deleted, they are
+  permanently unreachable, still standing in the world.
+  `node tools/m59-backup.mjs --credentials-only` covers every one of them. All are
+  gitignored: never commit them, never print their contents into a shared transcript, and
+  never delete them.
 
 - **`[Channel] Flush` defaults to `No`**, and with it off every server log stays
   at 0 bytes for ever. This looks exactly like a hook not firing. The container
