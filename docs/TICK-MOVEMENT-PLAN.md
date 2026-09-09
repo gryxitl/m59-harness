@@ -399,8 +399,13 @@ probes around the aim and the boundary check tests it).
 
 `Router` (ours) → `Mover` (ours, **one engine**: A* on the fine model, one adjacent
 square per send, at most one send per second, escape fan and raw door push for the
-squares the fine model gets wrong) → the server. `policy.ownPhysics` is gone; a
-roster that still carries it is ignored, not honoured.
+squares the fine model gets wrong) → the server. `policy.ownPhysics` no longer selects
+anything — no mover code reads it — but it is NOT removed from the tree: the roster still
+carries it and `m59-keeper-process.mjs` still surfaces its value in the `/state` diagnostic,
+explicitly labelled as the roster value rather than a mode in effect. "Ignored, not honoured"
+is true of its EFFECT; "gone" was false of its EXISTENCE, and an auditor caught the difference.
+Reading that field as "which engine is running" would be wrong in exactly the way the five
+vacuous tests were wrong.
 
 ---
 

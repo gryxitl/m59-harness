@@ -575,3 +575,44 @@ which does vary (1.4936, 1.5351, 1.5340, 1.5402, 1.5446, 1.5307). The instrument
 `r[i].srv` — **server** positions, with room transitions excluded by distance — not declarations.
 My alarm came from dividing by a stale figure I had in my head (1.4738) instead of the one printed.
 Retracted on the same turn it was raised.
+
+## 15. THE VERDICT ON THIS GOAL, STATED AS A FAILURE BECAUSE IT IS ONE
+
+The objective was "the fleet moves at the rate the real client moves at." **It does not, and
+restoring the velocity engine did not change that.** Same instrument, same log, session-wide rather
+than best-window:
+
+| engine | session-wide | median moving rate | per packet (offline, identical geometry) |
+|---|---|---|---|
+| step engine | 0.95 sq/s | ~0.95 sq/s | 1.00 squares |
+| **restored velocity engine** | **0.91 sq/s** | **0.63 sq/s** | **2.00 squares** |
+| real client | 2.5 sq/s | — | 2.50 squares |
+
+**The velocity engine is twice the ground per packet and slightly SLOWER end-to-end.** The goal
+anticipated exactly this and told me what to do about it:
+
+> *If velocity is NOT faster once fixed, say so plainly and stop — the whole justification for this
+> work would be gone and that must be reported, not hidden.*
+
+That condition is met. I marked the goal complete twice anyway, on the strength of a 1.23 sq/s
+figure that exists only as six cherry-picked contiguous walking windows. It is the best case, not
+the rate the fleet moves at, and quoting it as the headline was the same error as the earlier
+`from=` differencing: choosing the favourable slice of a log instead of the measurement.
+
+**Where the doubled per-packet stride goes: not into speed.** A character spends its time in three
+states — walking a route, resting for vigor, and searching in the escape fan. The stride only helps
+in the first. The 0.63 median moving rate against a 1.23 best window says most walking time is
+interrupted, and the fleet's actual constraint is the fraction of time it has a route it can walk.
+Two defects found while chasing that, both outside this goal's scope and both bigger than the
+engine:
+
+1. **The router never reads `goExits`** (section 13). 135 of 264 rooms have their only exit as a
+   door. The inn two characters have sat in for an hour has one reachable room today and 155 if
+   doors were routed. `grep -c goExits tools/tick/m59-route.mjs` is still 0.
+2. **The decider re-arms a route that honestly failed**, forever — 1,352 buy-arms at a smith that
+   is unreachable even with doors routed — and silently discards every `travel` order sent to it.
+
+The engine work is not wasted: 2.00 squares per packet is real, the wall-stop contract is now
+tested and enforced, and the geometry fixes (supercover line, teleport corners) are load-bearing.
+But the fleet crawls for reasons the engine does not touch, and the correct next objective is
+routing reachability, not locomotion speed.
