@@ -2025,3 +2025,86 @@ at the distance the client covers in a second. There was no distance left to fin
 `5.00 sq/s` looked **too good to be true**, so it was checked. `4.17 sq/s` looked plausible enough not
 to be, and it was wrong. A measurement that flatters the work is the one that needs the adversarial
 check, and plausibility is not evidence — it is the feeling that stops people looking.
+
+---
+
+## 2026-09-09 — measured on the live shard: 5.00 squares per packet, 100% of the client run
+
+Everything above this line was measured in a harness against a rig that adopts declarations
+without argument. This section is measured against `76.214.42.186:5959`, a real server, five real
+characters, positions the **server** reported back.
+
+### First: I broke the fleet for eleven minutes, and the reason is worth writing down
+
+I ran `m59-service.mjs restart --fleet default`. `m59-fleetpath.mjs:100` resolves a **named** fleet
+to `substrate/fleets/<name>.json`; the real fleet is the **unnamed** one at
+`substrate/fleet-state.json`. `substrate/fleets/default.json` does not exist. The broker came up
+healthy, answered about a fleet of nobody, and held zero sessions — which is the precise failure
+AGENTS.md describes, and I walked into it by typing the fleet's display label as its name. `LABEL`
+in `m59-service.mjs:54` is `'default'` for the unnamed fleet, so the label and the name differ, and
+the tool prints the label.
+
+Correct invocation for this checkout is `--fleet -`. It was restarted correctly and came back 5/5.
+
+I also restarted **without checkpointing first**. Nothing was lost that I can detect, but that was
+luck and not process; `m59-shutdown.mjs --list` reports no checkpoints have ever been taken.
+
+### The cadence question, which I could not answer honestly an hour ago
+
+`[move-sent]` counted **attempts**, so the gap distribution was fiction. With that fixed
+(`0c6d23f`), across **8,900 inter-packet gaps** on five characters:
+
+```
+min 1000 ms   p1 1007   p50 1020   p99 5085
+under 1000 ms: 0        under 500 ms: 0
+```
+
+Replaying all 8,900 gaps through the server's own formula
+(`piMovesCounter = bound((c+1) - iDelta, -5, $)`, ALERT above 2): **zero ALERTs**, final counter −5.
+
+**The 1000 ms cadence is proven on the live server, not argued from source.** The minimum gap is
+exactly 1000 ms, which is the cap holding and not jitter. The 409 ms and 444 ms "gaps" that had me
+hesitating were refused submits that never reached the wire.
+
+### The speed, measured from server positions
+
+Excluding room changes — which the server's own detector exempts at `user.kod:3058` via
+`if iNewRoom = piMoveOldRoom` — over **29,541 same-room moving packets**:
+
+```
+p10 1.00   p50 5.00   p90 5.00   max 14.00 squares per packet
+```
+
+**Median moving packet = 5.00 squares = 100% of the client's run rate.** The client covers 5.00
+squares per second; we are now declaring and having confirmed 5.00 squares per packet, at one packet
+per second.
+
+### It is bimodal, and a median across a mixture describes neither population
+
+| population | packets | dominant sites |
+|---|---|---|
+| ~1 square | 6,102 | `raw-move-push` 2,377, `escape-fan-probe` 1,640, `waypoint-step` 1,169 |
+| ~5 squares | 19,135 | `stride-declaration` 9,633, `escape-fan-probe` 9,138 |
+
+**75.8% of moving packets are at full stride.** The 1-square population is not the stride engine
+failing — those are the escape fan and raw pushes, which deliberately step one square to probe a
+blocked direction. That is the machinery working as designed, at the cost of a second's progress.
+
+### What is still true about the fleet being slow
+
+`median over ALL packets = 0.00 squares`, and only **26.6%** of packets show the server any movement
+at all. The fleet sends one packet per second and stands still on most of them. That is the
+**decider**, which gives destinations it cannot reach or none at all: since the restart t3 was given
+**one** destination (`(30,2)`, wantRoom 545) and has sent 4,756 packets without arriving, and four of
+five characters show `idle` on the dashboard.
+
+So the honest summary is: **the locomotion engine is at the client's speed and the fleet is not
+using it.** The remaining deficit is entirely upstream of the mover.
+
+### A number I should have checked before it was a finding
+
+60 packets show server-position jumps over 14.1 squares, largest 87.7. My first reading was "we are
+tripping the teleport detector on a real character". They are **room changes** — `walk-past-boundary`
+followed by `waypoint-step` at a different location, which is what crossing an edge looks like. The
+detector exempts them in its own source. I nearly reported a live ALERT condition that the server
+cannot raise for these events by construction.
