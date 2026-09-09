@@ -270,6 +270,7 @@ import { tickEdgeExits } from './m59-exits.mjs';
 import { loadoutFor } from '../m59-loadout.mjs';
 import { resolveRoomNum, routeIntent } from './m59-route.mjs';
 import { isGrounded, nearestGrounded } from './m59-ground.mjs';
+import { restSpotFor, noteResting, noteStoppedResting, noteRoomChanged } from './m59-rest-spot.mjs';
 import { CombatController } from './m59-combat.mjs';
 
 // ---------------------------------------------------------------------------
@@ -1518,6 +1519,41 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       _wasResting = false;
       return;
     }
+    // THE REST BUDGET IS BANKED HERE, at the transition that already knows a rest ended.
+    //
+    // `restSpotFor` caps how long a character may stop for, so the time has to be measured
+    // somewhere. The first version banked it inside the healthy branch, on the same tick it
+    // also called rest() — which added the elapsed time on every single rest tick and made
+    // the budget look spent the moment a character sat down. That would have switched the
+    // whole feature off after one rest, and it passed every test I had, because no test
+    // rested for two separate episodes.
+    //
+    // `_wasResting && !_resting` is the tick where the goal STOPPED being a rest goal, which
+    // is exactly when the clock should stop. It already existed for the stand-before-moving
+    // rule, so this adds no new state machine — it reuses the transition that is already
+    // correct and already tested.
+    if (_wasResting && !_resting) { try { noteStoppedResting(session, { now }); } catch {} }
+    // THE REST BUDGET IS PER ROOM, NOT PER SESSION.
+    //
+    // THE HOLDING BUDGET IS PER JOURNEY, NOT PER ROOM: cleared when a journey begins and
+    // when one ends, never while one is in progress.
+    //
+    // This corrects my own first version, which keyed the reset on the room and was wrong in
+    // a way that reintroduced the exact failure the budget exists to prevent. A hurt
+    // character crossing five rooms got a fresh 180 seconds in each — fifteen minutes of
+    // stopping on one journey — while reporting itself within budget the whole time. The
+    // legacy is unambiguous: `travelHeldMs` is zeroed at trip start (m59-autopilot.mjs:5176)
+    // and at trip end (:5272), and is only ever ADDED TO in between (:4893, :5014). Nothing
+    // in it resets per room.
+    //
+    // So the key is the DESTINATION, not the room. A room change clears nothing. Keyed on
+    // the router's dest because there is no reliable arrival event to hook: the router's
+    // state cycles moving/crossing/waiting and the decider has no trusted "arrived" callback.
+    const destNow = session._router?.dest ?? null;
+    if (destNow !== session._restDestKey) {
+      session._restDestKey = destNow;
+      if (destNow != null) { try { noteNewJourney(session); } catch {} }   // journey began
+    }
     _wasResting = _resting;
 
     // REST HOLD (default off): a rest that sends holds the mover (stillness)
@@ -1551,6 +1587,45 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       const hp = client.vitals?.()?.health?.value ?? 0;
       const maxHp = client.vitals?.()?.health?.max ?? 20;
       const now2 = now();
+      // WALK TO SHELTER BEFORE THE REGEN POKE, and this ordering is the reason the
+      // rest-spot decision sits HERE rather than next to `intend('rest')` where it was
+      // first written.
+      //
+      // The poke below is a real behaviour with a real reason: the server's HP-regen flag
+      // is not set by sitting still, so the first rest in a room stands, steps one square
+      // and sits back down to set it. It `return`s. With the rest-spot decision after it,
+      // the first rest in every room poked, returned, and sat down on the spot the character
+      // was hurt on — and the walk to a defensible square never happened, ever, in
+      // production. It showed up only as a test that asserted `rest` was not sent and got
+      // an empty command list, which is the shape a wrong assertion and a real bug share.
+      //
+      // Shelter first is also the correct order of operations, not merely the order that
+      // makes a test pass: poking one square and sitting is only sensible once we have
+      // decided WHERE to sit. Deciding that afterwards means the poke has already committed
+      // us to the square we are on.
+      const spot = restSpotFor(session, { now });
+      {
+        if (spot.action === 'walk' && spot.spot) {
+          try { act.stand?.(); } catch { /* best effort */ }
+          let stepped = false;
+          try { stepped = act.step?.(spot.spot.col, spot.spot.row, { minGapMs: 0 }) !== false; }
+          catch { stepped = false; }
+          if (stepped) {
+            // Resting is deferred, not cancelled: a later tick arrives or gives up.
+            // `_restHold` stays false so the mover keeps driving its own feet.
+            //
+            // The budget is NOT consumed here. It measures time spent resting, and it is
+            // banked on the resting -> not-resting transition above; counting walking time
+            // toward a resting budget would spend the allowance getting to shelter and leave
+            // none for recovering once we were there.
+            onDecision?.({ ticks, goal: 'healthy', action: 'walk', what: spot.why, sent: true });
+            return;
+          }
+          // Cannot walk there — blocked or unreachable. Sit down here rather than pace
+          // toward a wall we cannot reach.
+        }
+        session._restSpotChoice = spot;
+      }
       if (hp < maxHp && now2 - _hpPokeAt > 30000) {
         _hpPokeAt = now2;
         const me = session._pose?.current?.() ?? client.self;
@@ -1578,17 +1653,50 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
               break;
             } catch { /* try the next direction */ }
           }
-          onDecision?.({ ticks, goal: 'healthy', action: poked ? 'poke+rest' : 'rest',
-            sent: poked, what: poked ? 'poke to unlock HP regen, then rest' : 'no walkable neighbor to poke' });
-          return;
+          if (poked) {
+            onDecision?.({ ticks, goal: 'healthy', action: 'poke+rest', sent: true,
+              what: 'poke to unlock HP regen, then rest' });
+            return;
+          }
+          // NO SQUARE TO POKE INTO — REST ANYWAY.
+          //
+          // THIS RETURNED BEFORE, AND IT IS A LIVE BUG THAT PREDATES THIS CHANGE. The poke
+          // exists because the server does not start regenerating HP from sitting still: the
+          // first rest in a room stands, steps one square, and sits back down to set the
+          // flag. When no adjacent square passes `canStep` — a doorway, an alcove, a void
+          // square, a ledge with nothing walkable beside it — `poked` stayed false, this
+          // reported `sent: false`, and RETURNED. The character never rested. Not once in
+          // that room, ever: the branch is taken on every tick, because nothing about being
+          // unable to move changed between ticks.
+          //
+          // 8,254 occurrences on one keeper log. Each one is a hurt character standing in a
+          // doorway not healing, and the decider reporting no action at all — which is why
+          // the dashboard showed idle characters at low HP with no explanation, and why I
+          // read the same empty command list in my own test rig and assumed the rig was
+          // wrong. The rig was showing me production.
+          //
+          // The trade is stated honestly: resting without the poke may not regenerate HP, so
+          // this character might not recover. That is still better than the alternative,
+          // which is certainly not recovering, and it is strictly better than what this
+          // branch did before. Falling through to `intend('rest')` below also means the
+          // rest-spot choice and the budget accounting above are honoured, which they were
+          // not while this returned early.
+          onDecision?.({ ticks, goal: 'healthy', action: 'rest', sent: false,
+            what: 'no walkable neighbor to poke; resting anyway',
+            why: 'the regen poke needs a square to step into and there is none here' });
+          // deliberately no return — fall through to the rest below
         }
       }
       // Already poked (flag should be set): just rest. The server regens on its own.
+      // The rest-spot decision has already run above, before the regen poke.
       const r = intend('rest', frame, act, { client, session, ws });
       note(active.goal, r.sent);
-      if (r.sent === true) { try { session._restHold = true; } catch {} }
+      if (r.sent === true) {
+        try { session._restHold = true; noteResting(session, { now }); } catch {}
+      }
       onDecision?.({ ticks, goal: 'healthy', action: 'rest',
-        sent: r.sent, what: r.what ?? null, why: r.why ?? null });
+        sent: r.sent, what: `${spot.why}${spot.spot ? ` [${spot.spot.col},${spot.spot.row}]` : ''}`
+                           ?? null, why: r.why ?? null });
       return;
     }
 

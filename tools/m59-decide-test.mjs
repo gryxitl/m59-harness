@@ -478,5 +478,132 @@ console.log('\ntravel mode yields rest but never yields flight');
        && mode({ dest: 575, at: Date.now() - 901000 }) === false);
 }
 
+
+// ---------------------------------------------------------------------------
+// WHERE A HURT CHARACTER RECOVERS. `healthy` rests below restBelow (70% HP), and until
+// now it rested wherever it happened to be standing — corridor, crossroads, open floor.
+// Measured on one keeper process: `healthy->rest` was 369 of 595 decisions, the most-taken
+// action in the decider, over twelve episodes with a 30-second median and 286 seconds
+// standing still while the router held a destination three rooms away.
+//
+// The rig above has no `world.geometry`, so restSpotFor takes its no-geometry path — which
+// is why all 90 assertions already here passed unchanged across three different versions of
+// this change. A suite that cannot see a change cannot review it.
+// ---------------------------------------------------------------------------
+console.log('\na hurt character walks to a defensible square before sitting down');
+{
+  const { geometryFor, nearestSafeSpot } = await import('./m59-safespots.mjs');
+  const { loadMap } = await import('./m59-map.mjs');
+  const map = loadMap();
+  const here = { col: 20, row: 20 };
+
+  // WHICH ROOM THE RIG HAS TO BE IN, and why it took four attempts to find out. The rig
+  // must reach the `healthy` goal, and `hunt` sits BELOW `healthy` in the ladder but wins
+  // whenever it has somewhere to go — in which case it silently falls through in a rig with
+  // no map routes and no decision is reported at all. Rooms 106 and 556 are hunt rooms, so
+  // `hunt` took the ladder and this test observed nothing. Room 7 is not in the hunt table,
+  // so `hunt` has no goal and `healthy` finally runs. The geometry is supplied separately
+  // from the room the character is standing in, which is legitimate: what is under test is
+  // what restSpotFor does with the geometry it is handed, and it reads that from
+  // session.world, not from the frame's room number.
+  const roomOfRig = 7;
+
+  const run = ({ roomNum, geo, col, row, restHeldMs }) => {
+    const me = { col, row, x: col * 64 + 32, y: row * 64 + 32, predicted: false };
+    const sent = [];
+    const client = {
+      state: 'game', selfId: 1, evSeq: 0, me: { name: 'Tester' },
+      room: { id: roomNum, num: roomNum, objects: new Map([[1, me]]) },
+      self: me, spells: [],
+      vitals: () => ({ health: { value: 8, max: 20 }, vigor: { value: 80 } }),
+      inventory: [], equipment: () => ({ known: true, equipped: [{ name: 'mace' }] }),
+      rsc: { get: () => null },
+      moveToSquare: () => {}, face: () => {}, go: () => {}, attack: () => {},
+      use: () => {}, unuse: () => {}, get: () => {}, drop: () => {}, apply: () => {},
+      cast: () => {}, buy: () => {}, offer: () => {}, acceptOffer: () => {},
+      rest: () => sent.push(['rest']), stand: () => sent.push(['stand']),
+      requestInventory: () => {}, roomContents: () => {},
+    };
+    const session = { name: 't1', live: true, client, sent,
+      pacer: { depth: 0, submit: (k, fn) => Promise.resolve().then(fn) } };
+    session.world = { geometry: geo, room: { num: roomNum } };
+    session._pose = { current: () => ({ col, row }) };
+    session._router = { dest: null, to() { return true } };
+    if (restHeldMs != null) session._restHeldMs = restHeldMs;
+    const took = [];
+    makeDecider({ session, goals: DEFAULT_GOALS,
+      onDecision: (d) => { if (d.sent) took.push(d.goal + '->' + d.action) } })(
+      { room: { num: roomNum, name: null } }, new Actuator(session), { stop() {} });
+    return { sent, took, session };
+  };
+
+  // PRECONDITION. If healthy does not win here, every assertion below passes for the wrong
+  // reason — which is precisely how three earlier versions of this change went unnoticed.
+  {
+    const { took } = run({ roomNum: roomOfRig, geo: null, col: 20, row: 20 });
+    ok('the rig reaches the healthy goal', took.some(t => t.startsWith('healthy')),
+       took.join('|') || 'NONE');
+  }
+
+  // THE CHANGE. A defensible square exists elsewhere in the room, so the first tick walks
+  // to it. Sitting down on the spot it was hurt on is the behaviour this replaces.
+  const geo556 = geometryFor(map.rooms[556]);
+  const spot = nearestSafeSpot(geo556, { col: 20, row: 20 }, { within: 10 });
+  ok('the room offers a defensible square away from where we are standing',
+     spot != null && (spot.col !== 20 || spot.row !== 20),
+     JSON.stringify(spot && { col: spot.col, row: spot.row, steps: spot.steps_away }));
+  {
+    const { sent, took, session } = run({ roomNum: roomOfRig, geo: geo556, col: 20, row: 20 });
+    ok('with a square to walk to, it does not sit down',
+       took.some(t => /->walk/.test(t)) && !sent.some(c => c[0] === 'rest'),
+       took.join('|') + ' / ' + JSON.stringify(sent).slice(0, 50));
+    ok('and it recorded which square it is walking to',
+       session._restSpot != null, JSON.stringify(session._restSpot));
+  }
+
+  // THE CONTROL, which is what makes the assertion above mean something rather than
+  // merely being different. The Brownestone Inn (106), 6x12, genuinely has no defensible
+  // square. A character there must sit down at once. Without this control, "it does not sit
+  // down" would be equally satisfied by a bug that never rests anybody.
+  {
+    const inn = geometryFor(map.rooms[106]);
+    const none = nearestSafeSpot(inn, { col: 3, row: 5 }, { within: 10 });
+    ok('and the inn really has nothing defensible to offer', none === null,
+       JSON.stringify(none));
+    // Asserted on the DECISION the decider reports, not on the command that reaches the
+    // wire, and that is a deliberate choice rather than a shortcut. The `rest` INTENT
+    // throttles itself to one call per second (m59-decide.mjs: `now7 - _lastRestStep >=
+    // 1000`) and returns `sent: true` while holding, so a rig that calls decide() once
+    // observes a decision with no command. Asserting on the wire here would be asserting
+    // on a throttle, and would pass or fail depending on when the test happened to run.
+    // What is under test is where the character CHOOSES to rest, which is the decision.
+    const { sent, took } = run({ roomNum: roomOfRig, geo: inn, col: 3, row: 5 });
+    ok('while a room with nothing defensible decides to rest at once',
+       took.some(t => t.startsWith('healthy') && /rest/.test(t)) &&
+       !took.some(t => /->walk/.test(t)),
+       took.join('|') || 'NONE');
+  }
+
+  // AND THE BUDGET, through the same path. Out of holding time a character walks on and
+  // recovers while moving — `a journey that keeps stopping is a journey that never arrives`.
+  // This is what makes the rule above safe to have at all.
+  {
+    const { sent, took } = run({ roomNum: roomOfRig, geo: geo556, col: 20, row: 20,
+                                 restHeldMs: 181_000 });
+    ok('out of holding budget it decides to rest rather than walk to a wall',
+       !took.some(t => /->walk/.test(t)) && took.some(t => /rest/.test(t)),
+       took.join('|') || 'NONE');
+  }
+
+  // NO GEOMETRY AT ALL must not stall a character either — a room whose baked .roo is
+  // missing or unreadable is a real state in this repository, not a hypothetical.
+  {
+    const { sent, took } = run({ roomNum: roomOfRig, geo: null, col: 20, row: 20 });
+    ok('a room with no geometry still decides to rest',
+       !took.some(t => /->walk/.test(t)) && took.some(t => /rest/.test(t)),
+       took.join('|') || 'NONE');
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
