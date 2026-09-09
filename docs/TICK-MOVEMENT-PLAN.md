@@ -1867,3 +1867,96 @@ flag is `allowRun` and its default is run. A flag whose default is the interesti
 `!== false`, means "nobody set it" and "everybody wants it" are indistinguishable in the logs.
 
 
+
+---
+
+## 2026-09-08 (later still) — the 50 milliseconds were folklore, and spending them closed the gap
+
+The section above says the ceiling is 4.76 sq/s and that "we cannot legally close the rest",
+attributing the gap to `MOVEMENT_COUNT_THRESHOLD = 2`. **That was wrong, and it was wrong in the way
+that matters most: it presented a number nobody had a reason for as a limit nobody could cross.**
+
+### What the threshold actually says
+
+`user.kod:2937` and `:2942`:
+
+```
+piMovesCounter = bound((piMovesCounter + 1) - iDelta, -MOVEMENT_DELTA_LAG_THRESHOLD, $)
+if piMovesCounter > MOVEMENT_COUNT_THRESHOLD  ->  Debug("ALERT! ... Possible speedhacker.")
+```
+
+`iDelta` is the **whole seconds** since the previous packet. At a 1000 ms cadence it is 1 for every
+packet, so the counter is `(c + 1) - 1 = c` and **rests at zero forever**. Tripping the ALERT needs
+`c > 2`, which needs **three** packets inside one server second. A 1000 ms cadence with sub-second
+jitter produces two, not three.
+
+The 50 ms bought nothing. It cost 4.8% of our locomotion, and no comment, document, or commit in
+this repository gave a reason for it beyond "the speedhack law".
+
+### The number was described as the client's when it was ours
+
+`m59-engine-race.mjs` had `const TICK_MS = 1050;` commented **"USER_MOVE_MIN_INTERVAL_MS — the
+client's own MOVE_INTERVAL"**. The client's `MOVE_INTERVAL` is **1000** (`move.c:57`). 1050 was our
+invention, labelled as the client's, and because the race drives a virtual clock from that literal
+while building its mover with `moveCapMs: 0`, **every speed figure that harness ever printed was
+clocked at a cadence it claimed was the client's and was not.**
+
+There were also two independent `1050` literals in the mover — the constructor default and the
+`_claimMoveSlot` fallback — so a mover built with the option and one built without it could have had
+different cadences in silence. One exported `MOVE_CAP_MS` now, imported by the race, so the engine
+and the measurement cannot disagree.
+
+### Measured, at the client's own cadence
+
+30 squares of open ground, virtual clock, identical geometry:
+
+| gait | step engine | velocity engine | client | ceiling now |
+|---|---|---|---|---|
+| walk | 0.97 (39%) | **2.29 sq/s** = 92% | 2.5 | 2.50 = **100%** of client |
+| run | 0.97 (19%) | **4.17 sq/s** = 83% | 5.0 | 5.00 = **100%** of client |
+
+The ceiling is no longer 95% of the client. At equal cadence and equal stride the rates are equal
+**by construction** — 5 squares per packet both. What remains (8% in each gait) is the destination
+clamp on the final hop, which is correct behaviour: 1856 units of road at 320 per packet is 5 full
+strides plus a 256-unit remainder.
+
+### Three bugs of mine, found while doing this
+
+1. **I deleted a line that was doing two jobs.** The test block had `mover._moveCapMs = 1050` with
+   the comment "live cap". It was pinning a value *and* enabling the mechanism, because the rig
+   defaults to `moveCapMs: 0` = uncapped. Removing it with the number switched the cap off and two
+   assertions failed for a genuine reason. A line whose comment names only one of its two effects.
+
+2. **`(g === 'run' ? vel.rate : vel.rate)`** — both branches identical. The report printed the *run*
+   rate under the *walk* heading and announced "167% of that ceiling" as though it had found
+   something. The over-100% guard added minutes earlier is what caught it, which is the only reason
+   this is a footnote rather than a published lie. A ternary whose branches agree is not a condition.
+
+3. **`cadence_report()` had a field named `sends` that counted gaps.** The first accepted submit
+   records no gap, so it is always one fewer than the number of submits. An assertion read it as
+   sends and was right to fail. Both counts are reported now, because "looks like it lost a send" is
+   the one thing this evidence must never suggest.
+
+### Why this is still not a speedhack
+
+The server caps **no distance at all**. `user.kod:3064` detects a squared row/col displacement of
+`>= 200` and only writes a log line and drains vigor — line 3099 sends `SomethingMoved`
+unconditionally afterwards. We *could* declare 14 squares a second and the server would move us.
+
+We declare 5 because 5 squares is what one second of the client's locomotion actually produces. The
+client's number is a **measurement of a walk that happened**; ours is now the same distance over the
+same interval, which is the same thing. Matching the client means matching its rate, not exploiting
+the absence of a cap — and the difference is not philosophical, it is the difference between a rate
+a player could have and a rate no player could have.
+
+### The risk accepted, stated out loud
+
+The margin is **one packet**. Three position submits inside one server second draws an ALERT — a log
+line naming the character, not a ban and not a refused move, and the same line a legitimate player on
+a laggy connection can draw, which is why the server tolerates a counter of 2 and decays it by
+elapsed time.
+
+`cadence_report()` exists so this is a measured risk rather than an assumed one. Our log lines have
+never carried a timestamp, so the inter-packet gap has never been recorded anywhere in the history of
+this project; the histogram is the first evidence, and it needs a day of live running before anyone
+should treat "the margin is fine" as established rather than as a hypothesis with a counter attached.
