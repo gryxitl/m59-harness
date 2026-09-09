@@ -1617,8 +1617,10 @@ export class Mover {
         try { const _g = this._movementGateOk(fanX, fanY, myProtoX, myProtoY, fServerPX, fServerPY); console.error(`[movedbg] ${this.logName} fan gate=${_g} me=(${Math.round(myProtoX)},${Math.round(myProtoY)}) srv=(${fServerPX},${fServerPY}) age=${Date.now() - (this._lastReportAt ?? 0)} idx=${idx} tgt=${this._fanTarget ? 'Y' : 'n'}`); } catch (e) { console.error(`[movedbg] ${this.logName} fan gate THROW: ${e.message}`); }
       }
       if (this._movementGateOk(fanX, fanY, myProtoX, myProtoY, fServerPX, fServerPY)) {
-        this._submitMove(s, c, () => c.moveTo(Math.round(fanX), Math.round(fanY), speed, c.room?.id ?? 0));
-        this._recordSend(aimX, aimY, myProtoX, myProtoY, Math.round(fanX), Math.round(fanY), 'escape-fan-probe');
+        const _sent = this._submitMove(s, c, () => c.moveTo(Math.round(fanX), Math.round(fanY), speed, c.room?.id ?? 0));
+        if (_sent) {
+          this._recordSend(aimX, aimY, myProtoX, myProtoY, Math.round(fanX), Math.round(fanY), 'escape-fan-probe');
+        }
         this._recordReport(fanX, fanY);
         this._fanTarget = { x: protocolToClient(fanX), y: protocolToClient(fanY) };
         this._fanSentAt = Date.now();
@@ -1719,8 +1721,10 @@ export class Mover {
           return { state: 'stuck', why: 'exit climb refused' };
         }
         if (this._movementGateOk(pastX, pastY, myProtoX, myProtoY, wServerPX, wServerPY)) {
-          this._submitMove(s, c, () => c.moveTo(Math.round(pastX), Math.round(pastY), 18, c.room?.id ?? 0));
-          this._recordSend(pastX, pastY, myProtoX, myProtoY, Math.round(pastX), Math.round(pastY), 'walk-past-boundary');
+          const _sent = this._submitMove(s, c, () => c.moveTo(Math.round(pastX), Math.round(pastY), 18, c.room?.id ?? 0));
+          if (_sent) {
+            this._recordSend(pastX, pastY, myProtoX, myProtoY, Math.round(pastX), Math.round(pastY), 'walk-past-boundary');
+          }
           this._recordReport(pastX, pastY);
         }
         return { state: 'crossing', walkPast: true };
@@ -1820,8 +1824,10 @@ export class Mover {
         if (segHeightOk(geoRef, myProtoX, myProtoY, rawX, rawY) !== false) {
           if (Date.now() - (this._lastRawPushAt ?? 0) >= 500) {
             this._lastRawPushAt = Date.now();
-            this._submitMove(s, c, () => s.client.moveTo(rawX, rawY, 18, s.client.room?.id ?? 0));
-            this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY, rawX, rawY, 'raw-door-push');
+            const _sent = this._submitMove(s, c, () => s.client.moveTo(rawX, rawY, 18, s.client.room?.id ?? 0));
+            if (_sent) {
+              this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY, rawX, rawY, 'raw-door-push');
+            }
           }
           if (Date.now() - (this._lastRawLogAt ?? 0) > 5000) {
             this._lastRawLogAt = Date.now();
@@ -1885,8 +1891,10 @@ export class Mover {
           const srvPX = srvCol * KOD_FINENESS + HALF, srvPY = srvRow * KOD_FINENESS + HALF;
           if (segOk && this._movementGateOk(sx, sy, myProtoX, myProtoY, srvPX, srvPY)) {
             const npSpeed = runNow ? 36 : 18;
-            this._submitMove(s, c, () => c.moveTo(sx, sy, npSpeed, c.room?.id ?? 0));
-            this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY, sx, sy, 'no-path-stride');
+            const _sent = this._submitMove(s, c, () => c.moveTo(sx, sy, npSpeed, c.room?.id ?? 0));
+            if (_sent) {
+              this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY, sx, sy, 'no-path-stride');
+            }
             this._recordReport(sx, sy);
             // Honest stuck bookkeeping: the stride sends while the server
             // echo sits still for ~1s. Without this the direct-send site
@@ -2773,7 +2781,31 @@ export class Mover {
   }
 
   _submitMove(s, c, sendFn) {
-    if (!this._claimMoveSlot()) return false;
+    if (!this._claimMoveSlot()) {
+      // THE REJECTION IS LOGGED, AND THE SEND IS NOT. Every call site used to call _recordSend() on
+      // the very next line regardless of what this returned, so `[move-sent] n=N` counted ATTEMPTS.
+      //
+      // That is not a cosmetic mislabel, and the direction of the error is the reason it went
+      // unnoticed:
+      //
+      //   - Every squares-per-second figure ever computed from these logs used the attempt count as
+      //     its denominator. Refused attempts read as slow movement, so the numbers UNDERSTATED us.
+      //     It is the same sign as the harness bug that ate the first packet's ground — two
+      //     independent errors both making the fleet look slower, neither caught.
+      //   - The inter-packet gap distribution is built from these same lines, and that distribution
+      //     is the entire evidence base for the cadence question. This is where the 409ms and 444ms
+      //     "gaps" in keeper-t3.log came from: two sites ATTEMPTING in the same second, the cap
+      //     refusing the second one, and the log recording both. Read naively, that data argues
+      //     against a 1000 ms cadence on the strength of packets that never went out.
+      //
+      // The rule lives here rather than at the call sites because a rule enforced in seven places is
+      // a rule forgotten at the eighth — which is exactly what happened.
+      this._submitsRefused = (this._submitsRefused ?? 0) + 1;
+      if (process.env.M59_MOVE_DEBUG !== '0')
+        console.error(`[move-refused] n=${this._sendCount} cap=${this._moveCapMs ?? MOVE_CAP_MS}ms `
+          + `gap=${Date.now() - (this._lastMoveSubmitAt ?? 0)}ms refused=${this._submitsRefused}`);
+      return false;
+    }
     Promise.resolve(s.pacer.submit('move', sendFn, 100)).catch(() => {});
     return true;
   }
@@ -2857,8 +2889,10 @@ export class Mover {
   _maybeReportPosition(protoX, protoY, c, s, serverX, serverY) {
     if (!this._movementGateOk(protoX, protoY, serverX, serverY, serverX, serverY)) return false;
     const px = Math.round(protoX), py = Math.round(protoY);
-    this._submitMove(s, c, () => c.moveTo(px, py, 18, c.room?.id ?? 0));
-    this._recordSend(this.destProto?.x ?? protoX, this.destProto?.y ?? protoY, protoX, protoY, px, py, 'send-waypoint-helper');
+    const _sent = this._submitMove(s, c, () => c.moveTo(px, py, 18, c.room?.id ?? 0));
+    if (_sent) {
+      this._recordSend(this.destProto?.x ?? protoX, this.destProto?.y ?? protoY, protoX, protoY, px, py, 'send-waypoint-helper');
+    }
     this._recordReport(protoX, protoY);
     return true;
   }
@@ -2889,6 +2923,13 @@ export class Mover {
 
     const px = Math.round(protoX);
     const py = Math.round(protoY);
+    // THE RESULT IS DELIBERATELY DISCARDED HERE, UNLIKE THE FIVE SITES THAT GATE _recordSend.
+    // This site advances the dead-reckoning position (drX/drY), which is a statement about what we
+    // intended, not about what reached the wire. A refused submit still moves our intent, and the
+    // next tick plans from where we meant to be. The five gated sites are gated because they feed
+    // the SEND COUNTER, and that counter is a claim about the wire — it is the denominator of every
+    // squares-per-packet figure anyone computes from these logs. Intent may be optimistic; a wire
+    // counter may not.
     this._submitMove(s, c, () => c.moveTo(px, py, 18, c.room?.id ?? 0));
     this.drX = protocolToClient(px);
     this.drY = protocolToClient(py);

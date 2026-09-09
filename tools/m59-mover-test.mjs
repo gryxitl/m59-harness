@@ -1332,6 +1332,39 @@ console.log('\n_submitMove: central cadence cap across all sites');
      orep.move_cap_ms === 0 && orep.under_1000ms === 1 && orep.min_gap_ms === 0,
      JSON.stringify(orep).slice(0, 80));
 
+  // THE SEND COUNTER MUST COUNT SENDS. This assertion should have existed before the bug was
+  // fixed, and its absence is why seven call sites logged refused submits as packets for the whole
+  // life of the project without anything noticing: the counter was only ever READ BACK, never
+  // checked against the number of packets that actually reached the wire.
+  {
+    const r2 = rig({});
+    const m2 = r2.mover, s2 = m2.session, c2 = s2.client;
+    m2._moveCapMs = MOVE_CAP_MS;              // the LIVE cap, not the rig's 0
+    let wire = 0;
+    s2.pacer = { submit: () => { wire++; return Promise.resolve(); } };
+    m2.destProto = { x: 1000, y: 1000 };
+    const attempt = (x) => {
+      if (m2._submitMove(s2, c2, () => c2.moveTo(x, 1000, 18, 0)))
+        m2._recordSend(x, 1000, x - 100, 1000, x, 1000, 'test');
+    };
+    for (let i = 0; i < 5; i++) attempt(1000);   // five attempts as fast as the loop can make them
+    ok('five attempts in one tick put ONE packet on the wire', wire === 1, `wire=${wire}`);
+    ok('and the send counter agrees with the wire — it is not an attempt counter',
+       m2._sendCount === 1, `_sendCount=${m2._sendCount} wire=${wire}`);
+    ok('the four refusals are recorded as refusals, not silently dropped',
+       m2._submitsRefused === 4, `refused=${m2._submitsRefused}`);
+    ok('attempts and refusals account for every call',
+       m2._sendCount + m2._submitsRefused === 5, `${m2._sendCount}+${m2._submitsRefused}`);
+
+    // THE FALSIFICATION: the block above would also pass if _recordSend simply never incremented
+    // anything, since 1 === 1 is true for a stuck-at-one counter. Prove the counter moves when a
+    // second packet genuinely goes out.
+    m2._lastMoveSubmitAt = Date.now() - 5000;
+    attempt(1100);
+    ok('a second real send after the cap window IS counted',
+       wire === 2 && m2._sendCount === 2, `wire=${wire} count=${m2._sendCount}`);
+  }
+
   // The same instrumentation on a mover at the LIVE cadence, which is the only configuration whose
   // histogram means anything. Three submits a virtual 1000ms apart must show zero sub-second gaps.
   const live = rig({});
