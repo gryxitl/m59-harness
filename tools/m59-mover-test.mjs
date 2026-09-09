@@ -1663,5 +1663,67 @@ function blinkRig({ col = 3, row = 5 } = {}) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// THE STRIDE ASSERTION THAT THE ownPhysics BLOCKS COULD NOT MAKE (step 4, for real).
+//
+// The step asked that each of the five `ownPhysics` tests assert velocity-specific
+// behaviour and fail if the velocity engine were absent. Four of the five drive
+// geometries that REFUSE the direct path — a pocket, a void, a leafless point, a
+// fine-blocked exit — which are the cases where the declaration is supposed NOT to
+// fire. Asserting a stride there would be a false assertion written to satisfy a
+// sentence. The gap was named in the file and left open; this closes it with the one
+// geometry where the engine MUST fire: open ground, nothing in the way.
+//
+// FALSIFIED, not just passed. With `_integrateToward` forced to return zero movement,
+// these fail. That is the mutation the auditor ran, and it is the criterion step 4 set.
+{
+  // Open ground: nothing is ever blocked, so the integration runs the full stride and
+  // the escape fan never takes the tick. This is the reference-client case — a player
+  // walking a clear hallway reports 2.5 squares per MOVE_INTERVAL, not one.
+  const geo = clearGeometry();
+  const { mover, sent, session } = rig({ col: 2, row: 2, destCol: 22, destRow: 2, geo });
+  // A Pose with a server that accepts and echoes, so the mover sees its own ground
+  // confirmed and keeps declaring instead of going stuck on an unconfirmed echo.
+  session._pose = new Pose();
+  session._pose.updateServer({ col: 2, row: 2, x: 2 * 64 + 32, y: 2 * 64 + 32 });
+  const c = session.client.self;
+  const rawMove = session.client.moveTo;
+  session.client.moveTo = (x, y) => {
+    sent.push([x, y]);
+    // The server adopts the declared position, as the real server does (measured:
+    // `[echo] x=800,2528 -> x=722,2838 moved=320`). Then echo it back one tick late.
+    c.x = x; c.y = y; c.col = Math.floor(x / 64); c.row = Math.floor(y / 64);
+    session._pose.updateServer({ col: c.col, row: c.row, x, y });
+  };
+  mover.to(22, 2, { by: 'router' });
+  let ground = 0, packets = 0, prev = { x: 2 * 64 + 32, y: 2 * 64 + 32 };
+  for (let i = 0; i < 12; i++) {
+    const before = sent.length;
+    mover.tick({ col: c.col, row: c.row, x: c.x, y: c.y });
+    clock(1050);
+    for (let k = before; k < sent.length; k++) {
+      const s = sent[k];
+      if (Array.isArray(s) && s.length === 2 && Number.isFinite(s[0])) {
+        ground += Math.hypot(s[0] - prev.x, s[1] - prev.y);
+        prev = { x: s[0], y: s[1] };
+        packets++;
+      }
+    }
+  }
+  const perPacket = packets ? ground / packets / 64 : 0;
+  ok('on open ground the mover sends at all', packets > 0, `${packets} packets`);
+  // THE STRIDE ITSELF. One square per packet is the step engine; the velocity engine
+  // integrates a full MOVE_INTERVAL and reports more than one square. This single
+  // assertion is what the five ownPhysics blocks were supposed to carry and could not.
+  ok('a packet on open ground carries a STRIDE, not one square',
+     perPacket > 1.0, `${perPacket.toFixed(2)} squares per packet — 1.00 would be the step engine`);
+  ok('the stride is a multiple of sub-steps, not a jump to the destination',
+     perPacket < 20, `${perPacket.toFixed(2)} squares — a full-leap would mean no integration`);
+  // The engine must be the thing that earns it: with the integration stubbed to zero the
+  // first assertion fails. Recorded here so the number is reproducible from the suite.
+  ok('ground is made FORWARD toward the destination',
+     c.col > 2, `ended at col=${c.col} from col=2, dest 22`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -471,3 +471,46 @@ up to five squares (section 2) and is currently spent at 0.45 squares per packet
 Ground per packet at 0.45 against a client stride of 2.5 means the distance lever is far from
 exhausted -- but it cannot be pulled by a path that does not go where it says, which is what the
 supercover line and the corner ban were for.
+
+## 13. THE ROUTER NEVER READS DOORS — and it is half the map (found while answering an audit)
+
+An auditor asked, reasonably, why t4 has **zero** accepted destinations across 50,475 ticks while
+sending thousands of packets. Chasing that number to its end — rather than explaining it away —
+found the largest connectivity gap in the project:
+
+```
+rooms with goExits (door exits):        168
+unlocked door-exits across the map:     701
+locked door-exits:                      362
+rooms whose ONLY exit is a door:      135 of 264   (51%)
+```
+
+`grep -c goExits tools/tick/m59-route.mjs` → **0**. The router reads `edgeExits` and `regionExits`
+and has never once looked at `goExits`. **Half the rooms in the world this fleet plays in are
+reachable only through a door, and the pathfinder cannot see doors.**
+
+The case that exposed it is the Brownestone Inn (106), where t4 and t5 have sat since 22:40:59:
+
+```
+10 of 11 goExits: {"to":-1,"locked":true}          other players' houses, correctly locked
+ 1 of 11 goExits: {"row":17,"col":12,"to":101,"locked":false,"arriveRow":18,"arriveCol":26}
+```
+
+One unlocked door to room 101. The inn is not sealed; the router is blind. So `no route from 106
+to 1013` is a **correct answer to a question about data the router is not reading** — the decider
+armed a buy-goal at the smith (1013, "no weapon here"), the route honestly failed, and it retried
+the impossible route for an hour and a half while overriding every `travel` order sent to it.
+
+Two things follow, and they are bigger than the stride work this document is mostly about:
+
+1. **The fleet's travel ceiling is not speed, it is reachability.** A mover that declares five
+   squares per packet still goes nowhere if the route graph has 51% dead ends. The 0.46 squares per
+   packet figure is measured on the small connected component the fleet has been stuck inside.
+2. **A door is not an edge.** `goExits` carries `locked`, a destination room, and a separate
+   `arriveRow/arriveCol` — arriving at a position unrelated to the door's own square, plus an
+   `angleChange`. Routing it needs the lock state honoured (a locked door is a wall) and the arrive
+   coordinate used, not the door coordinate. That is why this was not fixed as a footnote.
+
+The honest summary of this goal, in the auditor's own framing: the locomotion engine was restored
+and is measurably 2x the step engine per packet, and the fleet still does not move at client rate
+— and a large part of the reason is this, which the goal was never scoped to find.

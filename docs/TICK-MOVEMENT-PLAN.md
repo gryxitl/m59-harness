@@ -651,8 +651,19 @@ instead, both engines on one geometry (20 squares in a straight line, one waypoi
 | engine | ground declared per packet | squares per send | vs the client |
 |---|---|---|---|
 | official client (`move.c:49/57`, `draw3d.h:53`) | 160 protocol units | **2.50** | — |
-| restored engine (current `m59-mover.mjs`) | **64 protocol units** | **1.00** | **0.40x** |
+| restored engine **at the time of this measurement** | **64 protocol units** | **1.00** | **0.40x** |
 | step engine (pre-fix mover, engine flag off) | 64 protocol units | **1.00** | **0.40x** |
+
+**SUPERSEDED — READ THIS BEFORE QUOTING IT.** The middle row is a measurement of an intermediate
+state of the mover, taken while the waypoint lookahead was still missing (see "Why the claim was
+made" below, which is the diagnosis and is still correct). The lookahead has since been restored
+above the stride clamp (`m59-mover.mjs`, "LOOK DOWN THE ROUTE"), and the current figure is
+**2.00 squares per packet**, reproduced by `node tools/m59-rate-measure.mjs`. This table and the
+one further down are not two measurements of one thing that disagree; they are before and after a
+fix, and the word that made them look like a contradiction was "current". An independent audit
+correctly flagged two tables both claiming to be current as a report that cannot be trusted. The
+rule taken from that: **a measured figure is labelled with the commit it was taken at, or it is
+not a measurement — it is a rumour with a decimal point.**
 
 **THIS TABLE WAS WRONG WHEN IT WAS WRITTEN AND IS CORRECTED HERE.** The middle row asserted 160
 units / 2.50 squares / 1.00x, and the prose below it said the assumed figure 'turned out to be
@@ -799,7 +810,19 @@ re-pasted to satisfy a checklist item. If a case appears where the mover declare
 that the old point-check would have caught, that is a new bug and this section is the place
 that claim gets re-examined.
 
-**The number that is actually defensible is 1.00 square per packet, measured offline.**
+**At the time this was written, the defensible number was 1.00 square per packet, measured offline.**
+
+> **SUPERSEDED, and the reason matters more than the number.** The paragraph below correctly
+> destroys the live 2.24 / 2.83 readings — they differenced `from=`, the mover's *sim* position,
+> which is an estimate and not the character. That critique stands and still applies to anyone who
+> tries to read speed out of `from=`. But this section then measured 1.00 and called it final while
+> the waypoint lookahead was missing, and named the cause exactly right (`MOVEUNITS_PROTO` asked for
+> one square per tick regardless of the stride). That cause has since been fixed at the site the
+> section pointed at. The current figure is **2.00 squares per packet**, reproduced by
+> `node tools/m59-rate-measure.mjs`. Keeping the old number as "what the document stands behind"
+> after fixing the thing it was measuring is how a document ends up arguing with itself, which is
+> what an independent audit caught. The diagnostic reasoning is kept because it is correct; the
+> number is not current.
 
 An earlier draft of this document claimed 2.24 and then 2.83 squares per packet from live logs.
 Both were wrong, and the error is worth keeping on the record because it is the same mistake the
@@ -811,9 +834,10 @@ out to be consecutive packets in different rooms, and the log carries no room id
 that reading is not refutable from the log at all.
 
 Measured where the geometry is controlled instead — open ground, straight route, walk speed,
-positions taken from the wire — the mover declares **1.00 square per packet**, and the maximum
-declared delta is 64 units. That is within the client's 2.5-square walk stride and is the figure
-this document stands behind.
+positions taken from the wire — the mover declared **1.00 square per packet**, and the maximum
+declared delta was 64 units. That is within the client's 2.5-square walk stride. It is superseded
+by the 2.00 figure above; what is NOT superseded is the method — positions taken from the wire,
+never from `from=`.
 
 It is also why the mover is not faster than the step engine yet. `MOVEUNITS_PROTO` is 16
 protocol units = one square, so the integration is asked to advance one square per tick no
@@ -1063,7 +1087,9 @@ that must not be merged.
 
 ## The claim is TRUE per packet
 
-`node tools/m59-rate-measure.mjs`, both engines, identical open geometry, one virtual clock:
+`node tools/m59-rate-measure.mjs`, both engines, identical open geometry, one virtual clock.
+**This is the current figure** (reproduced on the tree at the commit that added this note; the
+earlier 1.00 table is superseded and says so):
 
 | engine | ground per packet | vs the client's 2.50 sq/packet |
 |---|---|---|
