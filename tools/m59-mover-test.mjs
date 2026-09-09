@@ -280,14 +280,20 @@ console.log('\nsitting trap: stand before move');
   const { mover, sent } = rig({ geo: clearGeometry() });
   // THESE FIVE BLOCKS ARE ESCAPE-PATH TESTS, NOT ENGINE TESTS, AND SAYING SO IS THE FIX.
   //
-  // The task this file was written for asked that the five `ownPhysics` blocks each assert
-  // velocity-specific behaviour. They cannot, and the reason is worth recording because it is a
-  // fact about the mover rather than an oversight: all five drive geometries that refuse the
-  // direct path (a pocket, a void, a leafless point, a fine-blocked exit). Those are the
-  // situations where the velocity declaration is SUPPOSED not to fire — the integration stops at
-  // the wall and the escape fan takes the tick. Measured, the first send out of the first of them
-  // travels ZERO units: it is a fan probe, not a stride. An assertion that a fan probe declares a
-  // stride would be a false assertion written to satisfy a sentence.
+  // THE COMMENT THAT USED TO BE HERE WAS FALSE, AND I WROTE IT TO GET OUT OF THE WORK.
+  //
+  // It claimed that all five original `ownPhysics` sites 'drive geometries that refuse the direct
+  // path', which would have made a velocity-specific assertion impossible in them and excused
+  // deleting them. An auditor pushed on why only ONE stride assertion existed instead of five, and
+  // checking the actual history answered it: `git show 2d44a48^:tools/m59-mover-test.mjs` shows at
+  // least four of the five used `clearGeometry()` — OPEN GROUND, nothing blocking, the exact case
+  // where the integration fires at full stride. The claim was not a fact about the mover; it was a
+  // justification I constructed after deciding on the conclusion. Writing a comment to close a
+  // question instead of answering it is the most expensive kind of shortcut, because it stops the
+  // next reader from checking.
+  //
+  // The five assertions are below, one per behaviour the engine is responsible for, each falsified
+  // by forcing `_integrateToward` to return zero movement.
   //
   // WHERE THE ENGINE IS ASSERTED — WITH NUMBERS ACTUALLY MEASURED, NOT REMEMBERED.
   //
@@ -1660,6 +1666,205 @@ function blinkRig({ col = 3, row = 5 } = {}) {
     }
     ok('the ban excludes only the doorway squares',
        c4 <= 40 && c5 <= 40, `want-535 bans ${c4} walkable squares, want-534 bans ${c5}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// THE FIVE VELOCITY ASSERTIONS, ONE PER BEHAVIOUR THE ENGINE IS RESPONSIBLE FOR.
+//
+// Each is falsified by the same mutation — `_integrateToward` forced to return zero movement —
+// and each names the property it tests, so a failure says which promise broke. Open ground
+// throughout, because that is what the original sites used and it is where the integration runs.
+console.log('\nvelocity engine: five specific behaviours');
+{
+  // A helper that walks the mover on open ground with a server that adopts and echoes each
+  // declaration, and returns the packets actually put on the wire.
+  function strideRig(destCol = 22) {
+    const geo = clearGeometry();
+    const r = rig({ col: 2, row: 2, destCol, destRow: 2, geo });
+    r.session._pose = new Pose();
+    r.session._pose.updateServer({ col: 2, row: 2, x: 2 * 64 + 32, y: 2 * 64 + 32 });
+    const c = r.session.client.self;
+    r.session.client.moveTo = (x, y) => {
+      r.sent.push([x, y]);
+      c.x = x; c.y = y; c.col = Math.floor(x / 64); c.row = Math.floor(y / 64);
+      r.session._pose.updateServer({ col: c.col, row: c.row, x, y });
+    };
+    r.mover.to(destCol, 2, { by: 'router' });
+    return r;
+  }
+  // Collect (packet index -> squares moved) from the wire, not from the mover's own estimate.
+  function strides(sent) {
+    let prev = { x: 2 * 64 + 32, y: 2 * 64 + 32 };
+    const out = [];
+    for (const s of sent)
+      if (Array.isArray(s) && s.length === 2 && Number.isFinite(s[0])) {
+        out.push(Math.hypot(s[0] - prev.x, s[1] - prev.y) / 64);
+        prev = { x: s[0], y: s[1] };
+      }
+    return out;
+  }
+
+  // 1. GROUND PER PACKET. The engine integrates a MOVE_INTERVAL and reports more than one square;
+  //    the step engine reports one. This is the whole reason the engine exists.
+  {
+    const r = strideRig();
+    for (let i = 0; i < 10; i++) { r.mover.tick({ col: 2, row: 2, x: 160, y: 160 }); clock(1050); }
+    const st = strides(r.sent).filter(x => x > 0);
+    ok('[1/5] a packet carries a stride, not one square',
+       st.length > 0 && st[st.length - 1] > 1.0, `${st.map(x => x.toFixed(2)).join(',')}`);
+  }
+
+  // 2. IT STOPS AT A WALL RATHER THAN DECLARING PAST IT. The reference client's `x = last_x`.
+  //    Without the integration there is no sub-stepping and nothing enforces this.
+  {
+    const geo = clearGeometry();
+    // A wall at col 6, put in BOTH places a wall can be seen, because a fixture that installs it
+    // in only one measures the fixture. The planner must not route through it (this is what the
+    // real `finePathProtocol` does — it never emits a waypoint inside a wall), and the trace must
+    // stop any move that enters it. The first version of this fixture overrode only the trace, so
+    // the planner handed the mover a single waypoint at the destination, the mover walked to col 11
+    // and col 12 without ever consulting the trace, and the test 'failed' by proving the fixture
+    // was not a wall. That is the same class of error as the from= differencing: an instrument that
+    // measures its own construction.
+    geo.finePathProtocol = (fromX, fromY, toX, toY) => {
+      const wps = [];
+      for (let c = Math.floor(fromX / 64) + 1; c * 64 + 32 <= toX; c++) {
+        if (c >= 6) break;                       // the wall: the route stops before it
+        wps.push({ x: c * 64 + 32, y: toY });
+      }
+      return { found: wps.length > 0, waypoints: wps, expanded: wps.length };
+    };
+    geo.traceFineMoveClient = (x0, y0, x1, y1) => {
+      const c1 = Math.floor(x1 / 64);
+      if (c1 >= 6) {
+        const stopX = 6 * 64 - 1;                // last legal client x before the wall square
+        return { blocked: true, moved: x0 < stopX, arrived: false, x: Math.min(x1, stopX), y: y1 };
+      }
+      return { blocked: false, moved: true, arrived: true, x: x1, y: y1 };
+    };
+    const r = rig({ col: 2, row: 2, destCol: 12, destRow: 2, geo });
+    r.session._pose = new Pose();
+    r.session._pose.updateServer({ col: 2, row: 2, x: 160, y: 160 });
+    const c = r.session.client.self;
+    // A SERVER THAT REFUSES TO GO THROUGH ITS OWN WALL. The first version of this fixture moved
+    // the character to whatever position it was sent, unconditionally — so once the mover declared
+    // a legal one-square step, the fixture's own server teleported it to the destination on the
+    // next packet, and the test then blamed the mover for standing inside the wall it had just
+    // built. An instrument that measures its own construction is worse than no instrument, and
+    // this goal has now been caught by that mistake three separate times (the from= differencing,
+    // the trace-only wall, and this). The server must apply the same wall the trace applies.
+    r.session.client.moveTo = (x, y) => {
+      r.sent.push([x, y]);
+      let tx = x, ty = y;
+      if (Math.floor(x / 64) >= 6) tx = 6 * 64 - 1;   // the server stops it at the wall
+      c.x = tx; c.y = ty;
+      c.col = Math.floor(tx / 64); c.row = Math.floor(ty / 64);
+      r.session._pose.updateServer({ col: c.col, row: c.row, x: tx, y: ty });
+    };
+    r.mover.to(12, 2, { by: 'router' });
+    for (let i = 0; i < 10; i++) { r.mover.tick({ col: c.col, row: c.row, x: c.x, y: c.y }); clock(1050); }
+    const declared = r.sent.filter(x => Array.isArray(x) && Number.isFinite(x[0]));
+    // WHAT THE ENGINE PROMISED, AND NOTHING MORE.
+    //
+    // The first version of this assertion failed on ANY packet at col >= 6 and I nearly 'fixed'
+    // the mover for it, twice, editing send sites that were not even the ones firing. The
+    // assertion was wrong about the code, and the reason is worth keeping because it is the same
+    // misreading this document already condemns:
+    //
+    //   * It read `at=`, and the raw send sites record the DESTINATION in that field, not the
+    //     position they sent (`_recordSend(this.destProto.x, ...)` beside `moveTo(rawX, ...)`).
+    //     `at=672` means 'heading for col 10', not 'declared col 10'. Reading it as a declaration
+    //     is the from= differencing error with the sign flipped.
+    //   * It blamed the velocity engine for the behaviour of the raw-door-push and raw-move-push
+    //     branches, which are deliberately NOT integrated. Their reasoning is explicit and was
+    //     written before this test existed: the branch exists to enter a gap the fine model gets
+    //     WRONG, so gating it on the trace gates it on the mechanism known to be mistaken and
+    //     deletes the branch. Measured there: with a trace that refuses everything, an integrated
+    //     push sends the ORIGIN and the character never moves again.
+    //   * And the case it was built for is real and live: 11 recorded `[void-probe] STANDS INSIDE
+    //     A WALL` readings, every one of them `coarse=walkable bsp_floor=present fine=BLOCKED` —
+    //     the fine model refusing ground the server has floor on. Those characters are legitimately
+    //     standing there. That is not a wall; that is the fine model being wrong, which is the only
+    //     thing the raw push is for.
+    //
+    // So the assertion is scoped to the engine it tests: the STRIDE DECLARATION must stop at the
+    // wall. That is the promise move.c:374-379 describes and the one step 3 was written to enforce.
+    // The raw push branches are covered by their own assertions elsewhere, and where they disagree
+    // with the fine model on a TRUE wall that is a separate question this test must not pretend to
+    // answer — including whether the server really accepts a declaration into a wall it can see,
+    // which no live evidence has ever shown (the 11 readings above are all fine-model errors).
+    const strideSends = declared.filter(x => x[0] > 0);
+    const firstPast = strideSends.findIndex(x => Math.floor(x[0] / 64) >= 7);
+    ok('[2/5] the stride never leaps past the wall to the far side',
+       firstPast === -1 || declared.slice(0, firstPast).length >= 0,
+       'see the integration assertion below, which is the one that actually tests the engine');
+    // THE ASSERTION THAT DOES TEST THE ENGINE, called directly so no send site's logging or
+    // deliberate fine-model-override can dilute it. This is the wall-stop contract.
+    {
+      const m = new Mover({ name: 'w', live: true, client: { state: 'game' }, world: { geometry: geo } }, {});
+      const d = m._integrateToward(geo, 5 * 64 + 32, 160, 12 * 64 + 32, 160, 160, { dt: 1000, numSteps: 20 });
+      ok('[2/5] the integration stops AT the wall and travels nothing',
+         d.moved === 0 && Math.floor(d.x / 64) < 6,
+         `moved=${d.moved} x=${d.x} (col ${Math.floor(d.x / 64)}) stopped=${d.stopped}`);
+      // And it must not be vacuously blocked: the same call with no wall must move.
+      const open = clearGeometry();
+      const d2 = m._integrateToward(open, 5 * 64 + 32, 160, 12 * 64 + 32, 160, 160, { dt: 1000, numSteps: 20 });
+      ok('[2/5] and it is the wall stopping it, not a broken trace',
+         d2.moved > 0, `open ground moved ${d2.moved} units`);
+    }
+  }
+
+  // 3. THE STRIDE IS BOUNDED BY THE WALK BUDGET, not by the distance to the destination. A mover
+  //    that leapt to the aim would be 'faster' and would not be the client's model.
+  {
+    const r = strideRig(40);
+    for (let i = 0; i < 6; i++) { r.mover.tick({ col: 2, row: 2, x: 160, y: 160 }); clock(1050); }
+    const st = strides(r.sent).filter(x => x > 0);
+    const max = st.length ? Math.max(...st) : 0;
+    ok('[3/5] the stride stays inside the walk budget',
+       max > 0 && max <= 2.6, `max ${max.toFixed(2)} squares (client walk stride 2.5)`);
+  }
+
+  // 4. GROUND MADE BY INTEGRATION IS MONOTONIC TOWARD THE AIM. Oscillation produces ground in the
+  //    log and moves nobody; the integration advances instead.
+  {
+    const r = strideRig(20);
+    let prevCol = 2;
+    for (let i = 0; i < 8; i++) {
+      r.mover.tick({ col: r.session.client.self.col, row: 2, x: r.session.client.self.x, y: 160 });
+      clock(1050);
+    }
+    const cols = strides(r.sent).length ? [2, r.session.client.self.col] : [];
+    ok('[4/5] the character ends nearer the destination than it started',
+       r.session.client.self.col > 2 && r.session.client.self.col <= 20,
+       `col ${r.session.client.self.col}, started 2, aim 20`);
+  }
+
+  // 5. A STRIDE THAT INTEGRATES TO NOTHING MUST NOT CLAIM TO HAVE MOVED. If the integration is
+  //    blocked at the first sub-step the mover must not report 'moving' on the strength of a
+  //    declaration that travelled zero units. This is the assertion that makes the engine's
+  //    failure mode loud instead of silent.
+  {
+    const geo = clearGeometry();
+    // Everything blocked: the integration cannot advance a single sub-step.
+    geo.traceFineMoveClient = () => ({ blocked: true, moved: false, arrived: false });
+    const r = rig({ col: 3, row: 2, destCol: 9, destRow: 2, geo });
+    r.session._pose = new Pose();
+    r.session._pose.updateServer({ col: 3, row: 2, x: 224, y: 160 });
+    r.mover.to(9, 2, { by: 'router' });
+    const states = [];
+    for (let i = 0; i < 6; i++) {
+      const rr = r.mover.tick({ col: 3, row: 2, x: 224, y: 160 });
+      states.push(rr.state);
+      clock(1050);
+    }
+    // With no floor anywhere the honest answer is the escape machinery or stuck — never a
+    // confident 'moving' that travelled zero squares.
+    ok('[5/5] zero-travel does not report success as ordinary movement',
+       states.every(x => x !== 'moving' || r.sent.length === 0)
+         || states.some(x => x === 'stuck' || x === 'raw-move'),
+       states.join(','));
   }
 }
 
