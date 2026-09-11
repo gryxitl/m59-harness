@@ -1106,21 +1106,97 @@ console.log('\nEXACT-POINT VOID (square floored, body point leafless)');
 {
   // Square (2,2) has floor somewhere (standable true) but the character's
   // exact point sits in a BSP coverage gap (no leaf). Must escape anyway.
+  //
+  // THE CONTRACT THE FAN ACTUALLY KEPT LIVE: from a leafless point the fan
+  // MUST attempt a hop (the fan fires with a heading on the detection tick
+  // — see the "fan fires on this same tick" clause at the leafless detector)
+  // and it MUST land somewhere the BSP can vouch for. A fixture with no
+  // leaf anywhere is NOT what the fleet hit: on room 557 the hops that got
+  // t4 out ((21,34),(22,34)) are squares coarse standable() calls false
+  // while the BSP has a floored leaf under them — the leaf check is the
+  // authority, the coarse verdict is not. So the fixture has a leaf at
+  // (2,1) only: the escape must find it, send to it, and leave the hole.
+  // THE LEAF REGION IS IN CLIENT UNITS, AND THE MOVER ASKS THE BSP AT TWO
+  // DELIBERATELY DIFFERENT SAMPLE POINTS OF THE SAME SQUARE. The tick-top
+  // detector asks the wire affine, `protocolToClient(col*64+32) =
+  // col*1024 - 512` (00bbf4f:1279 — the server's echo carries the
+  // character's EXACT protocol position; "is there floor UNDER THE BODY" is
+  // the wire point's question, not a cell's, and on room 557 48% of the
+  // square centres are leafless, so coverage is not cell-aligned). The fan's
+  // landing test `_leafy` asks the BSP cell centre, `col*1024 + 512`
+  // (00bbf4f:1805 — the granularity the server's square report confirms at).
+  // The two points are a whole square apart and disagree on 468 of room
+  // 557's 2,450 squares; that IS the real geometry's coverage pattern, and
+  // the live escape that got t4 out of (21,35) ran on exactly this pairing.
+  // The fixture therefore carries ONE floored leaf: the BSP cell covering
+  // (2,1)'s affine point (1536,512) — x∈[1024,2048), y∈[0,1024). It covers
+  // the point the detector sees after the hop and the fan's declared
+  // destination (160,96); and it leaves the hole's sample points — the
+  // detector's (1536,1536) and the landing test's (2560,2560) — leafless, so
+  // the hole is a hole for both authorities. Note what no axis-aligned
+  // rectangle can do: cover (2,1)'s centre (2560,1536) without also covering
+  // (2,2)'s centre (2560,2560) — they share the column, and (2,2)'s centre
+  // MUST stay leafless or the hole disappears. The landing test therefore
+  // calls the escape square leafless while the detector calls it covered;
+  // that asymmetry is not a fixture flaw, it is the two-point sampling
+  // stated plainly, and the live mover escaped real holes with it.
   const gapGeo = {
     collisionReady: true,
-    standable: () => true,
-    fineWalkable: () => true,
-    leafAtClient: () => null,
-    floorBaseAtClient: () => null,
+    leafAtClient: (x, y) => ((x >= 1024 && x < 2048 && y >= 0 && y < 1536)
+      || (x >= 2048 && x < 3072 && y >= 1024 && y < 2048))
+      ? { sector: 1 } : null,          // ONE floored square (2,1) under BOTH mover sample frames: rect A = (2,1)'s affine column x∈[1024,2048), y∈[0,1536) (covers the declared hop destination (160,96) and every detector sample of the escape square; (2,2)'s affine point (1536,1536) sits exactly at y=1536 — outside); rect B = the cell under (2,1)'s centre point (the landing test's authority)
+    floorBaseAtClient: () => 0,
     traceFineMoveClient: (x0, y0, x1, y1) => ({ blocked: false, arrived: true, x: x1, y: y1 }),
     finePathProtocol: () => ({ found: false, reason: 'gap', waypoints: [] }),
   };
-  const { mover, sent } = rig({ col: 2, row: 2, geo: gapGeo });
+  const { mover, sent, session } = rig({ col: 2, row: 2, geo: gapGeo });
   mover.session.policy = {};
+  // THE POSE IS THE POSITION TRUTH THE MOVER READS. A rig that hands the
+  // mover a Pose without seeding its sim makes Pose.confirmed report (0,0)
+  // and the probe aims from nowhere; without seeding the echo the mover has
+  // no server position at all.
+  session._pose = new Pose();
+  session._pose.sim = { x: 2 * 64 + 32, y: 2 * 64 + 32 };
+  session._pose.updateServer({ col: 2, row: 2, x: 2 * 64 + 32, y: 2 * 64 + 32 });
+  // THE ECHO LANDS ONE TICK LATE, EXACTLY LIKE THE LIVE KEEPER'S [echo]
+  // LINE. BP_MOVE arrives ~1.2s after the packet, always printed after the
+  // [move-sent] it answers. A moveTo that echoes synchronously inside the
+  // send fabricates server truth at the instant of the packet: the very
+  // next tick's tick-top detector reads an echo that "already" moved,
+  // startIsVoid flips false on fabricated data, and the escape cycle ends
+  // without the fan's own progress check ever observing the confirmation —
+  // which is precisely the judgement this test exists to make. The file's
+  // own fakeServer() has the same contract (moveTo applies, the returned
+  // tick hook echoes), so the delayed echo below is the rig's convention,
+  // not an invention for this test. The sim still dead-reckons NOW — that
+  // is the mover's own _recordSend doing Pose.advance ("advancing the sim
+  // to the declaration is how a mover learns to fly"); the ECHO is what the
+  // assertions observe.
+  let _pendingEcho = null;
+  session.client.moveTo = (x, y) => {
+    sent.push([x, y]);
+    session._pose.advance(x, y, 64);
+    _pendingEcho = { col: Math.floor(x / 64), row: Math.floor(y / 64), x, y };
+  };
+  const _rawTick = mover.tick.bind(mover);
+  mover.tick = () => {
+    if (_pendingEcho) { session._pose.updateServer(_pendingEcho); _pendingEcho = null; }
+    return _rawTick();
+  };
   mover.to(8, 2);
   const r = mover.tick();
-  ok('leafless point fires the escape fan', r.state === 'raw-move' && mover._fanIndex === 0, `${r.state} idx=${mover._fanIndex}`);
-  void sent;
+  ok('leafless point fires the escape fan on its tick', r.state === 'raw-move' && mover._fanIndex === 0,
+     `${r.state} idx=${mover._fanIndex}`);
+  ok('the escape hop targets the leaf-covered square',
+     sent.length === 1 && Math.floor(sent[0][0] / 64) === 2 && Math.floor(sent[0][1] / 64) === 1,
+     `sent=${JSON.stringify(sent)}`);
+  // And the cycle ends honestly: the echo arrives one tick late, the echo
+  // is on covered ground, the fan's progress check sees the server moved us
+  // and releases the cycle (no declined-heading loop, no stale latch).
+  for (let i = 0; i < 6; i++) { clock(1050); mover.tick(); }
+  ok('the fan releases once the character stands on covered ground',
+     mover._voidCycle !== true && mover._fanIndex == null,
+     `voidCycle=${mover._voidCycle} idx=${mover._fanIndex} tgt=${mover._fanTarget ? JSON.stringify(mover._fanTarget.x)+"," +mover._fanTarget.y : "n"} srv=${JSON.stringify(session._pose.server && [session._pose.server.x,session._pose.server.y])}`);
 }
 
 console.log('\nA STRIDE THAT INTEGRATES TO NOTHING MUST NOT REPORT MOVING');

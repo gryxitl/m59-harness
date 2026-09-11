@@ -108,7 +108,7 @@ export function regionCornerBanned(geo, row, col, wantRoom) {
 // The raw-move fallback remains as a last resort for stale geometry where
 // the fine model says "wall" but the server says "floor".
 
-import { protocolToClient, clientToProtocol, KOD_FINENESS, PLAYER_RADIUS } from '../m59-roo.mjs';
+import { protocolToClient, clientToProtocol, KOD_FINENESS, CLIENT_FINENESS, PLAYER_RADIUS } from '../m59-roo.mjs';
 import { codeExits } from '../m59-map.mjs';
 import { isGrounded, isEmbedded, nearestGrounded, segHeightOk, transitBanned } from './m59-ground.mjs';
 import { Pose } from './m59-pose.mjs';
@@ -1273,6 +1273,38 @@ export class Mover {
     // Watched live: 30 minutes pinned on a leafless corner point of an
     // otherwise-floored square, with every square-level check passing. A body
     // with no leaf has no floor — escape it the same way.
+    // THE POINT IS PROTOCOL COORDINATES; leafAtClient SPEAKS CLIENT UNITS.
+    // One protocol unit is 16 client units (CLIENT_FINENESS/KOD_FINENESS), and
+    // the square (21,35) lives at client (20992, 35328), not (21,35) and not at
+    // the BSP's fine grid either. The conversion is the same one every other
+    // leafAtClient caller makes — m59-game.mjs's `toClient`, m59-tour.mjs's
+    // `centre` (which multiplies by S = CLIENT_FINENESS/KOD_FINENESS), the
+    // collision tests' `wireToClient`. Ask the BSP a bare (21,35) and you get
+    // null for every square in the room: not "no leaf here", "no leaf ANYWHERE
+    // in the world" — a hole that never exists, and the escape fan's
+    // leaf-validated landing then declines every heading forever. The units
+    // ARE the bug class; this site was the last leaf query in the file not
+    // converted.
+    //
+    // THE FRAME, AND WHY IT IS NOT THE CELL CENTRE. The two conversions from
+    // protocol coords are a whole square apart: this affine puts square
+    // (21,35) at (20992, 35328); the BSP's cell-centre grid — the formula
+    // `fineWalkable` itself asks, `(c + 0.5) * CLIENT_FINENESS` for its
+    // 0-based grid (m59-roo.mjs:1609), the same one `m59-navgeom.mjs`'s
+    // `floorHeightAtCell` and the fan's landing test (`_leafy` below) use —
+    // puts it at (21504, 36352). They disagree on 468 of room 557's 2,450
+    // squares. THIS SITE STAYS ON THE WIRE AFFINE because the server's echo
+    // carries the character's EXACT protocol position — "is there floor
+    // UNDER THE BODY" is the wire point's question, not a cell's; on room
+    // 557 48% of the square centres are leafless, so coverage is not
+    // cell-aligned and a cell sample would miss the exact-point holes this
+    // detector exists to catch. The landing test below asks the different,
+    // correctly-matched question — "does the hop's DESTINATION SQUARE have a
+    // leaf at all" — for which the BSP cell centre IS the right sample, at
+    // the granularity the server's square report confirms at. Two questions,
+    // two correct samples of the same BSP; the live escape that got t4 out of
+    // (21,35) ran on exactly this pairing, and the EXACT-POINT VOID fixture
+    // carries leaf regions for both.
     let startPointNoFloor = false;
     if (startGeo?.collisionReady === true && typeof startGeo?.leafAtClient === 'function') {
       try {
@@ -1288,7 +1320,18 @@ export class Mover {
     // handle the transition instead of starting an escape fan.
     const atStandOnExit = this._destIsStandOn === true && this.dest != null
       && this.dest.col === startCol && this.dest.row === startRow;
-    if (startHasNoFloor2 && !atStandOnExit && this._fanIndex == null && this._fanTarget == null) {
+    // A FINISHED ESCAPE DOES NOT RE-FIRE THE FAN ON COVERAGE HOLES. The
+    // leafless-point detector exists to get a body out of a BSP coverage
+    // hole; once the escape fan's hop has been confirmed by the server
+    // (`_voidCycle === false`, terminal), the walk out must not re-trigger
+    // it on every leafless square it steps over — on room 557 48% of the
+    // square centres are leafless, so a re-firing detector is a permanent
+    // escape cycle. Only `clear()` (arrival, destination change, blink
+    // divergence) resets the latch to `null`, which re-arms the detector for
+    // the next route. This is the boundary between "escaping a hole" and
+    // "walking through leafless ground on the way to the destination".
+    if (startHasNoFloor2 && !atStandOnExit && this._fanIndex == null && this._fanTarget == null
+        && this._voidCycle !== false) {
       this.stuckTicks = 3; // bypass the 3-tick wait (and satisfy _tryBlink's stalled check)
       // Open void (no BSP floor at all, not just a wall center): sliding is
       // pointless — the dumb server accepts every probe, so headings always
@@ -1314,10 +1357,6 @@ export class Mover {
     // When true, the character is already in a void: traversal is allowed so the
     // escape fan can walk out. When false, no step may ENTER a floorless square.
     const startIsVoid = startHasNoFloor2 && !atStandOnExit;
-
-    // (Blink progress check moved to the top of tick() — see the BLINK
-    // PROGRESS + HOLD block above.)
-
     // FAN PROGRESS: if we fired a raw move last tick, check position.
     // ECHO PATIENCE: server echoes arrive ~1200ms after a send (BP_MOVE
     // cadence) but exhaustion hits at 9 ticks (900ms). Assessing before the
@@ -1353,6 +1392,19 @@ export class Mover {
         this.drY = curY;
         this._fanTarget = null;
         this._fanFrom = null;
+        // THE CONFIRMED HOP ENDS THE CYCLE TERMINALLY. The detector opens a
+        // cycle on "is there floor under the BODY" (the echo's exact affine
+        // point); this is the fan-side record that the hop moved the SERVER —
+        // what "the escape is real" means. `false` (not `null`) is terminal:
+        // a completed escape must not re-latch on the leafless squares of
+        // its walk out (room 557: 48% of the square centres are leafless —
+        // a cycle that ended in `null` re-opened on every one of them and
+        // never ended; this is the contract hole c183b14 named). The next
+        // hole opens a NEW cycle only via the tick-top detector, which is
+        // the only site that may set the latch. A DECLINE never reaches
+        // here — it sends nothing, so the echo keeps reporting the hole and
+        // the latch outlives every declined heading until exhaustion.
+        this._voidCycle = false;
         this.stuckTicks = 0;
         // NOTE: no path replan here (waypoints are absolute; still valid).
       } else {
@@ -1363,6 +1415,22 @@ export class Mover {
         // Fall through: fire next fan heading below.
       }
     }
+    // THE CYCLE OPENS AND CLOSES ON THE SAME QUESTION. The tick-top detector
+    // above latches on "is there floor under the BODY" — the echo's exact
+    // affine point. That same question, asked of the CURRENT echo, is what
+    // retires an UNCONFIRMED cycle: if the echo is on covered ground while
+    // the latch is still `true`, the escape happened without the progress
+    // check ever observing it (a sim-side commit, a server-initiated move) —
+    // retire it to the same terminal `false`. `false` means "escaped"; the
+    // set site latches only on `== null`, so a completed cycle never
+    // re-opens on the leafless squares of the walk out (room 557: 48% of
+    // square centres are leafless — a `null` release re-latched on every
+    // one of them, which is the contract hole c183b14 named). A decline
+    // keeps `startIsVoid` true, so the latch outlives every decline until
+    // exhaustion; a sim that drifted onto covered ground does not count —
+    // this reads the SERVER's position, never the dead-reckoned sim.
+    if (this._voidCycle === true && !startIsVoid) this._voidCycle = false;
+
 
     // ARRIVED: check if we're at the destination.
     // SKIP for stand_on destinations: the character needs to walk PAST the
@@ -1797,7 +1865,11 @@ export class Mover {
       // arrives. startIsVoid (a tick-top predicate on the echo) would go
       // false there, and the remaining headings would fire from a square
       // chosen by a hole-escape rule the next tick no longer sees. The latch
-      // keeps the cycle honest; the hop's landing test clears it.
+      // ARE DELIBERATELY ASYMMETRIC: set at the tick that OBSERVES the hole
+      // (below), and cleared ONLY by the line in the fan's progress check
+      // that learns the SERVER actually moved us. A DECLINE sends nothing,
+      // so the echo keeps reporting the hole and the latch persists across
+      // declines.
       let _voidLanding = false;   // this tick's hop lands on BSP-covered ground
       if (startIsVoid && _fgeo?.leafAtClient) {
         if (this._voidCycle == null) this._voidCycle = true;
