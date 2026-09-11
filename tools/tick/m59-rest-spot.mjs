@@ -109,16 +109,26 @@ export function restSpotFor(session, { now = () => Date.now() } = {}) {
     // walking toward one and re-choosing the other — the same stand/travel thrash the
     // `stand before moving` branch exists to prevent.
     const held = session._restSpot;
-    if (held && held.room === roomNum && now() - held.at < REST_HOLD_BUDGET_MS) {
-      if (held.col === me.col && held.row === me.row) {
-        return { action: 'rest-here', spot: held, why: 'already on the spot we chose',
-                 heldMs: now() - held.at };
+    if (held && held.room === roomNum) {
+      const elapsed = now() - held.at;
+      if (elapsed < REST_HOLD_BUDGET_MS) {
+        if (held.col === me.col && held.row === me.row) {
+          return { action: 'rest-here', spot: held, why: 'already on the spot we chose',
+                   heldMs: elapsed };
+        }
+        // Still committed to a spot we have not reached, and still in budget: keep walking to
+        // it rather than re-choosing. Re-deciding every tick is how a character ends up
+        // between two walls and resting at neither.
+        return { action: 'walk', spot: held, why: 'continuing to the spot already chosen',
+                 heldMs: elapsed };
       }
-      // Still committed to a spot we have not reached, and still in budget: keep walking to
-      // it rather than re-choosing. Re-deciding every tick is how a character ends up
-      // between two walls and resting at neither.
-      return { action: 'walk', spot: held, why: 'continuing to the spot already chosen',
-               heldMs: now() - held.at };
+      // Wall-clock budget expired: the character has been committed to a spot for 180s
+      // without arriving. Apply the walk-on rule: rest where you are. Don't search for
+      // a new spot — that re-stamps held.at and resets the budget, creating a
+      // self-sustaining loop where the character walks forever and never rests.
+      return { action: 'rest-here', spot: null,
+               why: 'walk budget expired; resting here rather than walking forever',
+               heldMs: elapsed };
     }
 
     const budgetSpent = session._restHeldMs ?? 0;
