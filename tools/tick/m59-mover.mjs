@@ -1757,6 +1757,20 @@ export class Mover {
       // The stride-scaled extension below is unchanged and remains the fast path: it
       // lengthens a heading to the full stride (walk 160 / run 320) only when the trace
       // validates the whole segment. This only fixes the floor for when it does not.
+      // THE PROBE MAY BE BLIND, BUT THE LANDING MUST NOT BE (move.c:353
+      // parity: RequestMove(y, x, 0, ...) is the client's own BLIND
+      // walk-off-room probe — the safety bound is the DISTANCE, 64 units:
+      // the shortest declaration that can leave the square and the longest
+      // that cannot jump past one). move.c has no precedent for hopping
+      // ACROSS a coverage gap, though: its probe starts from a known-good
+      // inside position. So on a leafless start the hop's DESTINATION is
+      // validated (see the landing test below) and steered to the legal
+      // neighbour closest to the goal inside the 64-unit envelope —
+      // deterministic, where a blind hop on room 557 was a ~22% dice roll
+      // per heading. If NO legal neighbour exists, DECLINE every heading
+      // (see the decline below). The cycle is latched: a hole is left by a
+      // validated hop or by exhaustion to recovery/blink/stuck — never by a
+      // blind ping-pong between coverage holes.
       let fanX = myProtoX + Math.cos(finalAngle) * KOD_FINENESS;
       let fanY = myProtoY + Math.sin(finalAngle) * KOD_FINENESS;
       const _fgeo = this.session?.world?.geometry;
@@ -1788,21 +1802,37 @@ export class Mover {
       if (startIsVoid && _fgeo?.leafAtClient) {
         if (this._voidCycle == null) this._voidCycle = true;
         const _c0 = Math.floor(myProtoX / KOD_FINENESS), _r0 = Math.floor(myProtoY / KOD_FINENESS);
-        // THE LANDING TEST IS LEAF EXISTENCE ONLY — not "leaf WITH a
-        // sector", not fineWalkable, not standable. A coverage hole has NO
-        // leaf (that is what start_has_no_floor means). A sector-less leaf
-        // is water/wading, which the client crosses daily; fineWalkable
-        // tests the centre against wall SEGMENTS (false can be an artefact
-        // of an off-centre wall); standable is coarse and is false for
-        // (21,34)/(22,34) — the two squares with a floored leaf that ARE
-        // the legal hops out of t4's hole. Requiring any of them refuses
-        // the escape and strands the character in a hole the BSP covers.
-        // The hop is safe for the stronger reason: from a square with a
-        // leaf the trace CAN begin, so the normal integration resumes.
+        // THE LANDING TEST IS LEAF EXISTENCE — with ONE exemption: THE
+        // DESTINATION ITSELF (a stand_on exit, plus its straight-line
+        // approach corridor within the exit's 4-square engagement radius).
+        // A room-edge door square OFTEN has no leaf at its centre — 557's
+        // only door to 374, standOn (20,2), is leafless AND standable-false,
+        // yet it is the square the server TRANSITIONS from, and the walk-
+        // past-boundary logic below exists precisely to drive through it
+        // (the server places bodies on standOn squares legitimately;
+        // room.kod:2050 "just let it try"). Rejecting the door would make
+        // the only exit an illegal landing and strand the character outside
+        // its own door — the fan would exhaust beside the very square it
+        // was sent to reach. Everything else stays leaf-existence ONLY: not
+        // "leaf WITH a sector" (a sector-less leaf is water/wading, which
+        // the client crosses daily), not fineWalkable (centre-vs-segments;
+        // false can be an off-centre-wall artefact), not standable (coarse;
+        // false for the legal hops (21,34)/(22,34) of t4's hole). From a
+        // square with a leaf the trace CAN begin, so the normal integration
+        // resumes.
+        const _destSqC = this.destProto ? Math.floor(this.destProto.x / KOD_FINENESS) : null;
+        const _destSqR = this.destProto ? Math.floor(this.destProto.y / KOD_FINENESS) : null;
+        const _onExitLine = (c, r) => {
+          if (this._destIsStandOn !== true || _destSqC == null || _destSqR == null) return false;
+          const dc = c - _destSqC, dr = r - _destSqR;
+          return (dc === 0 || dr === 0 || Math.abs(dc) === Math.abs(dr))
+            && Math.max(Math.abs(dc), Math.abs(dr)) <= 4;
+        };
         const _leafy = (c, r) => {
           try {
             if (_fgeo.inBounds && !_fgeo.inBounds(r + 1, c + 1)) return false;
-            return _fgeo.leafAtClient(c * 1024 + 512, r * 1024 + 512) != null;
+            if (_fgeo.leafAtClient(c * 1024 + 512, r * 1024 + 512) != null) return true;
+            return _onExitLine(c, r);
           } catch { return false; }
         };
         const _goalC = Math.floor(fanAimX / KOD_FINENESS), _goalR = Math.floor(fanAimY / KOD_FINENESS);
