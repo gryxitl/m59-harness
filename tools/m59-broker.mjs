@@ -42,7 +42,7 @@ import { loadResources } from './m59-rsc.mjs';
 import { describeObject, affordances, OF, blocksMovement, prepareActTarget } from './m59-parse.mjs';
 import { World, spreadEdges, boundedSilentGo, boundedRegionEntry,
          doorSettleMs, remainingDoorSettle } from './m59-world.mjs';
-import { loadMap, movementMapReadiness, resolveRoom, forgetInferredExit, findPath, buildReverseEdges }
+import { loadMap, movementMapReadiness, resolveRoom, forgetInferredExit, findPath, buildReverseEdges, passableExits }
   from './m59-map.mjs';
 // UNION OF BOTH SIDES. Ours added loadRoo/buildAllRoomGeometry for the keeper split;
 // upstream added clientToProtocol for its collision work. Same module, both needed.
@@ -766,7 +766,7 @@ async function spawnKeeper(agent, index, credentials) {
   const logFd = openSync(`substrate/keeper-${agent}.log`, 'a');
   const child = spawn(process.execPath,
     [join(HERE, 'm59-keeper-process.mjs'), '--agent', agent, '--port', String(port), '--fleet', FLEET ?? 'default'],
-    { stdio: ['ignore', logFd, logFd], cwd: process.cwd() });
+    { stdio: ['ignore', logFd, logFd], cwd: process.cwd(), env: { ...(process.env ?? {}), M59_MOVER_TRACE: process.env?.M59_MOVER_TRACE ?? '0' } });
   // NOT detached: keepers die when the broker exits.
   keeperProcesses.set(agent, { pid: child.pid, port, startedAt: Date.now() });
   console.error(`[keeper] spawned ${agent} pid=${child.pid} port=${port}`);
@@ -929,7 +929,19 @@ class KeeperProxy {
   get world() {
     const s = this._state;
     if (!s?.room) return null;
-    return { room: { name: s.room.name, num: s.room.num, id: s.room.num } };
+    const roomNum = s.room.num;
+    return {
+      room: { name: s.room.name, num: roomNum, id: roomNum },
+      exits: () => {
+        try { return passableExits(worldMap, roomNum); } catch { return []; }
+      },
+      route: (dest) => {
+        try {
+          const p = findPath(worldMap, roomNum, Number(dest));
+          return p?.found ? p : null;
+        } catch { return null; }
+      },
+    };
   }
   set world(v) { this._world = v; }
 
@@ -1081,6 +1093,8 @@ class KeeperProxy {
   async autopilot(action, args = {}) {
     if (action === 'start') return keeperAction(this.name, this._index, 'pass', {});
     if (action === 'stop') return keeperAction(this.name, this._index, 'cancel', {});
+    if (action === 'inert') return keeperAction(this.name, this._index, 'inert', { why: args.why });
+    if (action === 'revive') return keeperAction(this.name, this._index, 'revive', {});
     if (action === 'status') return this._refreshState();
     return { error: `unknown autopilot action: ${action}` };
   }
@@ -1901,8 +1915,9 @@ async function reconcileFleet() {
             signal: AbortSignal.timeout(30000),
           });
         } catch (e) {
-          // Keeper process is dead — respawn it
-          console.error(`[rejoin] ${agent} keeper not reachable, respawning`);
+          // Keeper process is dead — respawn it. Log the error type to
+          // distinguish AbortError (slow but alive) from ECONNREFUSED (dead).
+          console.error(`[rejoin] ${agent} keeper not reachable (${e?.name ?? 'unknown'}: ${e?.message ?? '?'}), respawning`);
           const ok = await spawnKeeper(agent, index, credentials);
           if (!ok) throw new Error('keeper respawn failed');
         }
@@ -3336,7 +3351,7 @@ const TOOLS = [
                  note: 'walking now; poll `fleet` or `status` — do not re-issue while busy' };
       }
       const r = await startTravel().promise;
-      return { destination: { num: dest, name: worldMap.rooms[dest].name }, ...r, now: arrivalReport(s) };
+      return { destination: { num: dest, name: worldMap.rooms[dest].name }, ...r, now: await arrivalReport(s) };
     },
   },
   {
@@ -3381,7 +3396,7 @@ const TOOLS = [
         candidates = exits.filter(e => e.kind === 'portal' && (a.portal === true || e.id === Number(a.portal)));
       if (!candidates.length) return { left: false, reason: 'no such exit from here', exits };
       const r = await s.leaveViaAny(candidates);
-      return { ...r, now: arrivalReport(s) };
+      return { ...r, now: await arrivalReport(s) };
     },
   },
   {
@@ -6876,10 +6891,11 @@ const TOOLS = [
       // AND `stop` NOW MEANS INERT unless somebody asks for the other thing. Every caller
       // of this — the errands, the supply hold, the pilot claim, the supervisor — wanted
       // "stop driving", and was getting "stop looking" as well. See Autopilot.goInert.
+      const isKeeper = s instanceof KeeperProxy;
       if (a.action === 'stop')
-        return p.stop(a.why ?? 'asked to stop, no reason given', { hard: !!a.hard });
-      if (a.action === 'inert') return p.goInert(a.why ?? 'asked to go inert, no reason given');
-      if (a.action === 'revive') { p.revive(a.why ?? 'asked to revive'); return p.status(); }
+        return isKeeper ? s.autopilot('stop', { why: a.why }) : p.stop(a.why ?? 'asked to stop, no reason given', { hard: !!a.hard });
+      if (a.action === 'inert') return isKeeper ? s.autopilot('inert', { why: a.why }) : p.goInert(a.why ?? 'asked to go inert, no reason given');
+      if (a.action === 'revive') { if (isKeeper) return s.autopilot('revive', {}); p.revive(a.why ?? 'asked to revive'); return p.status(); }
       // OWNING PART OF A CHARACTER. The survival floor is refused unless the roster has
       // consented to yield it, so a bot cannot take it by omission — see PROTECTED_FACULTIES.
       if (a.action === 'claim')
@@ -7884,17 +7900,26 @@ const TOOLS = [
     }, required: ['agent'] },
     run: async (a) => {
       const s = session(a.agent), c = s.need();
-      await s.pacer.submit('read', () => c.stats(1));
-      await s.pacer.submit('read', () => c.stats(2));
-      // Ask for these even when brief. `brief` shortens the OUTPUT — it is there
-      // because the name lists run to hundreds of entries — but skipping the
-      // request meant brief reported whatever happened to be cached, and the
-      // server does not push the skill list at login. So a character with 19
-      // skills reported "skills_known: 0", which is not a shorter truth, it is a
-      // wrong one.
-      await s.pacer.submit('read', () => c.requestSpells());
-      await s.pacer.submit('read', () => c.requestSkills());
-      await new Promise(r => setTimeout(r, 700));
+      // Keeper-backed sessions have no in-process pacer — the pacer (and the
+      // stats/spells/skills requests) live in the KEEPER process. Submitting here
+      // threw 'keeper-backed: pacer is in the keeper process', which is why this
+      // tool failed for every keeper-backed character. The keeper's /state already
+      // carries vitals (hp/vigor/mana), spells and skills, so for those we read the
+      // cached state (via the emulated client) instead of submitting. Attributes are
+      // not in /state, so they read empty for keeper-backed — a keeper-side extension.
+      if (!(s instanceof KeeperProxy)) {
+        await s.pacer.submit('read', () => c.stats(1));
+        await s.pacer.submit('read', () => c.stats(2));
+        // Ask for these even when brief. `brief` shortens the OUTPUT — it is there
+        // because the name lists run to hundreds of entries — but skipping the
+        // request meant brief reported whatever happened to be cached, and the
+        // server does not push the skill list at login. So a character with 19
+        // skills reported "skills_known: 0", which is not a shorter truth, it is a
+        // wrong one.
+        await s.pacer.submit('read', () => c.requestSpells());
+        await s.pacer.submit('read', () => c.requestSkills());
+        await new Promise(r => setTimeout(r, 700));
+      }
 
       // Attributes are reported against their real ceiling. kod bounds each to
       // (1, MAXIMUM_STAT) on the way out (player.kod:6371), so a character whose
@@ -7927,7 +7952,7 @@ const TOOLS = [
       if (!vitals.vigor)
         notes.push('no vigor reading arrived — vigor gates running and some skill costs');
 
-      return { ...s.snapshot('status'), where: s.world.room
+      return { ...await s.snapshot('status'), where: s.world.room
                  ? { num: s.world.room.num, name: s.world.room.name } : null,
                level_note: vitals.health
                  ? `max_health ${vitals.health.max} is what the game treats as your level`
@@ -9626,7 +9651,7 @@ const TOOLS = [
         const dest = resolveRoom(worldMap, a.then_travel_to);
         if (dest != null) log.push({ step: 'onward', ...(await s.travelExclusive(dest, { maxHops: 18 }).catch(e => ({ arrived: false, reason: e.message }))) });
       }
-      return { left: out, log, now: arrivalReport(s),
+      return { left: out, log, now: await arrivalReport(s),
                note: out ? 'one-way — you cannot walk back into Raza'
                          : 'still inside; the portal is in the Grand Museum at (11,2) and needs two touches' };
     },
@@ -12650,8 +12675,13 @@ function serveDashboard(port) {
         if (!rv.target && h?.goap?.target) rv.target = h.goap.target;
       }
       const { renderRoom3D } = await import('./m59-room3d.mjs');
+      let html;
+      try { html = renderRoom3D(who, rv, h); } catch (e) {
+        res.writeHead(500, { 'content-type': 'text/plain' });
+        return res.end(`room3d render failed: ${e?.message ?? e}`);
+      }
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-      return res.end(renderRoom3D(who, rv, h));
+      return res.end(html);
     }
     if (url.pathname.startsWith('/room3d-data/')) {
       const who = decodeURIComponent(url.pathname.slice('/room3d-data/'.length).split('/')[0] || '');

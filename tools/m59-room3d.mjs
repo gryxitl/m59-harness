@@ -10,7 +10,8 @@ export function renderRoom3D(name, rv, hero) {
     <a href="/hero/${name}" style="color:#4a9">&larr; ${name}</a>
     <p>No room data available.</p></body></html>`;
 
-  const { cols, rows, objects, self } = rv;
+  const { cols, rows, objects: _objects, self } = rv;
+  const objects = _objects ?? [];
   const walkable = rv.walkable ?? [];
   const hasWalls = walkable.length === cols * rows && walkable.some(v => v === 0);
   let roomName = hero?.room?.name ?? '';
