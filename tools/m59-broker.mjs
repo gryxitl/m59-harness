@@ -128,6 +128,14 @@ import { COMMANDER_SCHEMA, COMMERCE_SCHEMA, COMMANDER_FACULTIES,
          resolveCommerceInventoryOrigins, tradeFingerprint } from './m59-rts-command.mjs';
 import { joinSessionOnce, sessionReadiness } from './m59-session-readiness.mjs';
 import './m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
+// A rejected promise in an async request handler is not caught by a try/catch
+// further down the function; it surfaces as unhandledRejection and, without a
+// handler, Node 15+ exits the process and all five characters log out.
+// Log the stack (not just the message — bare rejections stringify to
+// [object Object]) so the next crash is attributable.
+process.on('unhandledRejection', (e) => {
+  console.error(`[broker] unhandledRejection: ${e?.stack ?? e?.message ?? e}`);
+});
 
 const HOST = process.env.M59_HOST || '127.0.0.1';
 const PORT = Number(process.env.M59_PORT || 5959);
@@ -1549,12 +1557,6 @@ function claimFleet() {
     process.on('exit', () => { killAllKeepers(); drop(); });
     process.on('SIGINT', () => { killAllKeepers(); drop(); process.exit(0); });
     process.on('SIGTERM', () => { killAllKeepers(); drop(); process.exit(0); });
-    // A rejected promise in an async request handler is not caught by a try/catch
-    // further down the function; it surfaces as unhandledRejection and, without a
-    // handler, Node exits and all five characters log out. Log instead.
-    process.on('unhandledRejection', (e) => {
-      console.error(`[broker] unhandledRejection: ${e?.message ?? e}`);
-    });
   } catch (e) { console.error(`[state] could not claim the fleet: ${e.message}`); }
 }
 
@@ -12703,11 +12705,10 @@ function serveDashboard(port) {
           if (s instanceof KeeperProxy && (s._state?.character === who)) {
             try {
               rv = await s.roomView();
-              fromKeeper = !!rv;
+              if (rv) { fromKeeper = true; break; }
             } catch {
-              // Keeper is mid-restart or unreachable; fall through to 404.
+              // Keeper is mid-restart or unreachable; try the next session.
             }
-            break;
           }
         }
       }
@@ -12752,10 +12753,10 @@ function serveDashboard(port) {
           if (s instanceof KeeperProxy && (s._state?.character === who)) {
             try {
               path3dOut = await s.path3d();
+              if (path3dOut !== undefined) break;
             } catch {
-              // Keeper is mid-restart or unreachable; fall through to 404.
+              // Keeper is mid-restart or unreachable; try the next session.
             }
-            break;
           }
         }
       }
