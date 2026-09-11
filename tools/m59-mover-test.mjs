@@ -2186,5 +2186,27 @@ console.log('\nthe mover remembers a step the server refused');
     }
   }
 
+  // COARSE TIER: ban the actual refused hop from t5's 06:12 log.
+  // The ban changes the approach (first waypoint differs) but the
+  // character still arrives at the goal — the ban excludes edges,
+  // not squares.
+  {
+    const { loadMap } = await import('./m59-map.mjs');
+    const { RoomGeometry } = await import('./m59-roo.mjs');
+    const map = loadMap();
+    const rooms = Array.isArray(map.rooms) ? map.rooms : Object.values(map.rooms);
+    const rec = rooms.find(x => x.num === 851);
+    const g = RoomGeometry.fromJSON(rec.roo);
+    g.roomNum = 851;
+    const ban = new Set(['27,62>27,61']);
+    const F = [62*64+32, 27*64+32], T = [61*64+32, 27*64+32];
+    const a = g.finePathProtocol(F[0],F[1],T[0],T[1], { coarse: true });
+    const b = g.finePathProtocol(F[0],F[1],T[0],T[1], { coarse: true, blockedEdges: ban });
+    const firstCell = (r) => r.waypoints.length ? `${Math.floor(r.waypoints[0].x/64)},${Math.floor(r.waypoints[0].y/64)}` : 'none';
+    ok('coarse tier honours the ban (approach differs)',
+       a.found && b.found && firstCell(a) !== firstCell(b),
+       `noBan first=${firstCell(a)} withBan first=${firstCell(b)} — ban did not change the approach`);
+  }
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
