@@ -1760,32 +1760,93 @@ export class Mover {
       let fanX = myProtoX + Math.cos(finalAngle) * KOD_FINENESS;
       let fanY = myProtoY + Math.sin(finalAngle) * KOD_FINENESS;
       const _fgeo = this.session?.world?.geometry;
-      // BLIND-PROBE EXCEPTION AT A LEAFLESS START (the one place the
-      // "integration, not approval" rule must be broken — and it is broken
-      // BY MOVE.c ITSELF, not against it). When the server stands our body
-      // on a square the BSP has no leaf for (room.kod:2050 "just let it
-      // try" off-grid placement; 48% of room 557's square centres are
-      // leafless), the trace refuses to even BEGIN from our own position
-      // (start_has_no_floor), the integration returns moved=0 = the start,
-      // and every heading "probes" the square we are already standing in.
-      // Measured on one keeper: 12,100 consecutive escape-fan-probe sends
-      // with at= aim= srv= all equal, one per 5.08 s (the anti-deadlock
-      // floor), forever — the character heartbeating no-ops while reading
-      // as "escaping". The escape tool was permanently incapable of moving
-      // BECAUSE of the guard that makes it safe everywhere else.
-      // move.c has the answer: RequestMove(y, x, 0, ...) (move.c:627) — the
-      // walk-off-room probe is deliberately BLIND; the safety bound is the
-      // DISTANCE, not the trace. A 64-unit blind probe is the shortest
-      // declaration that can leave the square and the longest that cannot
-      // jump past one (see the WHY 64 note below). The server is
-      // client-authoritative for user moves (room.kod:2044, validate=false)
-      // and re-anchors the next echo; one such hop lands on a floored
-      // square and the BSP-shaped machinery resumes.
-      // The fast path (trace-validated stride extension) is UNCHANGED for
-      // every grounded start. This applies to startIsVoid only — the case
-      // where every other predicate in this file is already known to answer
-      // about the wrong authority.
-      if (_fgeo?.traceFineMoveClient && !startIsVoid) {
+      // THE PROBE MAY BE BLIND, BUT THE LANDING MUST NOT BE (move.c:353
+      // parity: RequestMove(y, x, 0, ...) is the client's own BLIND
+      // walk-off-room probe — the safety bound is the DISTANCE, 64 units:
+      // the shortest declaration that can leave the square and the longest
+      // that cannot jump past one). move.c has no precedent for hopping
+      // ACROSS a coverage gap, though: its probe starts from a known-good
+      // inside position. So on a leafless start the hop's DESTINATION is
+      // validated on the SAME authority the trace uses (leafAtClient at the
+      // square centre, the granularity the echo reports at). If a leafy
+      // neighbour exists, steer to the one closest to the goal inside the
+      // 64-unit envelope — deterministic, where a blind hop on room 557 was
+      // a ~22% dice roll per heading. If NO leafy neighbour exists, DECLINE
+      // every heading (see the decline below). The cycle is latched: a hole
+      // is left by a validated hop or by exhaustion to recovery/blink/stuck
+      // — never by a blind ping-pong between coverage holes.
+      //
+      // WHY A CYCLE LATCH AT ALL: the mover dead-reckons the sim toward the
+      // aim it sent (Pose.advance's own words: "advancing the sim to the
+      // declaration is how a mover learns to fly"), so the next tick is
+      // physically standing on the hop's destination even before the echo
+      // arrives. startIsVoid (a tick-top predicate on the echo) would go
+      // false there, and the remaining headings would fire from a square
+      // chosen by a hole-escape rule the next tick no longer sees. The latch
+      // keeps the cycle honest; the hop's landing test clears it.
+      let _voidLanding = false;   // this tick's hop lands on BSP-covered ground
+      if (startIsVoid && _fgeo?.leafAtClient) {
+        if (this._voidCycle == null) this._voidCycle = true;
+        const _c0 = Math.floor(myProtoX / KOD_FINENESS), _r0 = Math.floor(myProtoY / KOD_FINENESS);
+        // THE LANDING TEST IS LEAF EXISTENCE ONLY — not "leaf WITH a
+        // sector", not fineWalkable, not standable. A coverage hole has NO
+        // leaf (that is what start_has_no_floor means). A sector-less leaf
+        // is water/wading, which the client crosses daily; fineWalkable
+        // tests the centre against wall SEGMENTS (false can be an artefact
+        // of an off-centre wall); standable is coarse and is false for
+        // (21,34)/(22,34) — the two squares with a floored leaf that ARE
+        // the legal hops out of t4's hole. Requiring any of them refuses
+        // the escape and strands the character in a hole the BSP covers.
+        // The hop is safe for the stronger reason: from a square with a
+        // leaf the trace CAN begin, so the normal integration resumes.
+        const _leafy = (c, r) => {
+          try {
+            if (_fgeo.inBounds && !_fgeo.inBounds(r + 1, c + 1)) return false;
+            return _fgeo.leafAtClient(c * 1024 + 512, r * 1024 + 512) != null;
+          } catch { return false; }
+        };
+        const _goalC = Math.floor(fanAimX / KOD_FINENESS), _goalR = Math.floor(fanAimY / KOD_FINENESS);
+        const _neigh = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]]
+          .map(([dc, dr]) => [dc, dr, Math.hypot(_c0 + dc - _goalC, _r0 + dr - _goalR)])
+          .filter(([dc, dr]) => _leafy(_c0 + dc, _r0 + dr))
+          .sort((a, b) => a[2] - b[2]);
+        const _hx = Math.floor(fanX / KOD_FINENESS) - _c0, _hy = Math.floor(fanY / KOD_FINENESS) - _r0;
+        if (_neigh.some(([dc, dr]) => dc === _hx && dr === _hy)) {
+          _voidLanding = true;   // the raw hop already lands on covered ground
+        } else if (_neigh.length) {
+          const [_dc, _dr] = _neigh[0];
+          const _tx = (_c0 + _dc) * KOD_FINENESS + HALF, _ty = (_r0 + _dr) * KOD_FINENESS + HALF;
+          const _d = Math.hypot(_tx - myProtoX, _ty - myProtoY) || 1;
+          const _s = Math.min(KOD_FINENESS, _d);   // never longer than one square
+          fanX = myProtoX + (_tx - myProtoX) / _d * _s;
+          fanY = myProtoY + (_ty - myProtoY) / _d * _s;
+          _voidLanding = true;
+        }
+      }
+      // IN A VOID CYCLE WITH NO VALID LANDING, DO NOT SEND AT ALL. A 64-unit
+      // probe from a hole lands in the next hole, and the next tick's trace
+      // refuses to begin from there too — the blind ping-pong the live
+      // 12,100-packet measurement proves is useless. Decline, advance the
+      // heading, and let the nine headings exhaust to recovery/blink/stuck.
+      // blink is the one tool that has ever gotten a character out of a hole
+      // whose every neighbour is a hole, and it needs stuckTicks to climb —
+      // which a sent no-op prevents and a declined heading allows. (Replaces
+      // the advance-and-resend degenerate guard, which on a leafless start
+      // — where EVERY probe degenerates — was itself the loop.)
+      if (this._voidCycle === true && _fgeo?.leafAtClient && !_voidLanding) {
+        this._fanIndex = idx + 1;
+        if (this._fanIndex >= 9) {
+          return this._fanExhausted(protocolToClient(myProtoX), protocolToClient(myProtoY));
+        }
+        return { state: 'raw-move', fanIndex: this._fanIndex,
+                 why: 'void cycle: no leafy neighbour to hop to; heading declined' };
+      }
+      // THE STRIDE EXTENSION IS AN INTEGRATION, NOT AN APPROVAL — and on a
+      // void-cycle start whose landing is NOT yet validated it is skipped:
+      // every sub-step trace answers start_has_no_floor, so the integration
+      // returns the start and the fan "probes" its own square. A validated
+      // landing (or a grounded start) runs it as before.
+      if (_fgeo?.traceFineMoveClient && !(this._voidCycle === true && !this._fanTarget) && !startIsVoid) {
         // Stride origin is the SIM (the live position; the server is
         // client-authoritative, so the sim is where we are — the echo lags).
         const _fx = myProtoX + Math.cos(finalAngle) * strideNow;

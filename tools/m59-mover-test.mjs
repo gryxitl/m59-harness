@@ -1201,12 +1201,23 @@ console.log('\nTHE LEAFLESS-SQUARE SEND LOOP (the escape fan must never beat its
   // server's own rule so the rig is honest: declarations of the current
   // position are accepted (no server-side refusal) and move nothing.
   session._pose = new Pose();
+  session._pose.sim = { x: 21 * 64 + 32, y: 35 * 64 + 32 };  // the client dead-reckons from its live position
   session._pose.updateServer({ col: 21, row: 35, x: 21 * 64 + 32, y: 35 * 64 + 32 });
   const srvPos = session._pose.server;
   const ownX = srvPos.x, ownY = srvPos.y;
   session.client.moveTo = (x, y) => {
     sent.push([x, y]);
     if (x !== srvPos.x || y !== srvPos.y) { srvPos.x = x; srvPos.y = y; srvPos.col = Math.floor(x / 64); srvPos.row = Math.floor(y / 64); }
+    // THE REAL CLIENT ECHOES EVERY ACCEPTED MOVE back to the Pose (that is
+    // THE REAL CLIENT DEAD-RECKONS AND ECHOES EVERY ACCEPTED MOVE back to
+    // the Pose (that is what Pose.updateServer models — the live keeper's
+    // [echo] lines). A rig whose moveTo does neither tests a server that
+    // ignores its own packets, and the mover's sim stays on a coverage hole
+    // the server has already left — a ping-pong that exists only in the
+    // fixture. (Without the sim line the leafless probe is aimed from (0,0)
+    // because Pose.confirmed has no position to report.)
+    session._pose.advance(x, y, 64);
+    session._pose.updateServer({ col: Math.floor(x / 64), row: Math.floor(y / 64), x, y });
   };
   let degenerate = 0, sentTotal = 0, escalated = false, echoedOnce = false;
   for (let i = 0; i < 60; i++) {
@@ -1224,8 +1235,14 @@ console.log('\nTHE LEAFLESS-SQUARE SEND LOOP (the escape fan must never beat its
      `${degenerate} of ${sentTotal} sends were no-op self-declarations`);
   ok('the leafless escape escalates (fan/stuck/blink) rather than looping quietly',
      escalated, 'never reached raw-move/stuck/blink');
-  // and if it ever DID escape the square, the echo must show it:
-  void echoedOnce;
+  // THE HOP LANDING MUST BE LEAF-VALIDATED. This fixture has NO leaf
+  // anywhere (leafAtClient()=>null for every square), so a leaf-validated
+  // hop has no legal landing: the mover must DECLINE to send and go quiet,
+  // rather than ping-pong between two coverage holes. This is the clause
+  // that fails if the steering is removed — without it the degenerate
+  // base probe sends every tick.
+  ok('with no leafy neighbour anywhere the mover declines to send', sentTotal === 0,
+     `${sentTotal} sends despite every neighbour being leafless`);
 }
 
 console.log('\nDESTINATION OWNERSHIP: the owner may re-aim its own destination');
