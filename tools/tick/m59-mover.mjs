@@ -1695,6 +1695,21 @@ export class Mover {
           if (ng) { fanAimX = ng.col * KOD_FINENESS + HALF; fanAimY = ng.row * KOD_FINENESS + HALF; }
         } catch { /* keep the travel aim */ }
       }
+      // A GROUND TARGET EQUAL TO OUR OWN SQUARE IS NOT A TARGET. The ground
+      // square's standable() can be true while the BSP has no leaf at the
+      // point the server actually stands our body on (standable tests the
+      // SQUARE, the trace tests the POINT — measured: the leafless component
+      // in room 557 is 63 squares of which standable calls every centre
+      // "standable"). When the nearest grounded square is the one we are
+      // standing in, atan2(0,0) = 0 and every heading's fanAim degenerates
+      // to due east: the base 64-unit probe, when the trace extension
+      // returns its start, sends our own position nine times per cycle.
+      // The travel aim (waypoint/destination) is a strictly better direction
+      // to probe than a self-referential one, so fall back to it.
+      if (startIsVoid && Math.round(fanAimX) === Math.round(myProtoX)
+                      && Math.round(fanAimY) === Math.round(myProtoY)) {
+        fanAimX = aimX; fanAimY = aimY;
+      }
       const dx = fanAimX - myProtoX;
       const dy = fanAimY - myProtoY;
       const dist = Math.hypot(dx, dy);
@@ -1745,7 +1760,32 @@ export class Mover {
       let fanX = myProtoX + Math.cos(finalAngle) * KOD_FINENESS;
       let fanY = myProtoY + Math.sin(finalAngle) * KOD_FINENESS;
       const _fgeo = this.session?.world?.geometry;
-      if (_fgeo?.traceFineMoveClient) {
+      // BLIND-PROBE EXCEPTION AT A LEAFLESS START (the one place the
+      // "integration, not approval" rule must be broken — and it is broken
+      // BY MOVE.c ITSELF, not against it). When the server stands our body
+      // on a square the BSP has no leaf for (room.kod:2050 "just let it
+      // try" off-grid placement; 48% of room 557's square centres are
+      // leafless), the trace refuses to even BEGIN from our own position
+      // (start_has_no_floor), the integration returns moved=0 = the start,
+      // and every heading "probes" the square we are already standing in.
+      // Measured on one keeper: 12,100 consecutive escape-fan-probe sends
+      // with at= aim= srv= all equal, one per 5.08 s (the anti-deadlock
+      // floor), forever — the character heartbeating no-ops while reading
+      // as "escaping". The escape tool was permanently incapable of moving
+      // BECAUSE of the guard that makes it safe everywhere else.
+      // move.c has the answer: RequestMove(y, x, 0, ...) (move.c:627) — the
+      // walk-off-room probe is deliberately BLIND; the safety bound is the
+      // DISTANCE, not the trace. A 64-unit blind probe is the shortest
+      // declaration that can leave the square and the longest that cannot
+      // jump past one (see the WHY 64 note below). The server is
+      // client-authoritative for user moves (room.kod:2044, validate=false)
+      // and re-anchors the next echo; one such hop lands on a floored
+      // square and the BSP-shaped machinery resumes.
+      // The fast path (trace-validated stride extension) is UNCHANGED for
+      // every grounded start. This applies to startIsVoid only — the case
+      // where every other predicate in this file is already known to answer
+      // about the wrong authority.
+      if (_fgeo?.traceFineMoveClient && !startIsVoid) {
         // Stride origin is the SIM (the live position; the server is
         // client-authoritative, so the sim is where we are — the echo lags).
         const _fx = myProtoX + Math.cos(finalAngle) * strideNow;
@@ -1781,6 +1821,33 @@ export class Mover {
           dt: 1000, numSteps: STEPS_PER_MOVE, playerRadius: PLAYER_WALL_CLEARANCE_CLIENT_UNITS,
         });
         fanX = _integ.x; fanY = _integ.y;
+      }
+      // DEGENERATE-SEND GUARD (the escape fan must never declare the square we
+      // are already standing in). A packet that equals our own position is a
+      // no-op the server accepts silently (user.kod @UserMove has no distance
+      // floor) and can never be distinguished from progress downstream.
+      // Measured on the live fleet: 12,100 consecutive escape-fan-probe sends
+      // with at= aim= srv= all equal, one per ~5 s (the anti-deadlock floor),
+      // forever. The character reads as "escaping" in every log while the
+      // escape tool is permanently incapable of moving: from a square the BSP
+      // has no leaf for, every heading's integration returns the start
+      // (start_has_no_floor — the trace cannot even BEGIN), so the stride-
+      // scaled fan "probes" nine times per cycle and sends our own centre
+      // nine times. Same class as the 16-unit probe bug this file already
+      // documents ("asking the character to be where it already is") — the
+      // stride fix cured the probe-length case; this is the integration-
+      // returns-zero case, and it is what the escape fan actually does on a
+      // leafless square. Treated exactly like the other two guards: advance
+      // the heading, exhaust to blink/stuck when no heading leaves the
+      // square. That is the honest outcome, and it is the only way the nine
+      // headings ever reach the exhaustion path.
+      if (Math.round(fanX) === Math.round(myProtoX) && Math.round(fanY) === Math.round(myProtoY)) {
+        this._fanIndex = idx + 1;
+        if (this._fanIndex >= 9) {
+          return this._fanExhausted(protocolToClient(myProtoX), protocolToClient(myProtoY));
+        }
+        return { state: 'raw-move', fanIndex: this._fanIndex,
+                 why: 'fan heading degenerates to our own square; nothing to move' };
       }
       const speed = 18; // walking speed
       // NEVER STEP INTO A VOID: from a grounded start, skip headings whose

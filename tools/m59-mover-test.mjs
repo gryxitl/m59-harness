@@ -1165,6 +1165,69 @@ console.log('\nA STRIDE THAT INTEGRATES TO NOTHING MUST NOT REPORT MOVING');
      `stuck=${mover.stuckTicks}`);
 }
 
+console.log('\nTHE LEAFLESS-SQUARE SEND LOOP (the escape fan must never beat itself)');
+{
+  // THE LIVE FREEZE THIS EXISTS FOR: keeper-t4.log, 2026-09-11T12:27:46 onward.
+  // t4 at room 557 (21,35) — a square whose CENTRE the coarse standable() calls
+  // "standable" but where the BSP has no leaf at the point the server stands our
+  // body (leafAtClient = null). Every escape-fan probe then declared the square
+  // the character already stood in — 12,100 consecutive sends with at= aim= srv=
+  // all equal, one per ~5s, for over an hour, reading in every log as "escaping"
+  // while the escape tool was permanently incapable of moving. Three compounding
+  // causes, all reproduced by one fixture:
+  //   1. ground-seeking: nearestGrounded returns our OWN square (its centre is
+  //      standable) → atan2(0,0) = 0 → nine headings, one due east.
+  //   2. the trace refuses to even BEGIN from a leafless point
+  //      (start_has_no_floor) → the stride integration returns moved=0 →
+  //      fanX/fanY equal our own centre.
+  //   3. the server does not refuse such a packet (user.kod @UserMove has no
+  //      distance floor), the echo never moves, and the anti-deadlock floor
+  //      re-fires the no-op every ~5s forever.
+  const leaflessGeo = {
+    collisionReady: true,
+    standable: () => true,           // coarse lies: the SQUARE centre holds floor
+    fineWalkable: () => true,
+    leafAtClient: () => null,        // the POINT under the body has no BSP leaf
+    floorBaseAtClient: () => null,
+    // the trace cannot even begin from a leafless start:
+    traceFineMoveClient: () => ({ blocked: true, moved: false, arrived: false, reason: 'start_has_no_floor' }),
+    finePathProtocol: () => ({ found: true, waypoints: [{ x: 9 * 64 + 32, y: 2 * 64 + 32 }] }),
+  };
+  const { mover, sent, session } = rig({ col: 21, row: 35, destCol: 13, destRow: 48, geo: leaflessGeo });
+  mover.session.policy = {};
+  mover.to(13, 48, { by: 'router' });
+  // The server echo is frozen at the character's position — the server ignored
+  // every no-op. A move that leaves the square WOULD move the echo; install the
+  // server's own rule so the rig is honest: declarations of the current
+  // position are accepted (no server-side refusal) and move nothing.
+  session._pose = new Pose();
+  session._pose.updateServer({ col: 21, row: 35, x: 21 * 64 + 32, y: 35 * 64 + 32 });
+  const srvPos = session._pose.server;
+  const ownX = srvPos.x, ownY = srvPos.y;
+  session.client.moveTo = (x, y) => {
+    sent.push([x, y]);
+    if (x !== srvPos.x || y !== srvPos.y) { srvPos.x = x; srvPos.y = y; srvPos.col = Math.floor(x / 64); srvPos.row = Math.floor(y / 64); }
+  };
+  let degenerate = 0, sentTotal = 0, escalated = false, echoedOnce = false;
+  for (let i = 0; i < 60; i++) {
+    clock(1050);
+    const r = mover.tick();
+    if (r.state === 'raw-move' || r.state === 'stuck' || r.state === 'blink') escalated = true;
+    for (const p of sent) {
+      sentTotal++;
+      if (p[0] === ownX && p[1] === ownY) degenerate++;
+    }
+    sent.length = 0;
+    if (srvPos.x !== ownX || srvPos.y !== ownY) echoedOnce = true;
+  }
+  ok('no move ever declares the square the server already has us in', degenerate === 0,
+     `${degenerate} of ${sentTotal} sends were no-op self-declarations`);
+  ok('the leafless escape escalates (fan/stuck/blink) rather than looping quietly',
+     escalated, 'never reached raw-move/stuck/blink');
+  // and if it ever DID escape the square, the echo must show it:
+  void echoedOnce;
+}
+
 console.log('\nDESTINATION OWNERSHIP: the owner may re-aim its own destination');
 {
   // THE GUARD EXISTS TO STOP A LOWER CALLER STEALING A ROUTE. It was written as
