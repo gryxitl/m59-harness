@@ -2155,10 +2155,11 @@ export class RoomGeometry {
 
   get hasStepMask() { return !!this._stepMask; }
 
-  // `blockedEdges` is a Set of "fromRow,fromCol>toRow,toCol" the CALLER has learned the
-  // mover refuses — see walkTo in m59-broker.mjs. It is an edge and not a square on
-  // purpose: a step is refused by the wall BETWEEN two squares, and blaming the square
-  // removes a perfectly good place to stand that other neighbours can still reach.
+  // `blockedEdges` is a Set of "fromRow,fromCol>toRow,toCol" the caller has learned the
+  // mover refuses. It is an edge and not a square on purpose: a step is refused by the
+  // wall BETWEEN two squares, and blaming the square removes a perfectly good place to
+  // stand that other neighbours can still reach. No production caller populates this;
+  // see docs/MOVEMENT-REFUSAL-PLUMBING.md for why the ban cannot reach the planner.
   neighbors(row, col, { fine = true, collision = false, blockedEdges = null,
                         allowInto = null, fineWiden = false } = {}) {
     const out = [];

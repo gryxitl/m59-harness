@@ -372,6 +372,7 @@ export class TickLoop {
     this.timer = null;
     this.busy = false;
     this._frozen = false;  // set true by the cast override to hold the character still
+    this._frozenAt = null;
     this._livenessFlagged = false;
     this.stats = { ticks: 0, skipped: 0, errors: 0, awaited: 0,
                    longest_decide_ms: 0, lastError: null, stale_sessions: 0 };
@@ -387,16 +388,34 @@ export class TickLoop {
     // stops and nothing notices. The watchdog is un-unref'd so it always runs.
     this._watchdog = setInterval(() => {
       const now = Date.now();
-      if (now - (this._lastTickAt ?? now) > 5000) {
-        console.error(`[tick-watchdog] tick loop silent for ${Math.round((now - this._lastTickAt)/1000)}s (busy=${this.busy}, longest=${this.stats.longest_decide_ms}ms) — forcing recovery`);
-        this._lastTickAt = now;
+      // Read _frozen into a local before the TTL block so the diagnostic
+      // reports the state at the top of the callback, not after the TTL
+      // has cleared it.
+      const frozenAtTop = this._frozen;
+      // TTL: auto-clear _frozen past 60s (inert has no other escape). The blink-cast
+      // path sets _frozen without _frozenAt, so a cast interrupted mid-flight keeps
+      // the flag and the absent timestamp makes the TTL fire. An explicit inert
+      // (loop._inert) is NOT subject to the TTL — it persists until `revive`.
+      if (this._frozen && !this._inert && (!this._frozenAt || now - this._frozenAt > 60000)) {
+        this._frozen = false;
+        this._frozenAt = null;
+        console.error(`[tick-watchdog] _frozen auto-cleared after 60s (inert TTL)`);
+      }
+      // _lastTickAt is stamped in tick() before the busy/frozen guards, so
+      // now - _lastTickAt is already monotonic. No private field needed.
+      const silentMs = now - (this._lastTickAt ?? now);
+      if (silentMs > 5000) {
+        // INSTRUMENT: print busy/skipped/frozen/silent-ms from the watchdog itself.
+        // frozenAtTop is the state at the top of the callback (before the TTL
+        // cleared it), so the diagnostic is truthful.
+        console.error(`[tick-watchdog] silent ${Math.round(silentMs/1000)}s busy=${this.busy} frozen=${frozenAtTop} skipped=${this.stats.skipped} ticks=${this.stats.ticks} longest=${this.stats.longest_decide_ms}ms — forcing recovery`);
         // A decide() that has been running for > 5s is hung (decides should be < 50ms).
         // The busy flag is stuck true, so every tick is skipped and the loop silently
         // dies. Force-reset it so the next tick can run. We cannot interrupt the hung
         // synchronous call, but we CAN ensure the NEXT tick proceeds once it returns
         // (or never does — in which case the liveness guard will exit the keeper).
         if (this.busy) {
-          console.error(`[tick-watchdog] forcing busy=false (a decide was hung for ${Math.round((now - this._lastTickAt)/1000)}s)`);
+          console.error(`[tick-watchdog] forcing busy=false (a decide was hung for ${Math.round(silentMs/1000)}s)`);
           this.busy = false;
         }
         // The timer may have been cleared or starved. Restart it.
@@ -405,6 +424,8 @@ export class TickLoop {
         this.timer.unref?.();
         // Also fire one tick immediately to unstick.
         try { this.tick(); } catch (e) { console.error(`[tick-watchdog] immediate tick failed: ${e?.message}`); }
+      } else {
+        this._wdTickAt = null;
       }
     }, 3000);
     // NOT unref'd: the watchdog must always fire, even if the main tick timer is
@@ -421,6 +442,10 @@ export class TickLoop {
   }
 
   tick() {
+    // Stamp _lastTickAt at the top, before the busy/frozen guards, so the
+    // watchdog's silence test sees the tick even when the loop is gated.
+    const now = Date.now();
+    this._lastTickAt = now;
     // RULE 5: overrun SKIPS. A decide that is still running means the world has moved
     // under the one in progress; running a second against an older frame would build a
     // backlog of decisions about a world that is gone.
@@ -432,11 +457,6 @@ export class TickLoop {
     if (this._frozen) { return; }
     this.busy = true;
     const t0 = Date.now();
-    // DIAGNOSTIC: a heartbeat so a silent stall is visible. A tick loop that has stopped
-    // producing decide() calls (0% CPU, no log) is otherwise indistinguishable from a
-    // healthy idle. Log the stats every 50 ticks and on the first 10s of silence.
-    const now = Date.now();
-    this._lastTickAt = now;
     if (this.stats.ticks > 0 && now - (this._lastBeatAt ?? 0) > 10000) {
       this._lastBeatAt = now;
       const staleRx = this.session.client?.lastRxAt ? Math.round((now - this.session.client.lastRxAt)/1000) : -1;

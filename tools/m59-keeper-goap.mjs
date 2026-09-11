@@ -640,7 +640,7 @@ export class GOAPKeeper {
               // (player.kod:1166) and the server refuses the cast whole. UC_STAND ->
               // StopResting() -> ResetPlayerFlagList() clears the flag; wait 2s for
               // the server to process it before the cast begins.
-              await session.pacer?.submit?.('stand', () => c.stand?.()).catch?.(() => {});
+              await this.session?.pacer?.submit?.('stand', () => c.stand?.()).catch?.(() => {});
               await new Promise(res => setTimeout(res, 2000));
               await c.cast(blink.id, []);
               await new Promise(res => setTimeout(res, 1500));
@@ -1075,22 +1075,20 @@ export class GOAPKeeper {
             const bandH = isArmedH ? fullBandH : Math.floor(fullBandH / 2);
             const ceilingH = level + bandH;
             const hunt = nearestHuntRoom(resolvedHere, ceilingH);
+            if (process.env.M59_GOAP_DEBUG !== '0') {
+              console.error(`[goap-dbg] ${who} hunt=${JSON.stringify(hunt)} resolvedHere=${resolvedHere} ceilingH=${ceilingH}`);
+            }
             if (hunt && hunt.hops > 0) {
               const dest = hunt.path?.[0] ?? hunt.room;
-              const travelToHunt = (client, session) => this._travelOneHop(dest);
-              travelToHunt.atomic = 'travel_to';
-              travelToHunt.pre = [];
-              travelToHunt.effects = ['has_target', 'has_money', 'has_loot'];
-              travelToHunt.cost = hunt.hops;
-              const p = planFor(c, '_fight', { session: this.session, policy: this.policy, agent: this.policy.agent, ws, extra: [travelToHunt] });
-              if (p.found) {
-                const step = p.names?.[0];
-                if (step === 'travel_to') {
-                  this._travelInProgress = true;
-                  const r = await this._travelOneHop(dest);
-                  this._travelInProgress = false;
-                  return { acted: true, action: 'travel_to', reason: `idle→hunt: travelling to ${hunt.creature ?? 'prey'} in room ${dest}` };
-                }
+              // TRAVEL DIRECTLY. The planFor path was unreliable (found=false
+              // even when nearestHuntRoom returned a valid room), so bypass
+              // the planner and travel directly. The character is idle with
+              // no target, so there is no higher-priority action to defer to.
+              this._travelInProgress = true;
+              const r = await this._travelOneHop(dest);
+              this._travelInProgress = false;
+              if (r?.arrived || r?.sent) {
+                return { acted: true, action: 'travel_to', reason: `idle→hunt: travelling to ${hunt.creature ?? 'prey'} in room ${dest}` };
               }
             }
           } catch (e) {

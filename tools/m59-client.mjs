@@ -1715,6 +1715,7 @@ export class M59Client {
 
       case BP.INVENTORY_REMOVE: {
         const res = parseRemove(body);
+        if (!this.check('INVENTORY_REMOVE', res)) break;
         if (res.exact) this.inventory = this.inventory.filter(o => o.id !== res.id);
         break;
       }

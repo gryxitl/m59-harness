@@ -303,7 +303,7 @@ async function cmdStart() {
   if (FLEET) args.push('--fleet', FLEET);
   // Setup's server-matched local map remains authoritative across ordinary service
   // restarts. An explicit M59_MAP still wins; otherwise selection is local-then-reference.
-  const env = { ...process.env, M59_MAP: mapFile };
+  const env = { ...process.env, M59_MAP: mapFile, M59_MOVER_TRACE: process.env.M59_MOVER_TRACE ?? '0' };
   const child = spawn(process.execPath, args,
     // detached + unref is what makes this outlive the shell that ran it. stdio goes to
     // the log rather than 'ignore', which is how the previous arrangement lost every

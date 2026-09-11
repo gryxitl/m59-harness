@@ -21,8 +21,10 @@
 // An exit list that refuses to offer a door strands the character; an exit
 // list that offers a hard door costs a walk.
 //
-// Only EDGE exits (walk-past-boundary crossings). go/portal/region kinds
-// still come from world.exits(); the router merges both lists.
+// EDGE exits (walk-past-boundary crossings) and DOOR (go) exits. `world.exits()`
+// computes only edges, so a door-only room (106 Brownestone Inn: `edgeExits: []`,
+// one `go` door) yields nothing from it; `tickGoExits` answers the door half from
+// the map's `goExits`. The router merges both lists.
 
 import { observedCrossings } from '../m59-crossings.mjs';
 
@@ -116,4 +118,38 @@ export function tickEdgeExits({ map, roomNum, geo } = {}) {
   return out;
 }
 
-export default { tickEdgeExits };
+
+/**
+ * Door (go) exits out of roomNum, straight from the map's `goExits`.
+ *
+ * `world.exits()` computes only EDGE exits, so a door-only room (106 Brownestone
+ * Inn: `edgeExits: []`, one `go` door to 101) yields an empty list and the router
+ * could plan a route INTO the room but never the leg OUT of it. This answers the
+ * door half from the map: one entry per unlocked door, `stand_on` the square you
+ * stand on to trigger it. Squares are 1-based, matching the edge convention.
+ * Locked doors (`to: -1`, cupboards) are not routes and are skipped.
+ */
+export function tickGoExits({ map, roomNum } = {}) {
+  const out = [];
+  try {
+    const rooms = map?.rooms ?? {};
+    const room = rooms[roomNum] ?? rooms[String(roomNum)];
+    if (!room) return out;
+    for (const g of room.goExits ?? []) {
+      if (g.locked) continue;
+      const to = Number(g.to);
+      if (!Number.isFinite(to) || to <= 0) continue;
+      if (!Number.isInteger(g.row) || !Number.isInteger(g.col)) continue;
+      out.push({
+        kind: 'go',
+        to,
+        to_name: rooms[to]?.name ?? rooms[String(to)]?.name ?? `room ${to}`,
+        stand_on: { col: g.col, row: g.row },
+        arrive_row: g.arriveRow ?? null,
+        arrive_col: g.arriveCol ?? null,
+      });
+    }
+  } catch { /* an exit list must never throw: fall back to world.exits() */ }
+  return out;
+}
+export default { tickEdgeExits, tickGoExits };

@@ -40,6 +40,7 @@ import { knownSpells } from '../m59-act/cast.mjs';
 import { affordances } from '../m59-parse.mjs';
 import { knownLevel } from './m59-levels.mjs';
 import '../m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
+import { trustedBuyer } from '../m59-skills.mjs';
 
 // BROKEN-WEAPON TRACKING (the fix for the shattered-mace loop).
 //
@@ -154,6 +155,49 @@ function roomNumByRsc(rsc) {
 // (Ye Olde Slasher Salesman), reached by the go-door at (43,31) — the
 // buy-affordance object at (37,80) in Marion opens no shop list.
 export const TOWN_SMITH = { 200: 201, 202: 201, 50: 374, 1011: 1013, 1012: 1013 };
+// SMITH CANDIDATES: weapon-selling rooms from the merchant catalogue,
+// excluding special cases:
+//   - Ko'catan (2003, 2101, 2100, 2014, 2002): requires dispel illusion to enter
+//   - Hazar (1003, 1013): one-way trip, unreachable after leaving Raza
+//   - Izzio (593): wanders, inconsistent stock
+// Falls back to TOWN_SMITH values if the catalogue is unavailable.
+const _SMITH_EXCLUDE = new Set([593, 1003, 1013, 2002, 2003, 2014, 2100, 2101]);
+function _loadSmithCandidates() {
+  try {
+    const cat = JSON.parse(readFileSync(join(__dirname, '..', '..', 'substrate', 'm59-merchants.json'), 'utf8'));
+    const weaponRe = /sword|mace|axe|staff|dagger|bow|crossbow/i;
+    const rooms = new Set();
+    for (const m of (cat.merchants ?? [])) {
+      if (m.room == null || m.wanders) continue;
+      if (_SMITH_EXCLUDE.has(m.room)) continue;
+      if ((m.sells ?? []).some(s => weaponRe.test(s.cls ?? ''))) rooms.add(m.room);
+    }
+    if (rooms.size) return [...rooms];
+    console.error(`[decide] _loadSmithCandidates: catalogue loaded but no weapon sellers found`);
+  } catch (e) {
+    console.error(`[decide] _loadSmithCandidates failed: ${e.message}`);
+  }
+  return [...new Set(Object.values(TOWN_SMITH))];
+}
+const SMITH_CANDIDATES = _loadSmithCandidates();
+const RAZA_CLUSTER = new Set([1011, 1012, 1013]);
+// Pick the nearest smith by findPath hop count from the current room.
+// Memoized on the session: recomputed only when the room changes or
+// _smithUnreachableUntil expires. findPath is not free (6.4s for an
+// unreachable pair), so per-tick recomputation is not an option.
+function nearestSmith(session, fromRoom, map) {
+  const key = `${fromRoom}`;
+  const cached = session?._smithDest;
+  if (cached && cached.room === key && Date.now() - (cached.at ?? 0) < 300000) return cached.dest;
+  const candidates = SMITH_CANDIDATES.filter(r => r !== 1013 || RAZA_CLUSTER.has(fromRoom));
+  let best = null, bestHops = Infinity;
+  for (const r of candidates) {
+    const res = findPath(map, fromRoom, r);
+    if (res.found && res.hops.length < bestHops) { bestHops = res.hops.length; best = r; }
+  }
+  if (session) session._smithDest = { room: key, dest: best, at: Date.now() };
+  return best;
+}
 // Mob-name normalization: game names have spaces ('giant rat'), compendium
 // keys don't ('GiantRat'). Lowercasing alone never matches multi-word mobs,
 // which blinded the decider to every rat, orc, and skeleton (single-word
@@ -171,6 +215,14 @@ export function normMobName(s) {
 export function mobNameKey(s) {
   const spaced = String(s ?? '').replace(/([a-z])([A-Z])/g, '$1 $2');
   return spaced.toLowerCase().split(/[^a-z]+/).filter(Boolean).sort().join(' ');
+}
+
+// Target level: TRUE kod level only. No HP proxy — a wounded mob's
+// live HP reading is not its level, and using it flips
+// target_in_band mid-fight as the mob loses HP.
+export function targetLevelOf(obj, nameOf) {
+  const name = nameOf ? nameOf(obj) : (obj.name ?? '');
+  return knownLevel(name, mobNameKey) ?? null;
 }
 
 // PROHIBITED KINDS: never HUNT these unless specialized. Spiders (most
@@ -228,7 +280,7 @@ export function findDangerClose({ meCol, meRow, objects, ceiling, allowSpiders, 
     if (!isMob) continue;
     const d2 = (o.col - meCol) ** 2 + (o.row - meRow) ** 2;
     if (d2 > meleeD2) continue;
-    const aLevel = knownLevel(nameOf ? nameOf(o) : (o.name ?? ''), mobNameKey) ?? o.max_health ?? o.health ?? null;
+    const aLevel = targetLevelOf(o, nameOf);
     const spider = objName.split(' ').includes('spider') && objName !== 'baby spider' && !allowSpiders;
     const pede = objName.split(' ').includes('centipede') && !allowCentipedes;
     if (!spider && !pede && (aLevel == null || aLevel <= ceiling)) continue;
@@ -259,7 +311,7 @@ export function findAttackerSwitch({ meCol, meRow, objects, currentId, blacklist
     if (!isMob) continue;
     const d2 = (o.col - meCol) ** 2 + (o.row - meRow) ** 2;
     if (d2 > meleeD2) continue;
-    const aLevel = o.max_health ?? o.health ?? null;
+    const aLevel = targetLevelOf(o, nameOf);
     if (aLevel != null && aLevel > ceiling) continue; // out of band: don't collect it
     if (d2 < attackerD2) { attackerD2 = d2; attacker = o; }
   }
@@ -317,6 +369,17 @@ export const INTENTS = {
       if (atts0) for (const id of Object.keys(atts0)) if (held.has(Number(id))) delete atts0[id];
     } catch {}
     const item = pickWieldableWeapon(ctx.client, ctx.session);
+    // Clear any stale smith route: the character has a weapon, so the buy
+    // journey is over. A persisted router dest from a previous session pins
+    // the character on a far room (observed: 10-hop route to room 201 when
+    // room 113 was 4 hops away).
+    if (item && ctx.session?._buyingRoute != null) {
+      ctx.session._buyingRoute = null;
+      ctx.session._smithDest = null;
+      if (ctx.session?._router?.dest != null && SMITH_CANDIDATES.includes(ctx.session._router.dest)) {
+        ctx.session._router.clear();
+      }
+    }
     if (!item) {
       // No wieldable weapon in the pack (the only one is broken, or there is none).
       // The `armed` goal should now plan `buy` instead of retrying the broken weapon.
@@ -395,7 +458,11 @@ export const INTENTS = {
       // journey (it only runs when the router is idle, i.e. exactly when it
       // would otherwise steal the destination back).
       if (s?._router) {
-        const dest = 1013;  // Raza Blacksmith — where the smith sells weapons
+        const roomNum = c.room?.num ?? s?.world?.room?.num;
+        // Invalidate the smith cache: the candidate list may have changed
+        // (catalogue update) and a stale dest pins the character on a far room.
+        if (s) s._smithDest = null;
+        const dest = nearestSmith(s, roomNum, s?._map ?? loadMap());
         // Cooldown after an abandoned trip: without it, set/abandon alternates
         // every tick and `armed` still starves hunt. Hunt unarmed meanwhile;
         // a later room may have a route.
@@ -410,8 +477,12 @@ export const INTENTS = {
           return { sent: true, what: `travel to the smith (room ${dest})` };
         }
         if (curDest !== dest) {
-          // Owned by someone else (hunt/explicit travel): yield, do not
-          // steal. Stealing forces a full replan every flap.
+          // If the current dest is a smith room (stale candidate), re-route
+          // to the new nearest smith. Otherwise (hunt/explicit travel): yield.
+          if (SMITH_CANDIDATES.includes(curDest)) {
+            s._router.to(dest);
+            return { sent: true, what: `travel to the smith (room ${dest}) — re-routed from ${curDest}` };
+          }
           return { sent: false, why: `router busy (dest=${curDest}); buy yields` };
         }
         // Already bound for the smith: abandon the trip if the router cannot
@@ -444,10 +515,11 @@ export const INTENTS = {
     // towns (unless already at the smith shop), or anywhere whose cached
     // list has no weapon. Destination falls back to Raza off the map towns.
     const smithHere = TOWN_SMITH[roomNum];
-    if ((smithHere != null && roomNum !== smithHere && listHasWeapon !== true) || listHasWeapon === false) {
+    const atSmith = SMITH_CANDIDATES.includes(roomNum);
+    if (!atSmith && ((smithHere != null && listHasWeapon !== true) || listHasWeapon === false)) {
       // Inn or field (no weapons here) or a cached list with no weapon: go to the smith.
       if (s?._router) {
-        const dest = TOWN_SMITH[roomNum] ?? 1013;  // town smith shop (Raza fallback)
+        const dest = nearestSmith(s, roomNum, s?._map ?? loadMap());
         if (s) s._buyingRoute = dest;
         const curDest = s._router.dest;
         if (curDest == null) {
@@ -469,6 +541,30 @@ export const INTENTS = {
         return { sent: r.sent, what: r.what ?? `traveling to the smith (room ${dest})` };
       }
       return { sent: false, why: 'no weapon for sale in this room' };
+    }
+    // BROKE CHECK: gate on the observation (s._brokeUntil), not the inference
+    // (absent shilling stack). The server sends nothing for an unaffordable
+    // buy (silent refuse). A no-reply on a weapon buy means broke. The
+    // _brokeUntil flag is stamped in the buy .then() when the result is
+    // "no reply" or "cannot afford". This is evidence, not inference.
+    if (Date.now() < (s?._brokeUntil ?? 0) && s?._router) {
+      const roomNum2 = c.room?.num ?? s?.world?.room?.num;
+      const buyerRoom = 202;  // Limping Toad Inn, Marion — Morrigan buys reagents
+      if (roomNum2 !== buyerRoom) {
+        if (s) s._buyingRoute = buyerRoom;
+        const curDest = s._router.dest;
+        if (curDest == null) {
+          s._router.to(buyerRoom);
+          return { sent: true, what: `travel to buyer (room ${buyerRoom}) — broke, sell to earn gold` };
+        }
+        if (curDest !== buyerRoom) {
+          return { sent: false, why: `router busy (dest=${curDest}); buy yields` };
+        }
+        const r = routeIntent(s._router)(frame, act);
+        return { sent: r.sent, what: r.what ?? `traveling to buyer (room ${buyerRoom})` };
+      }
+      // Already at the buyer room: sell (the sell goal handles this).
+      return { sent: false, why: 'broke; at buyer room; sell goal handles' };
     }
     // APPROACH PHASE (synchronous, one command per tick): opening a shop requires being
     // near the merchant (within ~2 squares) — the server opens the list only in reach.
@@ -512,9 +608,71 @@ export const INTENTS = {
       return buy(c, s, {});   // no itemId/wantName: the atomic picks a weapon if unarmed
     }).then(res => {
       console.error(`[buy] ${s?.name ?? 'keeper'}: ${res?.bought ? 'bought ' + res.bought : 'no buy (' + (res?.reason ?? 'unknown') + ')'}`);
+      // BACKOFF ON NO REPLY: the server sends nothing for an unaffordable buy
+      // (silent refuse, like create food). A no-reply on a weapon buy means
+      // broke. Stamp a cooldown so the buy path doesn't hammer the server
+      // every ~3.5 s. The sell goal (above armed) handles the economics.
+      if (res && !res.bought && /no reply|cannot afford/i.test(res.reason ?? '')) {
+        if (s) s._brokeUntil = Date.now() + 120000;
+      }
+      // CLEAR THE BROKE FLAG ON SUCCESS: a confirmed purchase means the
+      // character has coin. Stop the sell goal within one tick.
+      if (res?.bought) {
+        if (s) delete s._brokeUntil;
+      }
     }).catch(e => console.error(`[buy] ${s?.name ?? 'keeper'} err: ${e.message}`))
       .finally(() => { if (s) s._buyInFlight = false; });
     return { sent: true, what: 'buy weapon (one phase)' };
+  },
+
+  sell: (f, act, ctx) => {
+    const c = ctx.client;
+    const s = ctx.session;
+    // In-flight guard: the sell atomic is async and multi-phase.
+    if (s && s._sellInFlight) return { sent: false, why: 'sell in flight' };
+    // Find a trusted buyer in the room.
+    const objects = c.room?.objects;
+    const list = objects instanceof Map ? [...objects.values()]
+               : Array.isArray(objects) ? objects : [];
+    const buyer = list.find(o => {
+      const name = c.rsc?.get?.(o.nameRsc) ?? o.name ?? '';
+      return trustedBuyer(name);
+    });
+    if (!buyer) return { sent: false, why: 'no trusted buyer in room' };
+    // Pick an item to sell: prefer reagents (herbs, mushrooms, elderberry).
+    // RESERVE RULE: create food needs 2 ElderBerry + 2 Herbs (m59-skills.mjs:1225
+    // — without them vigor is hard-capped at the resting 80). Do not sell the
+    // last 2+2.
+    const pack = c.inventory ?? [];
+    const countOf = (re) => pack.filter(i => re.test(
+      String(c.rsc?.get?.(i.nameRsc) ?? i.name ?? ''))).reduce((n, i) => n + (i.amount ?? 1), 0);
+    const herbs = countOf(/^herb/i);
+    const elderberry = countOf(/^elderberry/i);
+    // Skip items that would break the reserve.
+    const item = pack.find(i => {
+      const name = String(c.rsc?.get?.(i.nameRsc) ?? i.name ?? '');
+      if (!/herb|mushroom|elderberry|root|leaf|seed/i.test(name)) return false;
+      // Don't sell the last 2 herbs or the last 2 elderberries.
+      if (/^herb/i.test(name) && herbs <= 2) return false;
+      if (/^elderberry/i.test(name) && elderberry <= 2) return false;
+      return true;
+    });
+    if (!item) return { sent: false, why: 'nothing sellable in pack (reserve rule)' };
+    if (s) s._sellInFlight = true;
+    import('../m59-act/sell.mjs').then(({ sell }) => {
+      return sell(c, s, { merchantId: buyer.id, itemId: item.id });
+    }).then(res => {
+      console.error(`[sell] ${s?.name ?? 'keeper'}: ${res?.sold ? 'sold ' + res.sold + ' for ' + res.price : 'no sell (' + (res?.reason ?? 'unknown') + ')'}`);
+      // CLEAR THE BROKE FLAG ON A SUCCESSFUL SALE: coin in the pack is the
+      // observation that distinguishes broke from not-broke. A character who
+      // just received coin should not run the sell goal for the rest of the
+      // flag's TTL.
+      if (res?.sold) {
+        if (s) delete s._brokeUntil;
+      }
+    }).catch(e => console.error(`[sell] ${s?.name ?? 'keeper'} err: ${e.message}`))
+      .finally(() => { if (s) s._sellInFlight = false; });
+    return { sent: true, what: `sell ${c.rsc?.get?.(item.nameRsc) ?? item.name ?? 'item'} to ${c.rsc?.get?.(buyer.nameRsc) ?? buyer.name ?? 'buyer'}` };
   },
 
   eat: (f, act, ctx) => {
@@ -563,6 +721,13 @@ export const INTENTS = {
     const isDead = (o) => dead.some(d => d.col === o.col && d.row === o.row);
     matches.sort((a, b) => (Math.hypot(a.col - me.col, a.row - me.row) - Math.hypot(b.col - me.col, b.row - me.row)));
     const portal = matches.find(o => !isDead(o)) ?? matches[0];
+    // READ-ONLY DIAG (C): the off-by-one premise was falsified by 40 dead=[1-9]
+    // hits in the pre-change logs, but the "no portal in room" thrash still needs
+    // a live sample. Print me.col/row beside the matched object's col/row + objId
+    // and matches.length so the restart yields evidence instead of a guess.
+    try {
+      console.error(`[portal-dbg] me=(${me.col},${me.row}) portal=(${portal.col},${portal.row}) objId=${portal.id ?? '?'} matches=${matches.length} dead=${dead.length}`);
+    } catch {}
     // Standing on the chosen portal with no transition for 15s = dead portal:
     // blacklist the square so the next tick walks to the next candidate.
     if (me.col === portal.col && me.row === portal.row) {
@@ -641,6 +806,17 @@ export function intend(actionName, frame, act, ctx) {
 export function makeDecider({ session, policy = {}, goals = [], onDecision = null,
                               skipAfter = 5, skipForMs = 3000, now = () => Date.now() } = {}) {
   if (!session) throw new Error('makeDecider: no session');
+  // GOAP REPORTING (B4): tick mode has no _goapKeeper, so /state's goap.goal/
+  // action/plan are structurally null. Stamp the last decision on the session so
+  // /state can report the LIVE goal/action in tick mode. Single wrap here rather
+  // than editing the ~30 call sites.
+  const _rawOnDecision = onDecision;
+  if (_rawOnDecision) {
+    onDecision = (d) => {
+      try { session._lastDecision = { goal: d?.goal ?? null, action: d?.action ?? null, what: d?.what ?? null, at: Date.now() }; } catch {}
+      return _rawOnDecision(d);
+    };
+  }
   const fails = new Map();       // goal -> consecutive failures
   const skipped = new Map();     // goal -> wall-clock ms to resume at
   let ticks = 0;
@@ -656,6 +832,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
   let _blacklistAt = 0;          // wall-clock ms of last blacklist update
   let _reachCheckAt = 0;         // wall-clock ms of last reachability A* (throttle)
   let _lastTargetId = null;      // previous tick's target (for stuck-detection, which runs before evaluate)
+  let _ws = null;               // last tick's world state (for state() access)
   let retargetCheckAt = 0;       // wall-clock ms of last re-target check (throttle)
   let _hpPokeAt = 0;             // wall-clock ms of last first-move poke (HP-regen unlock)
   let _uwDbgAt = 0;               // wall-clock ms of last underworld-identity diagnostic
@@ -674,7 +851,21 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     ticks++;
     const client = session.client;
     if (!client) return;
-    // CRITICAL HYSTERESIS (top of tick, before stuck detection: stuck
+    // CLEAR STALE SMITH ROUTE: if the router's dest is a smith room from
+    // the old candidate list and the nearest smith has changed, clear it.
+    // This fixes the 10-hop route to room 201 when room 113 was 4 hops away.
+    if (session?._router?.dest != null && SMITH_CANDIDATES.includes(session._router.dest)) {
+      const roomNum = client?.room?.num ?? session?.world?.room?.num;
+      if (roomNum != null) {
+        const nearest = nearestSmith(session, roomNum, session?._map ?? loadMap());
+        if (nearest != null && nearest !== session._router.dest) {
+          console.error(`[decide] ${session.name} stale smith route: ${session._router.dest} -> ${nearest}; clearing`);
+          session._smithDest = null;
+          session._buyingRoute = null;
+          session._router.clear();
+        }
+      }
+    }
     // escapes return early and would otherwise starve the setter below).
     // ABSOLUTE thresholds, deliberately: rest recovers only to ~80
     // regardless of max vigor (food carries it to max, 200 for JayB),
@@ -951,6 +1142,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
 
     // 1. SENSE -> VOCABULARY. Free: every producer reads pushed state.
     const ws = evaluate({ client, session, policy, agent: session.name });
+    _ws = ws;
     // Expose the raw vigor value for the vigor_low goal.
     ws._vigor = client?.vitals?.()?.vigor?.value ?? null;
     // Max vigor (informational/diagnostics only). The rest thresholds stay
@@ -978,11 +1170,31 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // source; skew on a 15-min flag is irrelevant).
     try {
       const _man = session?._manualDest;
-      ws._travelMode = _man != null && Date.now() - (_man.at ?? 0) < 900000;
-    } catch { ws._travelMode = false; }
+      const _manFresh = _man != null && Date.now() - (_man.at ?? 0) < 900000;
+      const _op = session?._operatorDest;
+      const _opFresh = _op != null && Date.now() - (_op.at ?? 0) < 900000;
+      const _hunt = session?._huntDest;
+      const _huntFresh = _hunt != null && Date.now() - (_hunt.at ?? 0) < 600000;
+      // _travelMode suppresses rest (healthy, vigor_low) for both manual and hunt
+      // journeys. _fight is gated on _manualMode (operator-ordered only), so a
+      // hunt-bound character can still engage in-band targets mid-corridor.
+      // ROUTE-DROP (B3): when the oscillation breaker dropped a route (B1), the
+      // character is holding in place. _travelMode must be false so _fight is
+      // not suppressed — a held character must defend itself instead of being
+      // eaten mid-corridor.
+      const _droppedFresh = session?._routeDrop && Date.now() - (session._routeDrop.at ?? 0) < 120000;
+      ws._travelMode = (_manFresh || _huntFresh || (session?._buyingRoute != null)) && !_droppedFresh;
+      ws._manualMode = _opFresh;
+    } catch { ws._travelMode = false; ws._manualMode = false; }
     // Expose room number and max HP for the hunt goal's Raza check.
     ws._roomNum = session?.world?.room?.num ?? client?.room?.num
       ?? roomNumByRsc(client?.roomNameRsc) ?? roomNumByRsc(client?.roomRsc) ?? null;
+    // Expose the broke observation for the sell goal (evidence, not inference).
+    ws._brokeUntil = Date.now() < (session?._brokeUntil ?? 0);
+    // Expose whether the character has reagents to sell (for the sell goal).
+    ws._hasReagents = (client?.inventory ?? []).some(o =>
+      /herb|mushroom|elderberry|root|leaf|seed/i.test(
+        String(client?.rsc?.get?.(o.nameRsc) ?? o.name ?? '')));
     // UNDERWORLD GROUND TRUTH (tick-owned): the shared in_underworld symbol
     // is name-rsc/id based and flaps across room changes (stale name reads
     // as Underworld in the inn, so escape and travel yank the destination
@@ -1359,29 +1571,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             const fullBand = policy?.threatBand ?? Math.floor(level / 2);
             const band = isArmed ? fullBand : Math.floor(fullBand / 2);
             ws._threatCeiling = level + band;
-            // Level: TRUE kod level first, HP proxy only as fallback.
-            let targetLevel = knownLevel(client.rsc?.get?.(best.nameRsc) ?? best.name ?? '', mobNameKey)
-              ?? best.max_health ?? best.health ?? null;
-            if (targetLevel == null) {
-              try {
-                const spawns = loadSpawns(SPAWNS_FILE);
-                if (spawns?.byMonster) {
-                  const mobName = String(client.rsc?.get?.(best.nameRsc) ?? best.name ?? '').toLowerCase();
-                  // Look up the monster in byMonster to find its level
-                  // from any room it appears in.
-                  for (const [monName, entries] of Object.entries(spawns.byMonster)) {
-                    if (monName.toLowerCase() === mobName) {
-                      // The level is typically in the room's spawn data.
-                      // For now, use the creature name match as confirmation
-                      // that this is a mob. The level will be set from the
-                      // compendium's room data if available.
-                      targetLevel = null; // will be set below
-                      break;
-                    }
-                  }
-                }
-              } catch { /* compendium lookup failed */ }
-            }
+            const targetLevel = targetLevelOf(best, (o) => client.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
             ws._targetLevel = targetLevel;
             // Re-derive the target-dependent symbols.
             ws.has_target = true;
@@ -1400,8 +1590,8 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           ws.in_reach = d2 <= 4;
           ws._targetD2 = d2;
           ws.has_target = true;
-          const tLevel = knownLevel(client.rsc?.get?.(target.nameRsc) ?? target.name ?? '', mobNameKey)
-            ?? target.max_health ?? target.health ?? null;
+          const tLevel = targetLevelOf(target, (o) => client.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
+          ws._targetLevel = tLevel;
           ws.target_in_band = tLevel == null ? true : tLevel <= (ws._threatCeiling ?? Infinity);
         }
       }
@@ -1474,6 +1664,14 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     }
 
     ws._traveling = (session._router?.dest ?? null) != null;
+    // IN HUNT ROOM: true when the character is standing in the room the hunt
+    // goal is routing to, OR when no route is in progress (idle). Used to gate
+    // flee_danger: a character in a hunt room with mobs is hunting, not fleeing.
+    // The mobs are the target, not a danger. The idle case is included because
+    // _say('arrived') clears the dest at route.mjs:690 the same tick, so the
+    // flag would be true for at most one tick and then false again.
+    const _d = session._router?.dest;
+    ws._inHuntRoom = _d == null || (ws._roomNum != null && Number(_d) === Number(ws._roomNum));
     // 1b. POSITION CONFIRMATION. The server does not push our position.
     // Fire a confirm at a fixed cadence (the mover rate-limits internally).
     // This is fire-and-forget: the tick continues with dead reckoning
@@ -1608,7 +1806,15 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
         if (spot.action === 'walk' && spot.spot) {
           try { act.stand?.(); } catch { /* best effort */ }
           let stepped = false;
-          try { stepped = act.step?.(spot.spot.col, spot.spot.row, { minGapMs: 0 }) !== false; }
+          try {
+            const rec = act.step?.(spot.spot.col, spot.spot.row, { minGapMs: 0 });
+            // `act.step` returns an object on every path: synchronous refusals
+            // (ok:false) and async sends (ok:null, resolved later by the pacer).
+            // The old check `!== false` was a tautology — the return value is
+            // always a truthy object, so `walk` was returned unconditionally.
+            // Check `ok` directly: if the send was refused synchronously, rest.
+            stepped = rec?.ok !== false;
+          }
           catch { stepped = false; }
           if (stepped) {
             // Resting is deferred, not cancelled: a later tick arrives or gives up.
@@ -1771,6 +1977,20 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           const exit = (hop != null ? exits.find(e => e.to === hop && !hazardReason(e.to)) : null)
             ?? exits.find(e => !hazardReason(e.to)) ?? null;
           if (exit) {
+            // FLEE/HUNT ALTERNATION FIX: if the router is already routing to a
+            // destination that is NOT an exit (i.e., a hunt room), let the hunt
+            // route survive. The character is already moving toward a safe room;
+            // retargeting to an exit would overwrite the hunt route and cause
+            // the flee→hunt→flee oscillation.
+            const curDest = Number(router?.dest);
+            const isExitDest = exits.some(e => e.to === curDest);
+            if (!isExitDest && curDest !== 0) {
+              // Already routing to a non-exit (hunt) destination: keep going.
+              const r = routeIntent(router)(frame, act);
+              onDecision?.({ ticks, goal: 'flee_danger', action: 'travel',
+                what: `flee along existing route -> ${curDest} (${r.what ?? r.why})`, sent: r.sent });
+              return;
+            }
             if (router.dest !== exit.to) {
               router.to(exit.to);
               onDecision?.({ ticks, goal: 'flee_danger', action: 'travel',
@@ -2043,7 +2263,97 @@ function fleeExits(session, ws) {
                 what: `assigned room ${assigned} has nothing in band (ceiling ${ceiling}); falling back to nearest`, sent: false });
             }
           }
-          if (!hunt) hunt = nearestHuntRoom(resolved, ceiling);
+          // HOLD THE CHOSEN HUNT ROOM. If we previously picked a hunt room and the
+          // character is still traveling to it (not yet arrived), don't re-pick —
+          // re-picking every 2-5s is what causes the "moving and stopping, getting
+          // eaten" behavior. The hold expires when the character arrives at the room
+          // (hops=0) or after 10 minutes (stale hold).
+          const held = session?._huntDestHold;
+          if (held && Date.now() - held.at < 600000 && held.room !== resolved) {
+            const heldCands = huntRoomsAtOrBelow(level, ceiling).find(c => Number(c.room) === held.room);
+            if (heldCands) {
+              try {
+                const r = findPath(map, resolved, heldCands.room, { danger: false });
+                if (r?.found) {
+                  hunt = { ...heldCands, hops: r.hops.length, path: r.hops.map(h => h.to), held: true };
+                } else {
+                  delete session._huntDestHold;
+                }
+              } catch {
+                delete session._huntDestHold;
+              }
+            } else {
+              delete session._huntDestHold;
+            }
+          }
+          // HUNT RE-PICK FLOOR (B2): in addition to the 10-minute _huntDestHold
+          // (cleared on arrival), do not re-pick a NEW hunt room for 2 minutes
+          // after one was picked, as long as the previous room still qualifies.
+          // Reuse the previous room if the floor has not elapsed; otherwise allow
+          // the nearestHuntRoom re-pick and stamp _huntPickedAt.
+          if (!hunt) {
+            const _picked = session?._huntPickedAt;
+            if (_picked && Date.now() - _picked.at < 120000) {
+              const _pickedCands = huntRoomsAtOrBelow(level, ceiling).find(c => Number(c.room) === _picked.room);
+              if (_pickedCands) {
+                try {
+                  const r = findPath(map, resolved, _pickedCands.room, { danger: false });
+                  if (r?.found) {
+                    hunt = { ..._pickedCands, hops: r.hops.length, path: r.hops.map(h => h.to), held: true };
+                  } else {
+                    delete session._huntPickedAt;
+                  }
+                } catch {
+                  delete session._huntPickedAt;
+                }
+              } else {
+                delete session._huntPickedAt;
+              }
+            }
+            if (!hunt) {
+              hunt = nearestHuntRoom(resolved, ceiling);
+              // Stamp the re-pick floor when a NEW hunt room is picked (the
+              // nearestHuntRoom path and the assigned fallback path, not the held
+              // path). Only stamp when the room actually changed (or is first set)
+              // so the floor starts when a new room is picked, not every tick.
+              if (hunt) {
+                const _prevPicked = session?._huntPickedAt;
+                if (!_prevPicked || _prevPicked.room !== Number(hunt.room)) {
+                  session._huntPickedAt = { room: Number(hunt.room), at: Date.now() };
+                }
+              }
+            }
+          }
+          // ROUTE-DROP MEMORY (B1): the oscillation breaker (A2) dropped a route
+          // between a room pair. While the drop is fresh (< 2 min) and the hunt
+          // room or the current room is one of the ping-pong rooms, do not
+          // re-march the same pair — it would just oscillate again. Find a hunt
+          // room that avoids the pair; if none, hold in place (fight stays
+          // enabled, B3).
+          const rd = session?._routeDrop;
+          if (rd && Date.now() - (rd.at ?? 0) < 120000 && Array.isArray(rd.rooms) && rd.rooms.length >= 2) {
+            const rdRooms = rd.rooms.map(Number);
+            const inPair = rdRooms.includes(Number(resolved)) || (hunt && rdRooms.includes(Number(hunt.room)));
+            if (inPair) {
+              const cands = huntRoomsAtOrBelow(level, ceiling);
+              const avoid = cands.find(c => !rdRooms.includes(Number(c.room)));
+              if (!avoid) {
+                onDecision?.({ ticks, goal: 'hunt', action: null,
+                  what: `route dropped by oscillation breaker (${rdRooms.join('/')}); holding`, sent: false });
+                return;
+              }
+              let altOk = false;
+              try {
+                const r = findPath(map, resolved, avoid.room, { danger: false });
+                if (r?.found) { hunt = { ...avoid, hops: r.hops.length, path: r.hops.map(h => h.to) }; altOk = true; }
+              } catch { /* alt unreachable: hold below */ }
+              if (!altOk) {
+                onDecision?.({ ticks, goal: 'hunt', action: null,
+                  what: `route dropped (${rdRooms.join('/')}); alt hunt room ${avoid.room} unreachable; holding`, sent: false });
+                return;
+              }
+            }
+          }
           // MAX LEVEL DELTA: the mob's level should not be more than 12 above
           // the character's level. This matches the original ceiling formula
           // (level + floor(level/2)): for a lv24 character, the ceiling is
@@ -2066,14 +2376,24 @@ function fleeExits(session, ws) {
                 what: `yielding to travel (dest=${router.dest}, not routing to hunt room ${hunt.room})`, sent: false });
               return;
             }
+            // Stamp the hunt-destination hold BEFORE the manual guard so it
+            // survives re-picks. Without this, the manual guard returns
+            // before the stamp, and the hold is never re-written.
+            try {
+              session._huntDestHold = { room: Number(hunt.room), at: Date.now() };
+            } catch { /* a hold we cannot stamp is still a dest the router holds */ }
             // MANUAL LOCK: an operator travel order beats hunt-routing.
-            // Reassert a fresh manual dest instead of grabbing the router.
+            // Only intercept when the operator's dest differs from the hunt room —
+            // a matching dest means the operator confirmed the hunt destination, so
+            // fall through to router.to + routeIntent (which actually sends packets).
             try {
               const man = session?._manualDest;
-              if (man != null && Date.now() - (man.at ?? 0) < 900000) {
+              if (man != null && Date.now() - (man.at ?? 0) < 900000
+                  && Number(man.dest) !== Number(hunt.room)) {
                 router.to(Number(man.dest));
+                const r = routeIntent(router)(frame, act);
                 onDecision?.({ ticks, goal: 'hunt', action: 'travel',
-                  what: `holding manual dest ${man.dest} (not routing to hunt room ${hunt.room})`, sent: true });
+                  what: `holding manual dest ${man.dest} (not routing to hunt room ${hunt.room})`, sent: r.sent });
                 return;
               }
             } catch { /* fall through to hunt routing */ }
@@ -2111,10 +2431,10 @@ function fleeExits(session, ws) {
             // travel decision, so it cannot go stale while a journey is genuinely in progress
             // and does expire once the character stops asking to go anywhere.
             try {
-              session._manualDest = { dest: Number(hunt.room), at: Date.now() };
+              session._huntDest = { dest: Number(hunt.room), at: Date.now() };
             } catch { /* a dest we cannot stamp is still a dest the router holds */ }
             onDecision?.({ ticks, goal: 'hunt', action: 'travel',
-              what: `hunt ${hunt.creature} lv${hunt.level} in room ${hunt.room} (hops=${hunt.hops})`,
+              what: `hunt ${hunt.creature} lv${hunt.level} in room ${hunt.room} (hops=${hunt.hops})${hunt.held ? ' (held)' : ''}`,
               sent: true });
             return;
           }
@@ -2127,6 +2447,9 @@ function fleeExits(session, ws) {
           // in a random direction to break the stuck state and increase the
           // chance of a target spawning.
           if (hunt && hunt.room === resolved) {
+            // Arrived at the hunt room: clear the hold so the next re-pick is free.
+            if (session?._huntDestHold) delete session._huntDestHold;
+            if (session?._huntDest) delete session._huntDest;
             // YIELD when the router's destination is set and it's not the
             // current room. The hunt goal only sets the dest to the hunt
             // room (which is the current room), so if the dest is different,
@@ -2177,21 +2500,62 @@ function fleeExits(session, ws) {
               return;
             }
             _recoveryTarget = null; // grounded again: resume normal patrol
+            // LOOT GROUND ITEMS WHILE PATROLLING: if the character has been
+            // patrolling for a while without finding a valid target, check for
+            // ground items (mushrooms, elderberries, etc.) and pick them up.
+            // The existing lootFloor action is fire-and-forget with a 5s cooldown.
+            if (session._lastPatrolLootAt == null || now - session._lastPatrolLootAt > 5000) {
+              const roomNum = frame?.room?.num ?? frame?.room?.id ?? null;
+              if (roomNum != null) {
+                session._lastPatrolLootAt = now;
+                session.lootFloor?.({ maxItems: 12 }).then(res => {
+                  const taken = res?.taken?.length ?? 0;
+                  if (taken) console.error(`[tick] ${session.name} looted ${taken} ground item(s) while patrolling`);
+                }).catch(() => {});
+              }
+            }
+            // NO TARGET FOR 30s: move to a different hunt room. The current
+            // room may have stopped spawning valid targets (e.g. only living
+            // trees, which are out of band). Leave so the room can reset,
+            // or find a different room with valid targets.
+            if (session._huntWaitStart == null) session._huntWaitStart = now;
+            const waitMs = now - session._huntWaitStart;
+            if (waitMs > 30000) {
+              session._huntWaitStart = now; // reset the timer
+              const roomNum = frame?.room?.num ?? frame?.room?.id ?? null;
+              if (roomNum != null) {
+                const map = session?._map ?? loadMap();
+                const alt = nearestHuntRoom(roomNum, ceiling);
+                if (alt && alt.room !== roomNum) {
+                  session._huntWaitStart = now;
+                  if (router && router.dest == null) {
+                    router.to(alt.room);
+                    onDecision?.({ ticks, goal: 'hunt', action: 'travel',
+                      what: `no target 30s in room ${roomNum}; moving to ${alt.room} (${alt.creature} lv${alt.level})`, sent: true });
+                    return;
+                  }
+                }
+              }
+            }
             if (me && mv && (session._lastHuntNudge == null || now - session._lastHuntNudge > 5000)) {
               // Nudge: a few squares in a random direction, retried until
-              // the TARGET square is fine-walkable (the mover validates
-              // each step, but starting toward a wall square is pointless).
+              // the TARGET square is grounded (BSP floor present). The fine grid
+              // marks wall squares as blocked even when the BSP floor is present,
+              // which pins the character in a wait loop (observed for t1 at (11,34)).
               const geo = session?.world?.geometry;
               let nc = null, nr = null;
+              const maxC = geo?.cols ?? 20;  // 1-based inclusive: room cols
+              const maxR = geo?.rows ?? 15;  // 1-based inclusive: room rows
               for (let tries = 0; tries < 6; tries++) {
                 const dx = (Math.random() > 0.5 ? 1 : -1) * (2 + Math.floor(Math.random() * 3));
                 const dy = (Math.random() > 0.5 ? 1 : -1) * (2 + Math.floor(Math.random() * 3));
-                const tc = Math.max(1, Math.min(20, me.col + dx));
-                const tr = Math.max(1, Math.min(15, me.row + dy));
-                const f = geo?.fineWalkable ? geo.fineWalkable(tr, tc) : undefined;
-                // Never patrol into a void: require BSP ground when the geometry
-                // can answer (a dumb server accepts any declared position).
-                if (f !== false && isGrounded(geo, tr, tc) !== false) { nc = tc; nr = tr; break; }
+                const tc = Math.max(1, Math.min(maxC, me.col + dx));
+                const tr = Math.max(1, Math.min(maxR, me.row + dy));
+                // Use isGrounded (BSP floor) only, not fineWalkable (fine grid).
+                // The fine grid marks wall squares as blocked even when the BSP
+                // floor is present, which pins the character in a wait loop when
+                // it is standing inside a wall (observed for t1 at (11,34)).
+                if (isGrounded(geo, tr, tc) !== false) { nc = tc; nr = tr; break; }
               }
               if (nc != null) {
                 _patrolTarget = { col: nc, row: nr };
@@ -2221,22 +2585,35 @@ function fleeExits(session, ws) {
             }
             if (me && (session._lastHuntNudge == null || now - session._lastHuntNudge > 5000)) {
               // No tick mover (shouldn't happen): legacy fallback. Still never
-              // nudge into a void the geometry can see.
-              const dx = (Math.random() > 0.5 ? 1 : -1) * (2 + Math.floor(Math.random() * 3));
-              const dy = (Math.random() > 0.5 ? 1 : -1) * (2 + Math.floor(Math.random() * 3));
-              const nc = Math.max(1, Math.min(20, me.col + dx));
-              const nr = Math.max(1, Math.min(15, me.row + dy));
+              // nudge into a void the geometry can see. Try multiple squares
+              // (same as the main path) so a single no-floor square does not
+              // pin the character in a wait loop.
               const geoFb = session?.world?.geometry;
-              if (isGrounded(geoFb, nr, nc) === false) {
-                onDecision?.({ ticks, goal: 'hunt', action: null,
-                  what: `patrol nudge (${nc},${nr}) has no floor; waiting`, sent: false });
+              const maxC = geoFb?.cols ?? 20;  // 1-based inclusive: room cols
+              const maxR = geoFb?.rows ?? 15;  // 1-based inclusive: room rows
+              let nc = null, nr = null;
+              for (let tries = 0; tries < 6; tries++) {
+                const dx = (Math.random() > 0.5 ? 1 : -1) * (2 + Math.floor(Math.random() * 3));
+                const dy = (Math.random() > 0.5 ? 1 : -1) * (2 + Math.floor(Math.random() * 3));
+                const tc = Math.max(1, Math.min(maxC, me.col + dx));
+                const tr = Math.max(1, Math.min(maxR, me.row + dy));
+                // Use isGrounded (BSP floor) only, not fineWalkable (fine grid).
+                // The fine grid marks wall squares as blocked even when the BSP
+                // floor is present, which pins the character in a wait loop when
+                // it is standing inside a wall (observed for t1 at (11,34)).
+                if (isGrounded(geoFb, tr, tc) !== false) { nc = tc; nr = tr; break; }
+              }
+              if (nc != null) {
+                _patrolTarget = { col: nc, row: nr };
+                act.walk?.(nc, nr) ?? client?.moveToSquare?.(nc, nr, 18);
+                session._lastHuntNudge = now;
+                onDecision?.({ ticks, goal: 'hunt', action: 'travel',
+                  what: `patrolling hunt room (nudge to ${nc},${nr})`, sent: true });
                 return;
               }
-              _patrolTarget = { col: nc, row: nr };
-              act.walk?.(nc, nr) ?? client?.moveToSquare?.(nc, nr, 18);
-              session._lastHuntNudge = now;
-              onDecision?.({ ticks, goal: 'hunt', action: 'travel',
-                what: `patrolling hunt room (nudge to ${nc},${nr})`, sent: true });
+              // No walkable nudge found: wait for a target without moving.
+              onDecision?.({ ticks, goal: 'hunt', action: null,
+                what: `patrol nudge: no walkable square in 6 tries; waiting`, sent: false });
               return;
             }
             onDecision?.({ ticks, goal: 'hunt', action: null,
@@ -2262,12 +2639,21 @@ function fleeExits(session, ws) {
     if (!active) { onDecision?.({ ticks, goal: null, why: 'nothing to do' }); return; }
 
     // 3. PLAN. Synchronous A* over an action set built from what this character has.
+    // SELL BYPASS: the `sell` goal is not in the GOAP action set (the planner
+    // can't plan it). Dispatch the `sell` intent directly, bypassing the
+    // planner. The `sell` intent finds a trusted buyer in the room and sells
+    // an item.
+    if (active.goal === 'sell') {
+      const res = INTENTS.sell(frame, act, { client: session._client ?? client, session });
+      onDecision?.({ ticks, goal: 'sell', action: 'sell', what: res.what ?? null, why: res.why ?? null });
+      return;
+    }
     const p = planFor(client, { [active.goal]: true }, { session, policy, ws });
     const first = p.found ? (p.names?.[0] ?? null) : null;
 
     // A GOAL THAT CANNOT BE PLANNED IS A FAILURE AND MUST COUNT AS ONE. The old keeper
     // returned before its failure counter on exactly this path, so the one outcome that
-    // most clearly means "unreachable" was the only one that could never retire a goal,
+    // most clearly means "unreachable" was the only thing that could never retire a goal,
     // and a character re-selected it for ever. Watched live: JayB, goal has_food,
     // "exhausted 13 nodes", every pass, not moving.
     if (!first) { note(active.goal, false); 
@@ -2330,7 +2716,8 @@ function fleeExits(session, ws) {
   decide.state = () => ({ ticks, fails: Object.fromEntries(fails),
                           skipped: Object.fromEntries(skipped),
                           targetId: _currentTargetId,
-                          patrolTarget: _patrolTarget });
+                          patrolTarget: _patrolTarget,
+                          ws: _ws });
   return decide;
 }
 
@@ -2348,7 +2735,7 @@ export const DEFAULT_GOALS = [
   // only flee when the out-of-band threat is in reach (actually a danger). An out-of-band
   // target that is NOT in reach is handled by the hunt goal (route to a better target or
   // approach it), not by fleeing.
-  { goal: 'flee_danger', when: ws => (ws.has_target === true && ws.target_in_band === false && ws.in_reach === true) || ws._dangerClose != null || (ws._traveling === true && (ws._mobCount ?? 0) >= 3) },
+  { goal: 'flee_danger', when: ws => ((ws.has_target === true && ws.target_in_band === false && ws.in_reach === true) || ws._dangerClose != null || (ws._traveling === true && (ws._mobCount ?? 0) >= 3)) && ws._inHuntRoom !== true },
   // FLEE when hurt AND a target is actively in reach
   // (attacking you). If the target is in the room but
   // not in reach, fight it instead of fleeing.
@@ -2414,9 +2801,22 @@ export const DEFAULT_GOALS = [
                                  // different elevation (unreachable).
                                  && ws._targetElevated !== true
                                  && fightEnvelopeOk({ traveling: ws._traveling, targetD2: ws._targetD2 })
-                                 // While traveling, self-defense only (no
-                                 // close-gap chases: run past everything).
                                  && (ws._traveling !== true || ws.in_reach === true) },
+  { goal: 'sell',     when: ws => {
+      // SELL: the character is broke (observed via _brokeUntil) and is in a
+      // room with a trusted buyer, and is unarmed. Sell reagents to earn
+      // gold. Gated on the observation (evidence), not on holdings (inference).
+      // Requires ws.armed === false so a rich armed character in the buyer
+      // room is not compelled to sell.
+      const roomNum = ws._roomNum;
+      if (roomNum != null && roomNum === 202
+          && ws._brokeUntil === true
+          && ws.armed === false
+          && ws._hasReagents === true) {
+        return true;
+      }
+      return false;
+    } },
   { goal: 'armed',    when: ws => ws.armed === false && ws.is_caster !== true },
   // HUNT before eating: the character should go find work (a mob to fight)
   // rather than sitting in town eating. Vigor management matters during

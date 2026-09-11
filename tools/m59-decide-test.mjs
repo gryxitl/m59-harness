@@ -186,7 +186,7 @@ console.log('\nattacker-switch: hold unless traveling, healthy, and the attacker
   ok('holds while hurt', r === null, JSON.stringify(r?.id));
   // Out-of-band attacker in melee -> hold (don't collect it).
   r = findAttackerSwitch({ ...base, targetDist2: 100, hpPct: 80,
-    objects: mkObjs([{ id: 1, col: 20, row: 20, name: 'giant rat', max_health: 30 }, { id: 3, col: 11, row: 10, name: 'dragon', max_health: 200 }]) });
+    objects: mkObjs([{ id: 1, col: 20, row: 20, name: 'giant rat', max_health: 30 }, { id: 3, col: 11, row: 10, name: 'spider', max_health: 200 }]) });
   ok('holds when the melee mob is out of band', r === null, JSON.stringify(r?.id));
   // Nothing in melee -> hold.
   r = findAttackerSwitch({ ...base, targetDist2: 100, hpPct: 80,
@@ -297,7 +297,7 @@ console.log('\nprohibitedKind + knownLevel: pedes unhunted, true levels band');
   let r = findDangerClose({ ...base, objects: mkObjs([{ id: 7, col: 11, row: 10, name: 'centipede' }]) });
   ok('pede in melee is danger (flee, not fight)', r && r.id === 7, JSON.stringify(r?.id));
   r = findDangerClose({ ...base, allowCentipedes: true, objects: mkObjs([{ id: 7, col: 11, row: 10, name: 'centipede', max_health: 20 }]) });
-  ok('specialized + weak pede is not danger', r === null, JSON.stringify(r?.id));
+  ok('specialized + at-ceiling pede is not danger', r === null, JSON.stringify(r?.id));
 }
 
 console.log('\nknownLevel: variant names resolve danger-side');
@@ -307,7 +307,20 @@ console.log('\nknownLevel: variant names resolve danger-side');
   ok('sand ant is an ant (40)', knownLevel('sand ant', mobNameKey) === 40, String(knownLevel('sand ant', mobNameKey)));
   ok('spider queen is 165, not 50', knownLevel('spider queen', mobNameKey) === 165, String(knownLevel('spider queen', mobNameKey)));
   ok('giant rat stays 30 (no subset inflation)', knownLevel('giant rat', mobNameKey) === 30, String(knownLevel('giant rat', mobNameKey)));
-  ok('unknown stays null (HP proxy fallback)', knownLevel('grue', mobNameKey) === null, String(knownLevel('grue', mobNameKey)));
+  ok('unknown stays null (no HP proxy)', knownLevel('grue', mobNameKey) === null, String(knownLevel('grue', mobNameKey)));
+}
+
+console.log('\ntarget_in_band: a wounded mob bands by kod level, not live HP');
+{
+  const { session } = world({ maxHp: 17, vigor: 80,
+    objects: new Map([[2, { id: 2, name: 'giant rat', col: 6, row: 5, health: 3, max_health: 3 }]]) });
+  const decide = makeDecider({ session, goals: DEFAULT_GOALS });
+  const act = new Actuator(session);
+  decide({ in_game: true, objects: session.client.room.objects }, act, null);
+  const ws = decide.state().ws;
+  ok('the rat is acquired', ws.has_target === true, `has_target=${ws.has_target}`);
+  ok('level is the kod 30, not the HP 3', ws._targetLevel === 30, `_targetLevel=${ws._targetLevel}`);
+  ok('and it is out of band under ceiling 21', ws.target_in_band === false, `target_in_band=${ws.target_in_band}`);
 }
 
 console.log('\nTOWN_SMITH: buy routes to the town smith shop');
@@ -406,15 +419,15 @@ console.log('\nhunt travel stamps the journey so the rest goals yield to it');
   ok('the hunt branch routed to its hunt room', routed.length === 1 && routed[0] === huntRoomOf556,
      JSON.stringify(routed));
   ok('and stamped that destination as a journey',
-     session._manualDest != null && session._manualDest.dest === huntRoomOf556,
-     JSON.stringify(session._manualDest));
+     session._huntDest != null && session._huntDest.dest === huntRoomOf556,
+     JSON.stringify(session._huntDest));
   ok('the stamp is fresh, so the rest goals honour it on the next tick',
-     session._manualDest != null && Date.now() - session._manualDest.at < 900000);
+     session._huntDest != null && Date.now() - session._huntDest.at < 900000);
 
   // 2. THE POINT OF THE FIX: hurt mid-journey, he keeps walking.
   const hurt = world({ hp: 8, maxHp: 20, equipped: [{ name: 'mace' }] });
   const hurtRouted = route(hurt.session);
-  hurt.session._manualDest = { dest: huntRoomOf556, at: Date.now() };   // from tick 1
+  hurt.session._huntDest = { dest: huntRoomOf556, at: Date.now() };   // from tick 1
   run(hurt.session, 556);
   ok('a hurt character with a stamped journey travels rather than rests',
      hurtRouted.length === 1 && hurtRouted[0] === huntRoomOf556, JSON.stringify(hurtRouted));
@@ -441,7 +454,37 @@ console.log('\nhunt travel stamps the journey so the rest goals yield to it');
   route(idle.session);
   run(idle.session, 556);
   ok('and a journey is stamped only when a journey was actually taken',
-     idle.session._manualDest != null);
+     idle.session._huntDest != null);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\na held hunt room is reused across ticks, not re-picked');
+{
+  // MULTI-TICK HOLD (V-new): the first tick routes to the hunt room (545) and
+  // stamps _huntDestHold. Clearing the router's destination (simulating arrival
+  // or a route drop) and running a second tick must REUSE the held hunt room
+  // (545) rather than re-pick. The second decision text carries "(held)".
+  const huntRoomOf556 = 545;
+  const { session } = world({ hp: 20, maxHp: 20, equipped: [{ name: 'mace' }] });
+  const routed = [];
+  session._router = { dest: null, to(n) { this.dest = n; routed.push(n); return true } };
+  const decisions = [];
+  const decide = makeDecider({ session, goals: DEFAULT_GOALS, onDecision: d => decisions.push(d) });
+  const run = (room) => decide({ room: { num: room, name: null } }, new Actuator(session), { stop() {} });
+
+  run(556);   // tick 1: routes to 545, stamps _huntDestHold
+  session._router.dest = null;   // simulate arrival / route drop
+  run(556);   // tick 2: must reuse the held hunt room (545)
+
+  ok('both ticks routed to the same hunt room (no re-pick)',
+     routed.length === 2 && routed[0] === huntRoomOf556 && routed[1] === huntRoomOf556,
+     JSON.stringify(routed));
+  ok('and the hunt-destination hold was stamped',
+     session._huntDestHold != null && session._huntDestHold.room === huntRoomOf556,
+     JSON.stringify(session._huntDestHold));
+  ok('and the second decision text carries (held)',
+     decisions.length >= 2 && /held/.test(decisions[1]?.what ?? ''),
+     JSON.stringify(decisions[1]));
 }
 
 // ---------------------------------------------------------------------------

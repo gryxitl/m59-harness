@@ -300,8 +300,16 @@ function state() {
       mana: s.mana,
     })).filter(s => s.name),
     goap: autopilot ? {
-      goal: autopilot._goapKeeper?.state()?.goal ?? null,
-      action: autopilot._currentAction ?? null,
+      // TICK MODE (B4): the driver is session._tickDecide, not a _goapKeeper, so
+      // _goapKeeper?.state() is structurally null. Report the LIVE goal/action/plan
+      // from the decider's last decision (stamped on session._lastDecision by the
+      // wrapped onDecision).
+      goal: (autopilot.mode === 'tick' && session._tickDecide)
+        ? (session._lastDecision?.goal ?? null)
+        : (autopilot._goapKeeper?.state()?.goal ?? null),
+      action: (autopilot.mode === 'tick' && session._tickDecide)
+        ? (session._lastDecision?.action ?? null)
+        : (autopilot._currentAction ?? null),
       // In tick mode the driver is session._tickDecide, NOT autopilot.running
       // (which stays false because the autopilot's own loop isn't the driver).
       // Report running=true when EITHER is active, or the broker's proxy sees
@@ -311,7 +319,9 @@ function state() {
       running: autopilot.running || !!(session._tickDecide),
       mode: autopilot.mode,
       useGOAP: autopilot.policy?.useGOAP ?? false,
-      plan: autopilot._goapKeeper?.state() ?? null,
+      plan: (autopilot.mode === 'tick' && session._tickDecide)
+        ? (session._lastDecision ?? null)
+        : (autopilot._goapKeeper?.state() ?? null),
       // Tick driver target (for the 3D viewer).
       target: (autopilot.mode === 'tick' && session._tickDecide)
         ? (() => {
@@ -1031,7 +1041,7 @@ function moveDropStats(session) {
 
     if (req.method === 'POST' && path === '/action') {
       const body = JSON.parse(await readBody(req));
-      const { name, args } = body;
+      const { name, args = {} } = body;
       try {
         let result;
         switch (name) {
@@ -1064,7 +1074,7 @@ function moveDropStats(session) {
               // MANUAL-DEST PROTECTION: hunt and stuck-escape must not steal
               // an operator-ordered destination (they did, every minute).
               // Stamped here, honored in the hunt goal and stuck-escape.
-              if (ok) { try { session._manualDest = { dest: Number(dest), at: Date.now() }; } catch {} }
+              if (ok) { try { session._manualDest = { dest: Number(dest), at: Date.now() }; session._operatorDest = { dest: Number(dest), at: Date.now() }; } catch {} }
               result = ok ? { sent: true, what: `travel to room ${dest} (router set, tick-driven)` }
                           : { sent: false, what: `travel refused: ${router._refusedHazard?.why ?? 'invalid destination'}` };
             } else {
@@ -1166,6 +1176,39 @@ function moveDropStats(session) {
                 c.cast(spell.id, []);
                 result = { sent: true, spell: spellName };
               }
+            }
+            break;
+          }
+          case 'inert': {
+            const loop = session._tickLoop;
+            if (loop) {
+              loop._frozen = true;
+              loop._inert = true;  // exempt from the 60s TTL; cleared by `revive`
+              loop._frozenAt = Date.now();
+              session._inert = { why: args?.why ?? 'asked to go inert', at: Date.now() };
+              console.error(`[keeper] ${session.name ?? '?'} inert: ${args?.why ?? 'asked to go inert'}`);
+              result = { inert: true, why: args?.why ?? 'asked to go inert' };
+            } else if (autopilot) {
+              autopilot.stop(args?.why ?? 'asked to go inert');
+              result = { inert: true, why: args?.why ?? 'asked to go inert' };
+            } else {
+              result = { error: 'no tick loop or autopilot' };
+            }
+            break;
+          }
+          case 'revive': {
+            const loop = session._tickLoop;
+            if (loop) {
+              loop._frozen = false;
+              loop._inert = false;
+              delete session._inert;
+              console.error(`[keeper] ${session.name ?? '?'} revived`);
+              result = { revived: true };
+            } else if (autopilot && !autopilot.running) {
+              autopilot.start();
+              result = { revived: true };
+            } else {
+              result = { already_running: true };
             }
             break;
           }
@@ -1368,6 +1411,22 @@ function moveDropStats(session) {
               // reads this any more; it is here so a roster that still carries it is visible
               // rather than invisible. Do not read it as 'which engine is running'.
               ownPhysics: session?.policy?.ownPhysics ?? null,
+            };
+            break;
+          }
+          case 'geo': { // live geometry probe
+            const geo = session?.world?.geometry;
+            const row = Number(body.row) || 0;
+            const col = Number(body.col) || 0;
+            result = {
+              hasGeo: !!geo,
+              collisionReady: geo?.collisionReady ?? null,
+              rows: geo?.rows ?? null,
+              cols: geo?.cols ?? null,
+              roomNum: geo?.roomNum ?? geo?.num ?? null,
+              standable: geo?.standable ? geo.standable(row, col) : null,
+              walkable: geo?.walkable ? geo.walkable(row, col) : null,
+              fineWalkable: geo?.fineWalkable ? geo.fineWalkable(row, col) : null,
             };
             break;
           }

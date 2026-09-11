@@ -18,7 +18,7 @@ const ok = (what, cond, detail) => {
 // A fake world with a known two-room map, so the leg is predictable.
 function rig({ here = 10, dest = 20, col = 5, row = 5,
                standOn = { col: 8, row: 5 }, edgeTarget = { col: 9, row: 5 },
-               exits = null, pathFound = true } = {}) {
+               exits = null, pathFound = true, customMap = null, legMaxMs = 30000 } = {}) {
   const sent = [];
   let exitCalls = 0;
   const session = {
@@ -65,9 +65,9 @@ function rig({ here = 10, dest = 20, col = 5, row = 5,
       },
     },
   };
-  const map = { rooms: { 10: { name: 'A' }, 15: { name: 'C' }, 20: { name: 'B' } } };
+  const map = customMap ?? { rooms: { 10: { name: 'A' }, 15: { name: 'C' }, 20: { name: 'B' } } };
   let t = 1000;
-  const router = new Router({ session, map, now: () => t });
+  const router = new Router({ session, map, now: () => t, legMaxMs });
   // findPath is imported by the module; give the router a stub leg planner by handing it
   // a map the real findPath can answer for is overkill — instead patch the one call.
   router._planLeg = (h) => pathFound
@@ -583,5 +583,56 @@ console.log('\nAIM IS STABLE when the coarse and fine grids disagree');
   }
 }
 
+console.log('\narrival is reachable when the destination is the current room');
+{
+  // RE-ENTRY ARRIVAL DEGENERATE CASE (V-new): if dest == here at route start,
+  // to() already returns arrived at the first tick (the existing :653 check). The
+  // re-entry rule (A1) must not break this — a character standing in the
+  // destination room is "arrived" on the first tick, no walk required.
+  const { router, act, frame } = rig({ here: 20, dest: 20 });
+  router.to(20);
+  const r = router.tick(frame(5, 5), act);
+  ok('dest == here at route start is arrived on the first tick', r.state === 'arrived',
+     JSON.stringify(r));
+}
+
+console.log('\na cross-room ping-pong drops the route and stamps the drop memory');
+{
+  // CROSS-ROOM OSCILLATION BREAKER (V-new): a character oscillating between two
+  // non-destination rooms (200 and 556) for OSCILLATION_MAX consecutive windows
+  // has the route dropped and the route-drop memory stamped (A2 + A3). The
+  // destination is 603 (a different room), so the re-entry to 200/556 is a
+  // ping-pong, not an arrival.
+  const { router, act, frame, advance, session, at } = rig({
+    here: 200, dest: 603,
+    customMap: { rooms: { 200: { name: 'Marion' }, 556: { name: 'Deep Forest' }, 603: { name: 'Hunt' } } },
+    legMaxMs: 1e9,   // huge: the leg-timeout must not preempt the A2 breaker
+  });
+  router.to(603);
+  // The rig's _planLeg stub hard-codes next: 20, which cannot route to 603. Override
+  // it to hop 200<->556 so the only thing that can clear the route is the A2 breaker.
+  router._planLeg = (h) => ({ leg: { fromRoom: h, next: h === 200 ? 556 : 200,
+    standOn: { col: 8, row: 5 }, edgeTarget: { col: 9, row: 5 }, direction: 'east',
+    startedAt: at() } });
+  // Alternate between 200 and 556 for 3 windows (each PROGRESS_WINDOW_MS = 20s).
+  // Use different positions per room so the room-local detector (net=0) does not
+  // preempt A2 — only the cross-room breaker should fire.
+  router.tick(frame(5, 5, 200), act);   // tick 1: room 200, pos (5,5)
+  advance(20000);
+  router.tick(frame(10, 10, 556), act);   // tick 2: room 556, pos (10,10)
+  advance(20000);
+  router.tick(frame(5, 5, 200), act);   // tick 3: room 200, pos (5,5) — re-entry
+  advance(20000);
+  router.tick(frame(10, 10, 556), act);   // tick 4: room 556, pos (10,10) — re-entry
+  advance(20000);
+  ok('A2 counted a re-entry window (crossOsc >= 1)', router._crossOsc >= 1,
+     JSON.stringify({ crossOsc: router._crossOsc, roomSeq: router._roomSeq.map(x => x.room) }));
+  const r = router.tick(frame(5, 5, 200), act);   // tick 5: room 200, pos (5,5) — re-entry, _crossOsc = 3 = MAX
+  ok('the cross-room breaker dropped the route', router.dest == null,
+     JSON.stringify({ state: r.state, crossOsc: router._crossOsc, roomSeq: router._roomSeq.map(x => x.room), oscillations: router._oscillations }));
+  ok('and stamped the route-drop memory',
+     session._routeDrop != null && Array.isArray(session._routeDrop.rooms) && session._routeDrop.rooms.length >= 2,
+     JSON.stringify(session._routeDrop));
+}
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -36,7 +36,7 @@
 import { loadMap, findPath, hazardReason } from '../m59-map.mjs';
 import { objIdToNum } from '../m59-hunt-room.mjs';
 import { Mover } from './m59-mover.mjs';
-import { tickEdgeExits } from './m59-exits.mjs';
+import { tickEdgeExits, tickGoExits } from './m59-exits.mjs';
 import { recordCrossing } from '../m59-crossings.mjs';
 import { KOD_FINENESS } from '../m59-roo.mjs';
 import { transitBanned } from './m59-ground.mjs';
@@ -148,6 +148,15 @@ export class Router {
     this._progress = [];      // [{ t, col, row }] position samples, newest last
     this._oscillations = 0;   // consecutive oscillation verdicts for this route
     this._badStandOn = new Set();  // `${nextRoom}:${col},${row}` squares to stop aiming at
+    // RE-ENTRY ARRIVAL (A1) + CROSS-ROOM OSCILLATION (A2) STATE. A windowed history of
+    // the rooms observed while this route is active. Consecutive duplicates are never
+    // pushed, so "the current room appears more than once" means "we left it and came
+    // back" (a re-entry), and ">= 2 distinct rooms" means "we are crossing between
+    // rooms" (a ping-pong). The window resets every 2*PROGRESS_WINDOW_MS so a long
+    // route does not accumulate the whole journey.
+    this._roomSeq = [];       // [ { room, at }, ... ] distinct consecutive rooms, newest last
+    this._crossOsc = 0;       // consecutive windows spent ping-ponging between rooms
+    this._crossOscAt = null;  // wall-clock ms of the last cross-room verdict (once per window)
   }
 
   to(roomNum) {
@@ -163,17 +172,24 @@ export class Router {
       return false;
     }
     if (this.dest !== n) {
+      console.error(`[route] RETARGET ${this.dest} -> ${n}`);
       this.dest = n; this.leg = null; this.mark = null; this.subWp = null; this._subWpReplans = 0;
       this._progress = []; this._oscillations = 0; this._badStandOn.clear();
+      this._roomSeq = []; this._crossOsc = 0; this._crossOscAt = null;
       this.lastState = 'idle';  // a new destination is never mid-crossing
     }
     return true;
   }
 
   clear() {
+    console.error(`[route] CLEAR ${this.dest}`);
     this.dest = null; this.leg = null; this.mark = null; this.subWp = null; this._subWpReplans = 0;
     this._progress = []; this._oscillations = 0; this._badStandOn.clear();
-    this.lastState = 'idle';
+    // NOTE: _roomSeq / _crossOsc / _crossOscAt are NOT reset here. clear() is the
+    // drop path itself (the A2 breaker calls it after stamping _routeDrop), so
+    // wiping the breaker's own evidence here would make every route drop reset the
+    // ping-pong counter to zero — the loop we are trying to end. They are reset
+    // only in to(), on a genuinely new destination.
   }
 
   status() {
@@ -211,6 +227,21 @@ export class Router {
       if (extra.length) {
         const seen = new Set(exits.map(e => `${e.to}:${e.stand_on?.col},${e.stand_on?.row}`));
         for (const x of extra) {
+          const k = `${x.to}:${x.stand_on?.col},${x.stand_on?.row}`;
+          if (!seen.has(k)) { seen.add(k); exits.push(x); }
+        }
+      }
+    } catch {}
+    // DOOR (go) exits: world.exits() computes only edges, so a door-only room
+    // (106 Brownestone Inn: edgeExits: []) yields no exit from it and the leg is
+    // unplanable — the character can be routed IN but never out. Read the map's
+    // goExits directly; the router already fires act.go() for a 'go' leg (the
+    // crossing branch in tick()). Merged by (to, stand_on) like the edge gap-fill.
+    try {
+      const doors = tickGoExits({ map: this.map, roomNum: here });
+      if (doors.length) {
+        const seen = new Set(exits.map(e => `${e.to}:${e.stand_on?.col},${e.stand_on?.row}`));
+        for (const x of doors) {
           const k = `${x.to}:${x.stand_on?.col},${x.stand_on?.row}`;
           if (!seen.has(k)) { seen.add(k); exits.push(x); }
         }
@@ -635,7 +666,37 @@ export class Router {
     const srvCol = srvR.source !== 'none' ? srvR.col : me.col;
     const srvRow = srvR.source !== 'none' ? srvR.row : me.row;
 
-    if (Number(here) === Number(this.dest)) { this.clear(); return this._say('arrived'); }
+    // RE-ENTRY ARRIVAL (A1) + CROSS-ROOM OSCILLATION (A2) bookkeeping. Maintain a
+    // rolling history of the rooms observed while this route is active. Consecutive
+    // duplicates are never pushed, so "the current room appears more than once" means
+    // "we left it and came back" (a re-entry), and ">= 2 distinct rooms" means "we are
+    // crossing between rooms" (a ping-pong). Per-sample pruning: entries older than
+    // (OSCILLATION_MAX + 1) windows are shifted out, so a long route does not
+    // accumulate the whole journey, and the history is never bulk-wiped mid-route
+    // (which would collapse it to one room and zero the cross-room counter).
+    while (this._roomSeq.length && t - this._roomSeq[0].at > (OSCILLATION_MAX + 1) * PROGRESS_WINDOW_MS)
+      this._roomSeq.shift();
+    const _lastRoom = this._roomSeq[this._roomSeq.length - 1];
+    if (_lastRoom === undefined || Number(_lastRoom.room) !== Number(here))
+      this._roomSeq.push({ room: Number(here), at: t });
+    // RE-ENTRY ARRIVAL (A1): if the character walked out of the DESTINATION room and
+    // came back (within the window), it is "arrived" — the hunt room is the room it
+    // stands in, and re-entering it is the arrival. This makes arrival reachable for
+    // current-room hunt candidates through any legitimate door, and kills the
+    // exit-and-re-enter incentive when the character is already in the room. Gated on
+    // the room being the destination: a failed leg that walks back to the ORIGIN room
+    // is not an arrival (that ping-pong is A2's breaker to catch, not a success).
+    const _seenHere = this._roomSeq.filter(r => Number(r.room) === Number(here)).length;
+    if (_seenHere > 1 && Number(here) === Number(this.dest)) {
+      console.error(`[route] ARRIVED (re-entry) room=${here} dest=${this.dest}`);
+      this.clear();
+      return this._say('arrived', { why: 're-entry' });
+    }
+    if (Number(here) === Number(this.dest)) {
+      console.error(`[route] ARRIVED room=${here} dest=${this.dest}`);
+      this.clear();
+      return this._say('arrived');
+    }
 
     // A ROOM CHANGE INVALIDATES THE LEG, always. Where you arrive is not where the
     // return edge is, so nothing about the old leg survives the crossing.
@@ -680,6 +741,38 @@ export class Router {
       // measured from it to now; a bouncing character has none.
       let anchor = null;
       for (const s of P) { if (t - s.t >= PROGRESS_WINDOW_MS) { anchor = s; break; } }
+      // CROSS-ROOM OSCILLATION BREAKER (A2). Gated on _crossOscAt alone, NOT on the
+      // anchor: a character ping-ponging between rooms HAS net displacement (it is
+      // crossing), so the room-local detector below resets _oscillations and never
+      // fires for it, and its P.length=0 would clear the anchor and skip A2. The
+      // signal: >= 2 distinct rooms in the window AND a re-entry to a NON-destination
+      // room (the character left a room and came back, but it is not the destination
+      // — a re-entry to the destination is A1's arrival, not a ping-pong). Runs once
+      // per window.
+      if (this._crossOscAt == null || t - this._crossOscAt >= PROGRESS_WINDOW_MS) {
+        this._crossOscAt = t;
+        const _distinctRooms = new Set(this._roomSeq.map(r => Number(r.room))).size;
+        const _isReentry = this._roomSeq.filter(r => Number(r.room) === Number(here)).length > 1;
+        // "Insufficient history" (fewer than 2 distinct rooms because of pruning or
+        // because the character is in one room) is "no verdict this window", NOT a
+        // forgiveness: _crossOsc is left untouched, so it accumulates on every
+        // ping-pong verdict and is cleared only on genuine net progress (below) or
+        // in to().
+        if (_distinctRooms >= 2 && _isReentry && Number(here) !== Number(this.dest)) {
+          this._crossOsc++;
+          const cosc = this._crossOsc;
+          if (cosc >= OSCILLATION_MAX) {
+            const wasDest = this.dest;
+            const rooms = [...new Set(this._roomSeq.map(r => Number(r.room)))];
+            // ROUTE-DROP TTL MEMORY (A3): stamp the session so the decider holds off
+            // re-marching the same room pair for 2 minutes (read in the decider, B1).
+            try { this.session._routeDrop = { rooms, at: Date.now() }; } catch {}
+            this.clear();
+            this._crossOsc = 0;
+            return this._say('oscillating', { why: `ping-pong between rooms ${rooms.join('/')} x${cosc}; route to ${wasDest} dropped` });
+          }
+        }
+      }
       if (anchor) {
         const net = Math.max(Math.abs(me.col - anchor.col), Math.abs(me.row - anchor.row));
         if (net < PROGRESS_MIN_NET) {
@@ -706,9 +799,13 @@ export class Router {
           return this._say('oscillating', { why: `no net progress for ${Math.round(PROGRESS_WINDOW_MS/1000)}s ` +
                                             `(x${osc}); pressing the same approach` });
         }
-        // Real net movement happened within the window: not oscillating. A single
-        // window of progress forgives earlier verdicts — the counter is for CONSECUTIVE
-        // dead windows, not a lifetime total.
+        // Real net movement happened within the window: not room-local-oscillating.
+        // A single window of progress forgives the room-local verdicts — the counter
+        // is for CONSECUTIVE dead windows, not a lifetime total. NOTE: _crossOsc is
+        // NOT reset here. A cross-room ping-pong HAS net displacement (it is
+        // crossing), so resetting it here would zero it on every crossing and MAX
+        // would be unreachable. _crossOsc is reset only in to() (a genuinely new
+        // destination) and on the drop path (clear()).
         this._oscillations = 0;
       }
     }
@@ -747,7 +844,7 @@ export class Router {
         // Reset the stuck timer so we keep pressing (via the raw-door-push) instead of
         // re-planning the same leg. The mover reports when the push finally lands.
         this.mark = { col: srvCol, row: srvRow, at: t };
-        if (process.env.M59_ROUTE_DEBUG === '1')
+        if (process.env.M59_ROUTE_DEBUG !== '0')
           console.error(`[routedbg] ${this.mover?.logName ?? "?"} stuck AT DOOR (${aim.col},${aim.row}) for ${held}s — keeping leg, letting raw-door-push engage`);
         // Fall through to the mover below (do NOT return) so it runs the raw-door-push.
       } else {
@@ -864,7 +961,7 @@ export class Router {
     }
     const aim = this.subWp && this.subWp.length ? this.subWp[0]
       : (at && this.leg.edgeTarget ? this.leg.edgeTarget : this.leg.standOn);
-    if (process.env.M59_ROUTE_DEBUG === '1')
+    if (process.env.M59_ROUTE_DEBUG !== '0')
       console.error(`[routedbg] ${this.mover?.logName ?? "?"} here=${here} me=(${me.col},${me.row}) standOn=(${this.leg.standOn?.col},${this.leg.standOn?.row}) sub=(${sub?sub.col+','+sub.row:'-'}) aim=(${aim.col},${aim.row}) dir=${this.leg.direction} kind=${this.leg.kind} subWp=${this.subWp?this.subWp.length:0}`);
 
     // Hand the aim to the FINE-MODEL MOVER. It plans on wall segments,

@@ -202,6 +202,19 @@ One concrete lead: **13 distinct debug emitters** live in `m59-mover.mjs` (`move
 is the only faithful speed instrument. The rest were scaffolding for questions that are
 now answered. Removing the scaffolding is the cheapest honest reduction available.
 
+**UPDATE (2026-09-09, post-handoff):** the five high-volume emitters were gated
+off-by-default rather than deleted. Measured against the live t3 log (320MB), the
+volume drivers are `coarse-tier` (646,241), `movestuck` (645,819), `movedbg`
+fan-released (574,987), `path-null` (124,026), and `path-install` (70,253) — ~2M
+lines, the bulk of the file. They are now behind `M59_MOVER_TRACE=1` (off by
+default); the load-bearing `move-sent` and `step-refused`, and the low-volume
+`mover-hb` (60s), `tick-state` (state/15s), and `void-probe` are untouched and
+always log. Nothing was deleted, so the diagnostic capability for the open items is
+intact — set `M59_MOVER_TRACE=1` to restore the firehose. This does NOT move the
+LOC number (4,377 → 4,385, +8 for the gate helper); the 2,933 target is still not
+met and is not reachable without the "cut every *what*, keep every *why*" comment
+pass above, which this update deliberately did not do.
+
 ### 5.2 Controlled repro for a refusal
 
 The refusal fix cures the ping-pong but not the mystery. To identify the cause you need
@@ -224,6 +237,21 @@ door at 1-based `(row 17, col 12)` → room 101, `arriveRow 18, arriveCol 26`,
 **A router that cannot read doors will route a character into a room it cannot leave.**
 This is very likely the upstream cause of "the decider gives unreachable destinations",
 which was diagnosed earlier as a decider fault and is at least partly a router fault.
+
+**UPDATE (2026-09-09, post-handoff):** the router now reads door exits. The gap was
+that `World.exits()` (`m59-world.mjs:_computeExits`) computes only EDGE exits, so a
+door-only room (106: `edgeExits: []`) yielded no exit and the leg was unplanable —
+`findPath` already routed through the door (its graph uses `exitsOf`, which includes
+`goExits`), but the router could not find the door's stand-on square to execute it.
+The fix adds `tickGoExits` (`m59-exits.mjs`, one entry per unlocked `go` door,
+`stand_on` the 1-based door square) and merges it into `_planLeg` exactly like the
+existing `tickEdgeExits` gap-fill. The router already fires `act.go()` for a `'go'`
+leg; it simply never received a go exit. Verified offline: room 106 now plans a `'go'`
+leg (stand_on 12,17 → 101) where before it was `no usable exit`; the multi-hop route
+106→50 (`101 → 102 → 593 → … → 50`) plans its first leg as that door. **Not yet
+verified live** — that needs a character actually crossing a door, which the offline
+mock cannot do. The 51% figure was about leg planning; this fixes the leg planning for
+door-only rooms.
 
 ### 5.4 The strict pathfinding tier is unusable as a default
 
@@ -258,6 +286,17 @@ HP recovers**, which is the whole point of the rest-spot feature. I verified the
 *decisions* are correct (walk to spot → arrive → rest) and the budget arithmetic, but
 not the outcome. If you can only do one thing from this list, consider this: without
 vitals in the log, every recovery claim is unverifiable.
+
+**UPDATE (2026-09-09, post-handoff):** the `status` tool now works for keeper-backed
+characters. It was failing because it unconditionally submitted stats/spells/skills
+requests to the in-process pacer, which is a stub for keeper-backed sessions
+(`m59-broker.mjs:876`). The fix skips those submits for `KeeperProxy` sessions and
+reads the keeper's `/state` instead (which already carries `hp`/`vigor`/`mana`,
+spells and skills), and `await`s the snapshot so its vitals actually reach the
+response. Verified live: all five characters return `hp` (e.g. t1 `{value: 21, max:
+21}`), `vigor`, `mana`, and `in_game`. **Attributes still read empty for
+keeper-backed** — they are not in `/state`, so that is a keeper-side extension, not
+done here. HP recovery is now observable, which unblocks verifying the rest feature.
 
 ### 5.6 Two suites test private methods that no longer exist
 
