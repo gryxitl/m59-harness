@@ -1549,6 +1549,12 @@ function claimFleet() {
     process.on('exit', () => { killAllKeepers(); drop(); });
     process.on('SIGINT', () => { killAllKeepers(); drop(); process.exit(0); });
     process.on('SIGTERM', () => { killAllKeepers(); drop(); process.exit(0); });
+    // A rejected promise in an async request handler is not caught by a try/catch
+    // further down the function; it surfaces as unhandledRejection and, without a
+    // handler, Node exits and all five characters log out. Log instead.
+    process.on('unhandledRejection', (e) => {
+      console.error(`[broker] unhandledRejection: ${e?.message ?? e}`);
+    });
   } catch (e) { console.error(`[state] could not claim the fleet: ${e.message}`); }
 }
 
@@ -12695,8 +12701,12 @@ function serveDashboard(port) {
       if (!rv) {
         for (const [name, s] of sessions) {
           if (s instanceof KeeperProxy && (s._state?.character === who)) {
-            rv = await s.roomView();
-            fromKeeper = !!rv;
+            try {
+              rv = await s.roomView();
+              fromKeeper = !!rv;
+            } catch {
+              // Keeper is mid-restart or unreachable; fall through to 404.
+            }
             break;
           }
         }
@@ -12740,7 +12750,11 @@ function serveDashboard(port) {
       if (fromKeeper) {
         for (const [name, s] of sessions) {
           if (s instanceof KeeperProxy && (s._state?.character === who)) {
-            path3dOut = await s.path3d();
+            try {
+              path3dOut = await s.path3d();
+            } catch {
+              // Keeper is mid-restart or unreachable; fall through to 404.
+            }
             break;
           }
         }
