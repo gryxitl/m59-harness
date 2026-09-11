@@ -1242,6 +1242,7 @@ console.log('\norderCandidates: straight while moving, taboo only when stuck');
   ok('stuck, empty taboo: unchanged', o.length === 3 && o[0][0] === 2, JSON.stringify(o));
 }
 
+
 console.log('\norderCandidates: monster rule (never step directly away)');
 {
   const { orderCandidates } = await import('./tick/m59-mover.mjs');
@@ -2129,17 +2130,19 @@ console.log('\nthe mover remembers a step the server refused');
   ok('an expired refusal is dropped and forgets itself', (() => {
     const m = makeMover({});
     m._noteRefusedStep(8, 7, 7, 6);
-    m._refusedSteps.set('8,7', { until: Date.now() - 1, from: '7,6' });
+    // Edge key: fromRow,fromCol>toRow,toCol = 6,7>7,8
+    m._refusedSteps.set('6,7>7,8', { until: Date.now() - 1, from: '7,6' });
     return m._refusedKeys().length === 0 && m._refusedSteps.size === 0;
   })(), 'still present or not cleaned up');
 
   ok('re-declaring a refused step extends its ban', (() => {
     const m = makeMover({});
     m._noteRefusedStep(8, 7, 7, 6);
-    m._refusedSteps.set('8,7', { until: Date.now() + 1000, from: '7,6' });
-    const before = m._refusedSteps.get('8,7').until;
+    // Edge key: fromRow,fromCol>toRow,toCol = 6,7>7,8
+    m._refusedSteps.set('6,7>7,8', { until: Date.now() + 1000, from: '7,6' });
+    const before = m._refusedSteps.get('6,7>7,8').until;
     m._noteRefusedStep(8, 7, 7, 6);
-    return m._refusedSteps.get('8,7').until > before;
+    return m._refusedSteps.get('6,7>7,8').until > before;
   })(), 'ban did not extend');
 
   ok('the refusal map is bounded so a long journey cannot grow it forever', (() => {
@@ -2155,6 +2158,33 @@ console.log('\nthe mover remembers a step the server refused');
   })(), 'garbage got in');
 }
 }
+
+
+
+  // BLOCKED EDGES: the planner must route around a banned edge even when
+  // both endpoints are walkable. Without the fix, the ban was discarded
+  // by the wrapper and the route went straight through.
+  {
+    const { loadMap } = await import('./m59-map.mjs');
+    const { RoomGeometry } = await import('./m59-roo.mjs');
+    const map = loadMap();
+    const rooms = Array.isArray(map.rooms) ? map.rooms : Object.values(map.rooms);
+    const rec = rooms.find(x => x.num === 200);
+    const geo = RoomGeometry.fromJSON(rec.roo);
+    geo.roomNum = 200;
+    // Use a real room: from (10,10) to (10,12), ban the edge (10,11)->(10,12).
+    // Without the ban: straight line is 2 steps. With the ban: must detour.
+    const noBan = geo.finePathProtocol(10 * 64 + 32, 10 * 64 + 32, 12 * 64 + 32, 10 * 64 + 32, {});
+    const withBan = geo.finePathProtocol(10 * 64 + 32, 10 * 64 + 32, 12 * 64 + 32, 10 * 64 + 32, { blockedEdges: new Set(['10,11>10,12']) });
+    if (noBan.found && withBan.found) {
+      // The ban should change the route: compare the waypoint sequences.
+      const noBanWps = noBan.waypoints.map(w => `${Math.floor(w.x/64)},${Math.floor(w.y/64)}`).join('|');
+      const withBanWps = withBan.waypoints.map(w => `${Math.floor(w.x/64)},${Math.floor(w.y/64)}`).join('|');
+      ok('blockedEdges routes around a banned edge (route differs)',
+         noBanWps !== withBanWps,
+         `noBan=${noBanWps} withBan=${withBanWps} — ban did not change the route`);
+    }
+  }
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

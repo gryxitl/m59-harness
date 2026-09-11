@@ -118,6 +118,7 @@ const NAV = {
     margin = 12 * KOD_FINENESS,
     maxNodes = 20000,
     coarse = false,
+    blockedEdges = null,
   } = {}) {
     if (!this.collisionReady || ![fromX, fromY, toX, toY].every(Number.isFinite))
       return { found: false, reason: 'collision_geometry_unavailable', waypoints: [] };
@@ -180,7 +181,12 @@ const NAV = {
       return t(0,0) || t(px*128,py*128) || t(-px*128,-py*128) || t(px*256,py*256) || t(-px*256,-py*256);
     };
     const edgeWalkable = (r1, c1, r2, c2) => {
-      // TWO-TIER: when `coarse`, the edge predicate is the COARSE grid (walkable +
+      // BLOCKED EDGES: server-refused steps are excluded from the search.
+      // Key format: 'fromRow,fromCol>toRow,toCol' (matches _refusedEdgeKeys).
+      if (blockedEdges) {
+        const key = `${r1},${c1}>${r2},${c2}`;
+        if (blockedEdges.has(key)) return false;
+      }
       // heightStepOk) — fast and forgiving, for room-scale path planning. The fine
       // grid (moverStepLands) is only consulted by the mover for the immediate next
       // step (the 9 tiles around the character). This avoids the fine A* getting
@@ -428,9 +434,14 @@ const NAV = {
     margin = 12 * KOD_FINENESS,
     maxNodes = 20000,
     coarse = false,
+    blockedEdges = null,
   } = {}) {
     const _fpT0 = Date.now();
-    const _fpResult = this._finePathProtocolImpl(fromX, fromY, toX, toY, { step, margin, maxNodes, coarse });
+    if (process.env.M59_MOVE_DEBUG !== '0' && Date.now() - (this._lastFpTraceAt ?? 0) > 30000) {
+      this._lastFpTraceAt = Date.now();
+      try { console.error(`[finepath-call] ${this.file} coarse=${coarse} blocked=${blockedEdges?.size ?? 0}`); } catch {}
+    }
+    const _fpResult = this._finePathProtocolImpl(fromX, fromY, toX, toY, { step, margin, maxNodes, coarse, blockedEdges });
     const _fpMs = Date.now() - _fpT0;
     if (_fpMs > 1000) console.error(`[slow-finepath] room ${this.file}: finePathProtocol took ${_fpMs}ms (found=${_fpResult?.found})`);
     return _fpResult;

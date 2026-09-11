@@ -1,10 +1,21 @@
 #!/usr/bin/env node
 // m59-mover.mjs -- THE FINE-MODEL MOVER: one legal STRIDE per tick, integrated.
 //
-// The server is client-authoritative for movement: it does not check geometry,
-// it records what we say. Collision is entirely our responsibility, and it must
-// be the FINE model: standable() reads the coarse grid and is blind to wall
-// segments (0 non-standable squares in Raza, 280 of 1792 fine cells blocked).
+// The server does not check geometry for players (UtilGoToSquare short-circuits
+// the walkability veto). BUT UtilGoNearSquare spirals outward from the declared
+// square looking for a legal one — a declaration at an illegal square does NOT
+// fail, it lands somewhere nearby. If there is no legal square nearby, the
+// character stays put. "All 8 raw moves refused" is a misnomer: the moves are
+// landing on the same square, not being refused. Collision is our responsibility.
+//
+// IMPORTANT: "the server is client-authoritative" is a shorthand that has led to
+// misdiagnosis. What it means: the server does NOT check geometry for players
+// (UtilGoToSquare short-circuits the walkability veto). What it does NOT mean:
+// the server always accepts the declared position. UtilGoNearSquare spirals
+// outward from the declared square looking for a legal one. If there is no
+// legal square nearby, the character stays put. "All 8 raw moves refused" is a
+// misnomer: the moves are landing on the same square, not being refused.
+// See docs/MOVEMENT-ENVELOPE.md for the full picture.
 //
 // THE SPEED BUDGET — AND THE ERROR THAT MADE THE FLEET CRAWL
 //
@@ -326,6 +337,14 @@ const HALF = KOD_FINENESS / 2; // 32 protocol units = half a square
 // log lines have never carried a timestamp, and the gap has never once been recorded.
 export const MOVE_CAP_MS = 1000;
 
+// High-volume mover diagnostics (coarse-tier, movestuck, path-null, path-install,
+// movedbg fan-released), off by default. Set M59_MOVER_TRACE=1 to restore the full
+// firehose. The load-bearing low-volume signals (move-sent, step-refused, void-probe,
+// mover-hb, tick-state) are NOT gated here and always log.
+function _trace(...args) {
+  if (process.env.M59_MOVER_TRACE === '1') console.error(...args);
+}
+
 export class Mover {
   constructor(session, { reportIntervalMs = MOVE_INTERVAL_MS, moveCapMs = MOVE_CAP_MS } = {}) {
     this.session = session;
@@ -596,7 +615,7 @@ export class Mover {
     this.dest = null;
     this.destProto = null;
     this._recentSteps = null;
-    this.path = null;  try { console.error(`[path-null] site 445`); } catch {}
+    this.path = null;  try { _trace(`[path-null] site 445`); } catch {}
     this.pathIdx = 0;
     this.sitting = false;
     this.lastPos = null;
@@ -754,7 +773,7 @@ export class Mover {
     const result = geo.finePathProtocol(
       fromProtoX, fromProtoY,
       tx, ty,
-      { step: 8, margin: 12 * KOD_FINENESS, maxNodes: 20000 },
+      { step: 8, margin: 12 * KOD_FINENESS, maxNodes: 20000, blockedEdges: this._refusedEdgeKeys() },
     );
     // COARSE TIER FALLBACK -- THE OTHER HALF OF THE TWO-TIER DESIGN navgeom ALREADY HAS.
     //
@@ -795,11 +814,15 @@ export class Mover {
     if (!result?.found) {
       const coarseResult = geo.finePathProtocol(
         fromProtoX, fromProtoY, tx, ty,
-        { step: 8, margin: 12 * KOD_FINENESS, maxNodes: 20000, coarse: true },
+        { step: 8, margin: 12 * KOD_FINENESS, maxNodes: 20000, coarse: true, blockedEdges: this._refusedEdgeKeys() },
       );
       if (coarseResult?.found) {
-        console.error(`[coarse-tier] ${this.logName} strict A* exhausted at `
+        const startCol = Math.floor(fromProtoX / KOD_FINENESS);
+        const startRow = Math.floor(fromProtoY / KOD_FINENESS);
+        const startFine = geo.fineWalkable ? geo.fineWalkable(startRow, startCol) : undefined;
+        _trace(`[coarse-tier] ${this.logName} strict A* exhausted at `
           + `expanded=${result?.expanded ?? '?'} reason=${result?.reason ?? '?'} `
+          + `start=(${startCol},${startRow}) startFine=${startFine} `
           + `-- coarse A* found ${coarseResult.waypoints?.length ?? 0} waypoints. `
           + `The pocket is real: the strict search cannot leave the intersection of the two grids.`);
         return { ...coarseResult, coarseTier: true };
@@ -807,7 +830,7 @@ export class Mover {
       // Both tiers failed. Report the STRICT reason, because that is what the caller's
       // blacklisting is keyed on, but say the pocket was tried -- otherwise a reader sees
       // "no fine path" and looks for a wall again.
-      console.error(`[coarse-tier] ${this.logName} BOTH tiers failed to `
+      _trace(`[coarse-tier] ${this.logName} BOTH tiers failed to `
         + `(${Math.floor(tx / KOD_FINENESS)},${Math.floor(ty / KOD_FINENESS)}): `
         + `strict=${result?.reason ?? '?'} expanded=${result?.expanded ?? '?'} `
         + `coarse=${coarseResult?.reason ?? '?'} expanded=${coarseResult?.expanded ?? '?'}`);
@@ -893,7 +916,8 @@ export class Mover {
           `${r && r.why ? ' why=' + r.why : ''}${r && r.hold ? ' hold=1' : ''}` +
           ` sends=${this._sendCount ?? 0} gateAge=${now - (this._lastReportAt ?? 0)}` +
           ` path=${this.path ? this.pathIdx + '/' + this.path.length : 'null'}` +
-          ` stuck=${this.stuckTicks}`);
+          ` stuck=${this.stuckTicks}` +
+          ` lastMovedAge=${this.session?._pose?.lastMovedAt ? now - this.session._pose.lastMovedAt : 'none'}`);
       }
     } catch {}
     return r;
@@ -975,7 +999,7 @@ export class Mover {
           }
         }
       } catch { /* a diagnostic must never break the tick */ }
-      try { console.error(`[mover-hb] dest=${this.dest ? this.dest.col + ',' + this.dest.row : 'null'} path=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} fan=${this._fanIndex} stuck=${this.stuckTicks} sends=${this._sendCount ?? 0} drops=${this.session?.client?._droppedUserMoves ?? 0} gateAge=${Date.now() - (this._lastReportAt ?? 0)}${(() => { const c = this.session?._pose?.corroboration?.(); return c ? ` unconfirmed=${c.outstanding}` : ''; })()}${(() => { const g = this.session?._pose?.groundRate?.(); return g && g.seconds ? ` ground=${g.squares.toFixed(1)}sq/${g.seconds.toFixed(0)}s=${g.rate.toFixed(2)}sq/s trans=${g.transitions}` : ''; })()} cli=${this.session?.client ? this.session.client.state : 'noclient'} pacer=${this.session?.pacer ? 'Y' : 'n'}`); } catch {}
+      try { const _cr = this.cadence_report(); console.error(`[mover-hb] dest=${this.dest ? this.dest.col + ',' + this.dest.row : 'null'} path=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} fan=${this._fanIndex} stuck=${this.stuckTicks} sends=${this._sendCount ?? 0} drops=${this.session?.client?._droppedUserMoves ?? 0} gateAge=${this._lastReportAt ? Date.now() - this._lastReportAt : '-'}${(() => { const c = this.session?._pose?.corroboration?.(); return c ? ` unconfirmed=${c.outstanding}` : ''; })()}${(() => { const g = this.session?._pose?.groundRate?.(); return g && g.seconds ? ` ground=${g.squares.toFixed(1)}sq/${g.seconds.toFixed(0)}s=${g.rate.toFixed(2)}sq/s trans=${g.transitions}` : ''; })()} cadence={submits=${_cr.accepted_submits} minGap=${_cr.min_gap_ms ?? 'n/a'} under1s=${_cr.under_1000ms} under05s=${_cr.under_500ms}} cli=${this.session?.client ? this.session.client.state : 'noclient'} pacer=${this.session?.pacer ? 'Y' : 'N'}`); } catch {}
     }
     const s = this.session;
     const c = s?.client;
@@ -1003,7 +1027,7 @@ export class Mover {
       this._roomKey = roomKey;
       this._simX = null; this._simY = null; this._simAt = 0;
       try { this.session?._pose?.reset(); } catch {}
-      this.path = null; this.pathIdx = 0;  try { console.error(`[path-null] site 609`); } catch {}
+      this.path = null; this.pathIdx = 0;  try { _trace(`[path-null] site 609`); } catch {}
       this._fanIndex = null; this._fanTarget = null; this._fanFrom = null;
       this._roomChangedAt = Date.now();
     }
@@ -1090,6 +1114,7 @@ export class Mover {
           this._simX = null; this._simY = null; this._simAt = 0;
           try { this.session?._pose?.reset(); } catch {}
           this.stuckTicks = 0;
+          this._blinkLandedAt = Date.now();   // blink-landing cooldown: don't re-cast immediately
           this.path = null;   // replan from wherever the blink actually put us
           // DELIBERATELY DOES NOT REPORT curX/curY. The server sends the completion text
           // and the position packet as two separate packets, and nothing in this
@@ -1128,6 +1153,7 @@ export class Mover {
           this.drX = curX;
           this.drY = curY;
           this._blinkPending = false;
+          this._blinkLandedAt = Date.now();
           this._blinkFrom = null;
           this._lastWpKey = null;
           this._simX = null;
@@ -1135,7 +1161,7 @@ export class Mover {
           this._simAt = 0;
           try { this.session?._pose?.reset(); } catch {}
           this.stuckTicks = 0;
-          this.path = null; // replan from new position  try { console.error(`[path-null] site 679`); } catch {}
+          this.path = null; // replan from new position  try { _trace(`[path-null] site 679`); } catch {}
           return { state: 'blinked', why: 'position changed after blink' };
         }
       }
@@ -1145,6 +1171,7 @@ export class Mover {
       // forever on a dead cast (prod move 0 with a live path).
       if (Date.now() - (this._blinkAt ?? 0) > 20000) {
         this._blinkPending = false;
+        this._blinkLandedAt = Date.now();
         this._blinkFrom = null;
         this.stuckTicks++;
         // Fall through: movement resumes immediately below.
@@ -1186,7 +1213,7 @@ export class Mover {
     const divResets = s?._pose?.divergenceResets ?? 0;
     if (divResets !== (this._lastDivResets ?? 0)) {
       this._lastDivResets = divResets;
-      this.path = null;  try { console.error(`[path-null] site 730`); } catch {}
+      this.path = null;  try { _trace(`[path-null] site 730`); } catch {}
       this.pathIdx = 0;
       this._fanIndex = null;
       this._fanTarget = null;
@@ -1311,7 +1338,11 @@ export class Mover {
       const srvX = _fanSrv.x, srvY = _fanSrv.y;
       const curX = protocolToClient(srvX ?? (me.col * KOD_FINENESS + HALF));
       const curY = protocolToClient(srvY ?? (me.row * KOD_FINENESS + HALF));
-      if (Math.hypot(curX - this._fanFrom?.x ?? curX, curY - this._fanFrom?.y ?? curY) > 8) {
+      if (process.env.M59_MOVER_TRACE === '1') {
+        const _delta = Math.hypot(curX - (this._fanFrom?.x ?? curX), curY - (this._fanFrom?.y ?? curY));
+        console.error(`[fan-check] ${this.logName} idx=${this._fanIndex} srvAtCheck=(${srvX ?? '?'},${srvY ?? '?'}) fanFrom=(${this._fanFrom?.x ?? '?'},${this._fanFrom?.y ?? '?'}) delta=${_delta.toFixed(1)} >8=${_delta > 8}`);
+      }
+      if (Math.hypot(curX - (this._fanFrom?.x ?? curX), curY - (this._fanFrom?.y ?? curY)) > 8) {
         // Raw move worked! PERSISTENT SLIDE: keep the successful heading
         // instead of clearing the fan. Clearing re-inits at heading 0 every
         // step, so the fan rotates through headings that cancel out (net
@@ -1423,7 +1454,7 @@ export class Mover {
       const _dsqR = Math.floor(this.destProto.y / KOD_FINENESS);
       let _df;
       try { _df = _dgeo?.fineWalkable ? _dgeo.fineWalkable(_dsqR, _dsqC) : undefined; } catch { _df = undefined; }
-      if (_df === false && process.env.M59_MOVE_DEBUG !== '0' && Date.now() - (this._wallAimLogAt ?? 0) > 10000) {
+      if (_df === false && process.env.M59_MOVER_TRACE === '1' && Date.now() - (this._wallAimLogAt ?? 0) > 10000) {
         this._wallAimLogAt = Date.now();
         console.error(`[movestuck] ${this.logName} wall aim: dest=(${_dsqC},${_dsqR}) fine-blocked (not stand_on) — pushing/stepping anyway`);
       }
@@ -1450,6 +1481,47 @@ export class Mover {
       if (result.found) {
         this.path = result.waypoints;
         this.pathIdx = 0;
+        // ADVANCE PAST IN-SQUARE WAYPOINTS. The planner may emit
+        // waypoints already inside our own square (sim/server drift).
+        // Skip them so path[pathIdx] is always "a square ahead of me".
+        // Use Pose.confirmed (protocol units) — _serverPos is client-scale.
+        try {
+          const sp = Pose.confirmed(this.session);
+          if (process.env.M59_MOVE_DEBUG !== '0' && Date.now() - (this._lastSpTraceAt ?? 0) > 30000) {
+            this._lastSpTraceAt = Date.now();
+            try { console.error(`[pose-confirmed] ${this.logName} sp=${sp ? `source=${sp.source} col=${sp.col}(${typeof sp.col}) row=${sp.row}(${typeof sp.row})` : 'null'}`); } catch {}
+          }
+          if (sp && sp.source !== 'none' && this.path.length > 0) {
+            const srvCol = sp.col;
+            const srvRow = sp.row;
+            while (this.pathIdx < this.path.length) {
+              const w = this.path[this.pathIdx];
+              const wCol = Math.floor(w.x / KOD_FINENESS);
+              const wRow = Math.floor(w.y / KOD_FINENESS);
+              if (wCol === srvCol && wRow === srvRow) {
+                this.pathIdx++;
+              } else {
+                break;
+              }
+            }
+            // Assert: waypoints[0] within one square of the plan origin.
+            // The planner's contract is that the first waypoint is adjacent
+            // to the character. If it isn't, the planner is broken.
+            // Gate on !coarseTier: a coarse plan's sole waypoint is the
+            // destination by design, so the check only applies to fine plans.
+            if (!result.coarseTier && this.pathIdx < this.path.length) {
+              const w0 = this.path[this.pathIdx];
+              const w0Col = Math.floor(w0.x / KOD_FINENESS);
+              const w0Row = Math.floor(w0.y / KOD_FINENESS);
+              const planCol = Math.floor(myProtoX / KOD_FINENESS);
+              const planRow = Math.floor(myProtoY / KOD_FINENESS);
+              const d = Math.abs(w0Col - planCol) + Math.abs(w0Row - planRow);
+              if (d > 1 && process.env.M59_MOVE_DEBUG !== '0') {
+                try { console.error(`[wp-origin] ${this.logName} wpIdx=${this.pathIdx} wp0=(${w0Col},${w0Row}) plan=(${planCol},${planRow}) dist=${d} — planner contract violated`); } catch {}
+              }
+            }
+          }
+        } catch { /* Pose.confirmed unavailable — skip the check */ }
         // IS THE PATH ACTUALLY INSTALLED? Asked because the coarse-tier fallback logs a
         // SUCCESS EVERY ~100ms -- "coarse A* found 18 waypoints" -- while the heartbeat keeps
         // reporting `path=null`. One of those two statements has to be false, and the only way
@@ -1458,7 +1530,7 @@ export class Mover {
         // Rate-limited to once a second so this cannot become the thing that fills the log.
         if (Date.now() - (this._lastInstallLogAt ?? 0) > 1000) {
           this._lastInstallLogAt = Date.now();
-          console.error(`[path-install] ${this.logName} ${result.waypoints?.length ?? 0} waypoints `
+          _trace(`[path-install] ${this.logName} ${result.waypoints?.length ?? 0} waypoints `
             + `tier=${result.coarseTier ? 'COARSE' : 'fine'} `
             + `to=(${Math.floor((result.waypoints?.at(-1)?.x ?? 0) / KOD_FINENESS)},`
             + `${Math.floor((result.waypoints?.at(-1)?.y ?? 0) / KOD_FINENESS)}) `
@@ -1472,7 +1544,7 @@ export class Mover {
         // destination. We keep the reason for reporting, but
         // we still move.
         this._noRouteReason = result.reason ?? 'no fine path';
-        this.path = null;  try { console.error(`[path-null] site 976`); } catch {}
+        this.path = null;  try { _trace(`[path-null] site 976`); } catch {}
         this.pathIdx = 0;
       }
     }
@@ -1598,7 +1670,7 @@ export class Mover {
           this._fanTarget = null;
           this._fanFrom = null;
           this._fanSentAt = null;
-          try { console.error(`[movedbg] fan released: direct path to aim clear (${Math.round(rel.moved)} units clear)`); } catch {}
+          try { _trace(`[movedbg] fan released: direct path to aim clear (${Math.round(rel.moved)} units clear)`); } catch {}
         }
       }
     }
@@ -1794,11 +1866,15 @@ export class Mover {
       if (this._movementGateOk(fanX, fanY, myProtoX, myProtoY, fServerPX, fServerPY)) {
         const _sent = this._submitMove(s, c, () => c.moveTo(Math.round(fanX), Math.round(fanY), speed, c.room?.id ?? 0));
         if (_sent) {
-          this._recordSend(aimX, aimY, myProtoX, myProtoY, Math.round(fanX), Math.round(fanY), 'escape-fan-probe');
+          this._recordSend(fanX, fanY, myProtoX, myProtoY, Math.round(fanX), Math.round(fanY), 'escape-fan-probe');
         }
         this._recordReport(fanX, fanY);
         this._fanTarget = { x: protocolToClient(fanX), y: protocolToClient(fanY) };
         this._fanSentAt = Date.now();
+        if (process.env.M59_MOVER_TRACE === '1') {
+          const _fsrv2 = Pose.confirmed(this.session);
+          console.error(`[fan-probe] ${this.logName} idx=${idx} aim=(${Math.round(fanX)},${Math.round(fanY)}) srvAtSend=(${_fsrv2.x ?? '?'},${_fsrv2.y ?? '?'}) fanFrom=(${this._fanFrom?.x ?? '?'},${this._fanFrom?.y ?? '?'})`);
+        }
         // _fanFrom is the SERVER reference point for the progress check (which
         // uses the raw server echo). Resetting it to the drifted sim would make
         // the progress check compare server-vs-sim (>8), firing the 'success'
@@ -2008,7 +2084,7 @@ export class Mover {
             this._lastRawLogAt = Date.now();
             console.error(`[raw-door-push] my=(${Math.round(myProtoX)},${Math.round(myProtoY)}) dest=(${destCol},${destRow}) dist=${distToDest0.toFixed(0)} wp=${wp?'yes':'no'}`);
           }
-          this.path = null;  // drop any stale path; we're pushing through the gap  try { console.error(`[path-null] site 1407`); } catch {}
+          this.path = null;  // drop any stale path; we're pushing through the gap  try { _trace(`[path-null] site 1407`); } catch {}
           return { state: 'moving', to: { col: destCol, row: destRow }, raw: true };
         }
       }
@@ -2156,8 +2232,6 @@ export class Mover {
     const dx = wp.x - myProtoX;
     const dy = wp.y - myProtoY;
     const dist = Math.hypot(dx, dy);
-
-    // ARRIVED AT WAYPOINT (within 1 square): advance to the next one.
     if (dist < KOD_FINENESS) {
       this.pathIdx++;
       if (this.pathIdx >= this.path.length) {
@@ -2265,14 +2339,32 @@ export class Mover {
     // (loop avoidance — see above); never exclude, dead ends backtrack.
     // Same stuck-gating as the waypoint branch: straight while moving.
     let stepCol = null, stepRow = null;
+    const refusedKeys = this._refusedKeys();
     const ordered1 = orderCandidates(candidates, this._recentSteps, this.stuckTicks,
-      { meCol: myCol, meRow: myRow, goalCol: wpCol, goalRow: wpRow , refused: this._refusedKeys() });
+      { meCol: myCol, meRow: myRow, goalCol: wpCol, goalRow: wpRow , refused: refusedKeys });
+    // Log which candidates were filtered out by orderCandidates, tagged by WHICH filter
+    if (process.env.M59_MOVER_TRACE === '1') {
+      const ox = myCol - Math.sign(wpCol - myCol);
+      const oy = myRow - Math.sign(wpRow - myRow);
+      const filtered = candidates.filter(([cc, rr]) => !ordered1.some(([c2, r2]) => c2 === cc && r2 === rr));
+      if (filtered.length) {
+        const tagged = filtered.map(([c, r]) => {
+          const tags = [];
+          if (refusedKeys.includes(c + ',' + r)) tags.push('refused');
+          if (this.stuckTicks < 3 && c === ox && r === oy) tags.push('monster');
+          if (this.stuckTicks >= 3 && this._recentSteps?.includes(c + ',' + r)) tags.push('taboo');
+          return `${c},${r}:${tags.join('+') || 'unknown'}`;
+        });
+        console.error(`[candfilter] ${this.logName} me=(${myCol},${myRow}) wp=(${wpCol},${wpRow}) filtered=[${tagged.join(' ')}] refused=[${refusedKeys.join(' ')}] stuck=${this.stuckTicks} recent=[${(this._recentSteps ?? []).join(' ')}]`);
+      }
+    }
     // REFUSAL ACCOUNTING (motion-only diagnostics): when no candidate
     // survives, the log must say WHICH check walled us in — otherwise
     // "stuck" is a mystery and we can't tell a real wall from an
     // over-strict validator. Counted by first-failing check, logged once
     // below when stepCol stays null.
     const rejects = { fine: 0, embedded: 0, edge: 0, void: 0 };
+    const rejectLog = [];
     for (const [nc, nr] of ordered1) {
       // The FINE grid is the authoritative collision model. When the two
       // grids disagree (fine says walkable, coarse says not), trust the
@@ -2288,10 +2380,10 @@ export class Mover {
       // everything, matching the old behavior.
       const f = geo?.fineWalkable ? geo.fineWalkable(nr, nc) : undefined;
       const s = geo?.standable ? geo.standable(nr, nc) : undefined;
-      if (f === false) { rejects.fine++; continue; }       // fine says blocked
+      if (f === false) { rejects.fine++; rejectLog.push(`${nc},${nr}:fine`); continue; }       // fine says blocked
       // BODY CHECK (same rule as the no-path branch): never enter a crack.
       if (isEmbedded(geo, myProtoX, myProtoY) !== true
-          && isEmbedded(geo, nc * KOD_FINENESS + HALF, nr * KOD_FINENESS + HALF) === true) { rejects.embedded++; continue; }
+          && isEmbedded(geo, nc * KOD_FINENESS + HALF, nr * KOD_FINENESS + HALF) === true) { rejects.embedded++; rejectLog.push(`${nc},${nr}:embedded`); continue; }
       // THE EDGE, NOT JUST THE SQUARE. A neighbor can be fine-walkable as a
       // SQUARE while the EDGE from where we stand to it is walled (a wall
       // segment between the two squares' centres). Check with a radius-free
@@ -2310,7 +2402,7 @@ export class Mover {
         const px = -dy/len, py = dx/len;
         const tryT = (ox,oy) => geo.traceFineMoveClient(a.x+ox,a.y+oy,b.x+ox,b.y+oy,{slide:false,playerRadius:1}).arrived===true;
         if (!tryT(0,0) && !tryT(px*128,py*128) && !tryT(-px*128,-py*128)
-            && !tryT(px*256,py*256) && !tryT(-px*256,-py*256)) { rejects.edge++; continue; }
+            && !tryT(px*256,py*256) && !tryT(-px*256,-py*256)) { rejects.edge++; rejectLog.push(`${nc},${nr}:edge`); continue; }
       }
       // NEVER ENTER A VOID: from a grounded start, reject neighbors with no
       // BSP floor (the deliberate stand_on exit square itself is exempt). A
@@ -2320,26 +2412,29 @@ export class Mover {
         const destSqR0 = this.destProto ? Math.floor(this.destProto.y / KOD_FINENESS) : null;
         const isExitDest0 = this._destIsStandOn === true && nc === destSqC0 && nr === destSqR0;
         if (!isExitDest0 && (transitBanned(geo, nr, nc) === true
-            || regionCornerBanned(geo, nr, nc, this._wantRoom))) { rejects.void++; continue; }
+            || regionCornerBanned(geo, nr, nc, this._wantRoom))) { rejects.void++; rejectLog.push(`${nc},${nr}:void`); continue; }
       }
       if (f === true) { stepCol = nc; stepRow = nr; break; }  // fine says ok
-      if (f === undefined && s === false) continue;   // no fine data, coarse blocked
+      if (f === undefined && s === false) { rejectLog.push(`${nc},${nr}:coarse`); continue; }   // no fine data, coarse blocked
       stepCol = nc; stepRow = nr; break;              // fine ok, or no data
     }
+    if (stepCol != null && process.env.M59_MOVER_TRACE === '1' && rejectLog.length)
+      console.error(`[steptrace] ${this.logName} me=(${myCol},${myRow}) wp=(${wpCol},${wpRow}) step=(${stepCol},${stepRow}) stuck=${this.stuckTicks} ordered=[${ordered1.map(([c, r]) => `${c},${r}`).join(' ')}] rejected=[${rejectLog.join(' ')}] recent=[${(this._recentSteps ?? []).join(' ')}]`);
     if (stepCol == null) {
       // Name the wall: which check rejected all 8 neighbors.
-      if (process.env.M59_MOVE_DEBUG !== '0')
-        console.error(`[movestuck] ${this.logName} me=(${myCol},${myRow}) srv=(${curCol},${curRow}) wp=(${wpCol},${wpRow}) rejects=${JSON.stringify(rejects)}`);
-      // No fine-reachable neighbor: the fine model has walled us in. The server is
-      // CLIENT-AUTHORITATIVE (it does not check geometry), so a fine-wall here may be
-      // a model mismatch, not a real wall (the Raza Blacksmith traps a character exactly
-      // this way: every fine step is blocked, but the server accepts the step the fine
-      // grid calls a wall). Do NOT jump straight to a blind blink. Instead initiate the
-      // VERIFIED raw-move FAN: it fires one raw move per tick in 8 directions, and the
-      // position-change check (FAN PROGRESS above) only commits if the SERVER actually
-      // moved us. If a direction is server-accepted we walk out; if all 8 are refused the
-      // fan itself falls back to blink (handled in the fan-progress block). This tries the
-      // cheaper, safer escape first and only blinks when the server refuses every step.
+      if (process.env.M59_MOVER_TRACE === '1')
+        console.error(`[movestuck] ${this.logName} me=(${myCol},${myRow}) srv=(${curCol},${curRow}) wp=(${wpCol},${wpRow}) stuck=${this.stuckTicks} ordered=[${ordered1.map(([c, r]) => `${c},${r}`).join(' ')}] rejects=${JSON.stringify(rejects)} rejected=[${rejectLog.join(' ')}] refused=[${refusedKeys.join(' ')}]`);
+      // No fine-reachable neighbor: the fine model has walled us in. The server
+      // does not check geometry for players, but UtilGoNearSquare lands the
+      // character on a nearby legal square — if there is no legal square nearby,
+      // the character stays put. A fine-wall here may be a model mismatch (the
+      // Raza Blacksmith traps a character exactly this way: every fine step is
+      // blocked, but the server lands the character on the same square). Do NOT
+      // jump straight to a blind blink. Instead initiate the VERIFIED raw-move
+      // FAN: it fires one raw move per tick in 8 directions, and the
+      // position-change check (FAN PROGRESS above) only commits if the SERVER
+      // actually moved us. If a direction lands on a new square we walk out;
+      // if all 8 land on the same square the fan falls back to blink.
       this.stuckTicks++;
       if (this._fanIndex == null && this._fanTarget == null && this.stuckTicks >= 3) {
         this._fanIndex = 0;
@@ -2534,20 +2629,21 @@ export class Mover {
         if (this._declRepeats >= 2) {
           this._noteRefusedStep(stepCol, stepRow, curCol, curRow);
           if (process.env.M59_MOVE_DEBUG !== '0') {
+            const _refCount = this._refusedSteps?.size ?? 0;
+            const _refKey = this._refusedSteps?.keys?.().next?.()?.value ?? 'none';
             console.error(`[step-refused] ${this.logName} server will not enter (${stepCol},${stepRow})`
               + ` from (${curCol},${curRow}) after ${this._declRepeats + 1} identical declares`
               + ` — bake says fine=${geo?.fineWalkable?.(curRow + 1, stepCol + 1)}`
               + ` coarse=${geo?.walkable?.(curRow + 1, stepCol + 1)}`
+              + `; excluded=${_refCount} first=${_refKey}`
               + `; excluding it for ${Math.round(REFUSED_STEP_TTL_MS / 1000)}s and routing around`);
           }
           this._declRepeats = 0;
-          // DROP THE PATH NOW. Waiting for stuckTicks to reach 5 costs four more refused
-          // sends and, worse, keeps the mover declaring a square it has proof it cannot
-          // enter. The path was computed through this square; now that the square is
-          // known-unsafe the path is stale, and the honest thing is to say so and re-plan
-          // from where the server actually has us. The re-plan reads _refusedSteps via
-          // the candidate order below, and the strict/coarse A* will pick a route that
-          // goes around rather than through.
+          // DROP THE PATH. Three identical declares with no server
+          // movement is evidence of a real entry refusal (obstruction,
+          // a body in a doorway). The path was computed through this
+          // square; now that the square is known-unsafe the path is
+          // stale. Re-plan from where the server actually has us.
           this.path = null;
           this.pathIdx = 0;
           this._lastWpKey = null;
@@ -2573,14 +2669,20 @@ export class Mover {
     // server and report stuck — no fan, no blink (motion-only: recovery is
     // parked; the failure must be visible, not papered over).
     if (this.stuckTicks >= 5) {
-      if (process.env.M59_MOVE_DEBUG !== '0')
-        console.error(`[movestuck] ${this.logName} server static x${this.stuckTicks} sends at srv=(${curCol},${curRow}) sim=(${myCol},${myRow}) — re-anchoring sim to server`);
-      this._simX = null; this._simY = null; this._simAt = 0;
-      try { this.session?._pose?.reset(); } catch {}
-      this.path = null; this.pathIdx = 0;
-      this._lastWpKey = null;
-      this._fanIndex = null; this._fanTarget = null; this._fanFrom = null;
-      return { state: 'stuck', why: `server static across ${this.stuckTicks} sends — sim re-anchored to server` };
+      const _lastMoved = this.session?._pose?.lastMovedAt ?? 0;
+      const _lastMovedAge = _lastMoved > 0 ? Date.now() - _lastMoved : Infinity;
+      if (process.env.M59_MOVER_TRACE === '1')
+        console.error(`[movestuck] ${this.logName} server static x${this.stuckTicks} sends at srv=(${curCol},${curRow}) sim=(${myCol},${myRow}) lastMovedAge=${_lastMovedAge === Infinity ? 'none' : _lastMovedAge + 'ms'} — ${_lastMovedAge > 8000 ? 're-anchoring sim to server' : 'holding (path kept, position unchanged <8s)'}`);
+      if (_lastMovedAge > 8000) {
+        this._simX = null; this._simY = null; this._simAt = 0;
+        try { this.session?._pose?.reset(); } catch {}
+        this.path = null; this.pathIdx = 0;
+        this._lastWpKey = null;
+        this._fanIndex = null; this._fanTarget = null; this._fanFrom = null;
+        return { state: 'stuck', why: `server static across ${this.stuckTicks} sends — sim re-anchored to server` };
+      }
+      // Path kept: position unchanged <8s, likely a slow echo. Report stuck but don't destroy the route.
+      return { state: 'stuck', why: `server static across ${this.stuckTicks} sends — holding (position unchanged <8s)` };
     }
     return { state: 'moving', to: { col: stepCol, row: stepRow } };
   }
@@ -3058,6 +3160,12 @@ export class Mover {
   }
 
   _submitMove(s, c, sendFn) {
+    // DO NOT SEND A MOVE PACKET WHILE A BLINK IS IN PROGRESS. A move packet
+    // breaks the character's concentration and the blink fizzles. The blink
+    // takes 15+ seconds to cast; the mover ticks every 0.3s. Without this
+    // gate, the first tick after the cast sends a move packet, breaks the
+    // concentration, and the blink never lands.
+    if (this._blinkPending) return false;
     if (!this._claimMoveSlot()) {
       // THE REJECTION IS LOGGED, AND THE SEND IS NOT. Every call site used to call _recordSend() on
       // the very next line regardless of what this returned, so `[move-sent] n=N` counted ATTEMPTS.
@@ -3180,7 +3288,11 @@ export class Mover {
    */
   _noteRefusedStep(toCol, toRow, fromCol, fromRow) {
     if (!Number.isFinite(toCol) || !Number.isFinite(toRow)) return;
-    const key = toCol + ',' + toRow;
+    // Edge key: fromRow,fromCol>toRow,toCol. One-way (refusals are directional).
+    // Keying by edge (not square) means a square refused from two different
+    // neighbours keeps both bans. The `from` is stored in the value for
+    // _refusedKeys() to derive the square key for orderCandidates.
+    const key = `${fromRow},${fromCol}>${toRow},${toCol}`;
     const now = Date.now();
     if (!this._refusedSteps) this._refusedSteps = new Map();
     // Re-declaring the same refused step EXTENDS the ban: the server has just refused it
@@ -3195,20 +3307,48 @@ export class Mover {
     }
   }
 
-  /** Live, unexpired refusals as 'col,row' keys, for orderCandidates. */
+  /** Live, unexpired refusals as 'col,row' square keys, for orderCandidates.
+   *  Derived from the edge key by splitting on '>'. */
   _refusedKeys() {
     if (!this._refusedSteps?.size) return [];
     const now = Date.now();
     const out = [];
     for (const [k, v] of this._refusedSteps) {
-      if (v.until > now) out.push(k);
-      else this._refusedSteps.delete(k);
+      if (v.until <= now) { this._refusedSteps.delete(k); continue; }
+      // Edge key: fromRow,fromCol>toRow,toCol → square key: toCol,toRow
+      const toPart = k.split('>')[1];
+      const [toRow, toCol] = toPart.split(',').map(Number);
+      out.push(toCol + ',' + toRow);
     }
     return out;
   }
 
+  /** Live, unexpired refusals as edge keys, for finePathProtocol.
+   *  Returns the raw edge keys (fromRow,fromCol>toRow,toCol). */
+  _refusedEdgeKeys() {
+    if (!this._refusedSteps?.size) return new Set();
+    const now = Date.now();
+    const out = new Set();
+    for (const [k, v] of this._refusedSteps) {
+      if (v.until <= now) { this._refusedSteps.delete(k); continue; }
+      out.add(k);
+    }
+    return out;
+  }
+
+
   _noteServerStatic(col, row) {
     if (col == null || row == null) return;
+    // ECHO-MOVED-KEYED: reset the counter when the server position actually changed
+    // (lastMovedAt is fresh), not just when updateServer was called (which runs
+    // every frame ~0.1s). A fresh position change means the server is moving,
+    // so the character is not pinned.
+    const _lastMoved = this.session?._pose?.lastMovedAt ?? 0;
+    if (_lastMoved > 0 && Date.now() - _lastMoved < 1500) {
+      this.stuckTicks = 0;
+      this.lastPos = { col, row };
+      return;
+    }
     if (this.lastPos && this.lastPos.col === col && this.lastPos.row === row) this.stuckTicks++;
     else this.stuckTicks = 0;
     this.lastPos = { col, row };
@@ -3318,16 +3458,51 @@ export class Mover {
     // (already floorless = survival, not a crossing run).
     const _man = this.session?._manualDest;
     const _travelMode = _man != null && Date.now() - (_man.at ?? 0) < 900000;
-    if (!_travelMode) {
-      const blinked = this._tryBlink();
-      if (blinked) {
-        this._blinkFrom = { x: curX, y: curY };
-        return { state: 'blink', why: 'all 8 raw moves refused, casting blink' };
+    // DO NOT CAST BLINK WHILE IN COMBAT. A cast in combat breaks concentration
+    // (the swing/attack interrupts the channel) and the blink fizzles. If you
+    // are in combat, run — the fan tries to walk out. Only blink when fully
+    // stuck (the fan is exhausted) AND not in combat.
+    const _inCombat = this.session?.ws?.has_target === true;
+    let _recovered = false;
+    if (!_travelMode && !_inCombat) {
+      // SPELL-FREE ESCAPE: before trying blink (which requires mana these
+      // martial characters don't have), try walking to the nearest grounded
+      // square. Gated on a 30s cooldown to prevent per-tick reset loops.
+      const _recAt = this._recoveryAt ?? 0;
+      if (Date.now() - _recAt > 30000) {
+        const _geo = this.session?.world?.geometry;
+        const _srv = Pose.confirmed(this.session);
+        if (_srv.source !== 'none' && _geo) {
+          try {
+            const ng = nearestGrounded(_geo, _srv.col, _srv.row, { maxRadius: 40 });
+            if (ng && (ng.col !== _srv.col || ng.row !== _srv.row)) {
+              if (this.to(ng.col, ng.row, { by: 'recovery' })) {
+                this._recoveryAt = Date.now();
+                this._fanIndex = null;
+                this._fanTarget = null;
+                this._fanFrom = null;
+                this.path = null;
+                this.pathIdx = 0;
+                _recovered = true;
+                console.error(`[mover] ${this.logName} fan-exhausted: recovered to grounded square ${ng.col},${ng.row} (was ${_srv.col},${_srv.row})`);
+              } else {
+                console.error(`[mover] ${this.logName} recovery deferred; router owns dest`);
+              }
+            }
+          } catch { /* keep the blink path */ }
+        }
       }
-    } else if (process.env.M59_MOVE_DEBUG !== '0') {
-      console.error(`[movestuck] ${this.logName} travel-mode pocket: all 8 raw moves refused at srv=(${this.lastPos?.col},${this.lastPos?.row}) — blink parked, holding`);
+      if (!_recovered) {
+        const blinked = this._tryBlink();
+        if (blinked) {
+          this._blinkFrom = { x: curX, y: curY };
+          return { state: 'blink', why: 'all 8 raw moves landed on same square, casting blink' };
+        }
+      }
+    } else if (process.env.M59_MOVER_TRACE === '1') {
+      console.error(`[movestuck] ${this.logName} travel-mode pocket: all 8 raw moves landed on same square at srv=(${this.lastPos?.col},${this.lastPos?.row}) — blink parked, holding`);
     }
-    return { state: 'stuck', why: 'server refused all 8 raw move directions' };
+    return { state: _recovered ? 'recovered' : 'stuck', why: _recovered ? 'fan exhausted, walked to grounded square' : 'all 8 raw moves landed on same square' };
   }
   _tryBlink() {
     // PHASE 0c fix: don't cast blink while moving. Movement breaks
@@ -3354,6 +3529,17 @@ export class Mover {
     const _ref = this._blinkRefusedAt ?? 0;
     if (Date.now() - _ref < 60000) {
       return false;   // let the escape fan / stuck report run instead of holding on a refusal
+    }
+    // BLINK-LANDING COOLDOWN.
+    //
+    // Re-casting immediately after a landing holds the character for another 20s
+    // with no progress. A 30s cooldown lets the escape fan and the raw-move path
+    // run instead of re-holding on a blink. The cooldown is shorter than the
+    // mana-refusal one (60s) because a landed blink at least proved the character
+    // can cast; the mana refusal proved it cannot.
+    const _landed = this._blinkLandedAt ?? 0;
+    if (Date.now() - _landed < 30000) {
+      return false;   // let the escape fan / raw-move path run instead of re-holding
     }
 
     const blink = (c.spells ?? []).find(sp => {
