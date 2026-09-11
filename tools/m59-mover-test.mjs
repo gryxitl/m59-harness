@@ -2204,8 +2204,8 @@ console.log('\nthe mover remembers a step the server refused');
     const b = g.finePathProtocol(F[0],F[1],T[0],T[1], { coarse: true, blockedEdges: ban });
     const firstCell = (r) => r.waypoints.length ? `${Math.floor(r.waypoints[0].x/64)},${Math.floor(r.waypoints[0].y/64)}` : 'none';
     ok('coarse tier honours the ban (approach differs)',
-       a.found && b.found && firstCell(a) !== firstCell(b),
-       `noBan first=${firstCell(a)} withBan first=${firstCell(b)} — ban did not change the approach`);
+       a.found && b.found && firstCell(a) === '61,27' && firstCell(b) === '61,26',
+       `noBan first=${firstCell(a)} withBan first=${firstCell(b)}`);
   }
 
 console.log(`\n${pass} passed, ${fail} failed`);
