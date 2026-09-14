@@ -247,8 +247,11 @@ export class CombatController {
         if (e.kind === 'died' && e.at > (this._deathLedgerHwm ?? 0)) {
           this._deathLedgerHwm = e.at;
           try {
-            const killer = (e.text.match(/^###\s+.+\s+was just killed by\s+(?:an?\s+|the\s+)?(.+?)\.?$/i) ?? [null, e.text])[1];
-            recordLedgerEvent(charName, 'died', {
+            const m = e.text.match(/^###\s+(.+?)\s+was just killed by\s+(?:an?\s+|the\s+)?(.+?)\.?$/i);
+            const victim = m?.[1] ?? null;
+            const killer = m?.[2] ?? null;
+            if (victim && victim !== (c.me?.name ?? null)) continue;
+            recordLedgerEvent(victim ?? charName, 'died', {
               killer,
               room: c.room?.name ?? frame?.room?.name ?? this.session?.world?.room?.name ?? null,
               room_num: c.room?.num ?? frame?.room?.num ?? this.session?.world?.room?.num ?? null,
