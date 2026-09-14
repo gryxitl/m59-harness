@@ -28,7 +28,7 @@
 
 // Phrases from zap.kod, matched case-insensitively. The ON phrase is the
 // definitive "enchantment is active" signal; the OFF phrase is the lapse.
-const ZAP_ON  = /sparks jump and crackle/i;
+const ZAP_ON  = /sparks jump and crackle|crackle with blue energy/i;
 const ZAP_OFF = /no longer charged with electrical/i;
 const ZAP_ACTIVE_REFUSED = /already crackle/i;
 
@@ -110,7 +110,7 @@ export function findZapSpell(client) {
   const spells = client?.spells ?? [];
   for (const s of spells) {
     const name = client.rsc?.get?.(s.nameRsc) ?? s.name ?? '';
-    if (/^zap$/i.test(String(name).trim())) return { id: s.id, name: 'zap' };
+    if (/^zap$/i.test(String(name).trim())) return { id: s.id, name: 'zap', mana: s.mana };
   }
   return null;
 }
@@ -149,5 +149,9 @@ export function shouldCastZap(client, session = null) {
   }
   const mush = blueMushroomCount(client);
   if (mush < 1) return { shouldCast: false, reason: `no blue mushrooms (${mush})` };
+  const mana = client.vitals?.()?.mana;
+  if (mana && mana.value != null && spell.mana != null && mana.value < spell.mana) {
+    return { shouldCast: false, reason: `not enough mana (${mana.value}/${spell.mana})` };
+  }
   return { shouldCast: true, reason: `enchantment down, ${mush} blue mushroom(s) available` };
 }

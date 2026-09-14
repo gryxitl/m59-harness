@@ -1014,8 +1014,10 @@ export class M59Client {
     const t = String(text);
     let kind = null;
     if (/out of range/i.test(t)) kind = 'out_of_range';
-    else if (/your .* hits /i.test(t) || /^you hit /i.test(t)) kind = 'hit';
+    else if (/your .* (hits|slaps) /i.test(t) || /^you (hit|killed) /i.test(t)) kind = 'hit';
     else if (/your .* misses /i.test(t) || /^you miss /i.test(t)) kind = 'miss';
+    else if (/is (slightly|seriously) wounded/i.test(t)) kind = 'wounded';
+    else if (/has valiantly slain/i.test(t)) kind = 'kill';
     if (!kind) return;
     if (!Array.isArray(this.combatLog)) this.combatLog = [];
     this.combatLog.push({ at: Date.now(), kind, text: t.slice(0, 120) });
@@ -2067,6 +2069,10 @@ export class M59Client {
         const res = parseStringMessage(body, this.lookup);
         if (res.text) {
           this.log(`message: ${res.text}`);
+          if (!this._msgLogStart) this._msgLogStart = Date.now();
+          if (Date.now() - this._msgLogStart < 30000) {
+            console.error(`[msg] ${res.text}`);
+          }
           this._noteCombatOutcome?.(res.text);
           this.emit('message', { text: res.text });
         }

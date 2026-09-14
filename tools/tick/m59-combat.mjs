@@ -708,6 +708,8 @@ export class CombatController {
    */
   _maybeReequip(client) {
     if (!client) return null;
+    if (Date.now() - (this._lastReequipAt ?? 0) < 30000) return null;
+    if (Date.now() - (client._lastZapCastAt ?? 0) < 30000) return null;
     // Only re-equip if the enchantment is DOWN (it lapsed) and a weapon is in
     // the pack but not equipped. We track the weapon we unequipped.
     if (zapStatus(client).active) return null;
@@ -719,8 +721,8 @@ export class CombatController {
     const equipped = equippedWeapon(client);
     if (equipped) return null; // already has a weapon out
     // Re-equip the weapon from the pack.
+    this._lastReequipAt = Date.now();
     client.use?.(inPack.id);
-    console.error(`[combat] ${this.session?.name} re-equipped ${client.rsc?.get?.(inPack.nameRsc) ?? inPack.name} after zap lapse`);
     return { kind: 'reequip', what: 're-equipped weapon after zap lapse' };
   }
 
