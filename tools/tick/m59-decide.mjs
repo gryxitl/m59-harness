@@ -2629,7 +2629,13 @@ function fleeExits(session, ws) {
             // room may have stopped spawning valid targets (e.g. only living
             // trees, which are out of band). Leave so the room can reset,
             // or find a different room with valid targets.
+            const _roomNum = resolveRoomNum(frame?.room ?? {}, session?.world?.map ?? null) ?? frame?.room?.num ?? frame?.room?.id ?? null;
+            if (session._huntWaitRoom != null && session._huntWaitRoom !== _roomNum) {
+              session._huntWaitStart = now; // reset on room change
+              session._huntWaitRoom = _roomNum;
+            }
             if (session._huntWaitStart == null) session._huntWaitStart = now;
+            if (session._huntWaitRoom == null) session._huntWaitRoom = _roomNum;
             const waitMs = now - session._huntWaitStart;
             if (waitMs > 30000) {
               session._huntWaitStart = now; // reset the timer
