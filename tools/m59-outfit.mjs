@@ -263,7 +263,7 @@ const BANK_ROOMS = (CATALOGUE?.merchants ?? [])
 async function goTo(agent, room, tries = 3) {
   let why = null;
   for (let i = 0; i < tries; i++) {
-    const t = await call('travel', { agent, to: room, max_hops: 20 })
+    const t = await call('travel', { agent, to: room, max_hops: 20 }, 180_000)
                     .catch(e => ({ arrived: false, why: e.message }));
     if (t.arrived) return { ok: true, why: null };
     const stuck = (t.log || []).filter(h => !h.ok).slice(-1)[0];
