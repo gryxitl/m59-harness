@@ -65,10 +65,10 @@ Make the Meridian 59 fleet operationally viable: characters should kill monsters
   t1: hp=15/25 goal=None
   t2: hp=26/26 goal=healthy
   t3: hp=28/28 goal=hunt
-  t4: hp=20/20 goal=healthy [FROZEN]
-  t5: hp=25/26 goal=hunt [FROZEN]
+  t4: hp=20/20 goal=healthy [FROZEN — acked, not readback-verified; _inert is process-local, broker rejoin clears it]
+  t5: hp=25/26 goal=hunt [FROZEN — acked, not readback-verified; _inert is process-local, broker rejoin clears it]
   ```
-  All characters at or near full HP. t4 and t5 frozen.
+  All characters at or near full HP. t4 and t5 freeze acked but not readback-verified (in-memory flag, cleared by broker rejoin).
 
 - **V-live results (25-min window, broker pid 56557)**:
   - A1 (re-entry arrival): 36 total arrivals (t2: 2, t3: 9, t4: 17, t5: 8)
