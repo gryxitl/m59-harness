@@ -245,12 +245,12 @@ export class CombatController {
           } catch { /* ledger must never break combat */ }
         }
         if (e.kind === 'died' && e.at > (this._deathLedgerHwm ?? 0)) {
-          this._deathLedgerHwm = e.at;
           try {
             const m = e.text.match(/^###\s+(.+?)\s+was just killed by\s+(?:an?\s+|the\s+)?(.+?)\.?$/i);
             const victim = m?.[1] ?? null;
             const killer = m?.[2] ?? null;
             if (victim && victim !== (c.me?.name ?? null)) continue;
+            this._deathLedgerHwm = e.at;
             recordLedgerEvent(victim ?? charName, 'died', {
               killer,
               room: c.room?.name ?? frame?.room?.name ?? this.session?.world?.room?.name ?? null,
