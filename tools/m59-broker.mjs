@@ -8362,10 +8362,12 @@ const TOOLS = [
         // that boundary so an old percentage can hide a button, never authorize an
         // errand. A failed preflight refuses just this character.
         try {
-          await s.pacer.submit('read', () => c.stats(2));
-          await abilities.ensureAbilities(s, {
-            kinds: 'both', force: true, maxAgeMs: ABILITY_MAX_AGE_MS,
-          });
+          if (!(s instanceof KeeperProxy)) {
+            await s.pacer.submit('read', () => c.stats(2));
+            await abilities.ensureAbilities(s, {
+              kinds: 'both', force: true, maxAgeMs: ABILITY_MAX_AGE_MS,
+            });
+          }
         } catch (error) {
           results.push({ agent, character: c.me?.name, queued: false,
                          reason: `could not refresh advancement: ${error.message}` });
