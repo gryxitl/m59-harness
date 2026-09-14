@@ -1018,6 +1018,8 @@ export class M59Client {
     else if (/has valiantly slain/i.test(t)) kind = 'kill';
     else if (/your .* (hits|slaps) /i.test(t)) kind = 'hit';
     else if (/your .* misses /i.test(t) || /^you miss /i.test(t)) kind = 'miss';
+    else if (/^the\b.*\b(nips|hits|claws|bites|slaps) you\b/i.test(t)) kind = 'damaged';
+    else if (/^you avoid /i.test(t)) kind = 'damaged';
     else if (/is (slightly|seriously) wounded/i.test(t)) kind = 'wounded';
     if (!kind) return;
     if (!Array.isArray(this.combatLog)) this.combatLog = [];

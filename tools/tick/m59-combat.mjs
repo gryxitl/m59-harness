@@ -238,9 +238,9 @@ export class CombatController {
           this._killLedgerHwm = e.at;
           try {
             recordLedgerEvent(charName, 'killed', {
-              creature: e.text.replace(/^You killed the /, '').replace(/\.$/, ''),
-              room: c.room?.name ?? null,
-              room_num: c.room?.num ?? null,
+              creature: (e.text.match(/^you (?:killed|slain) (?:the |an? )?(.+?)\.?$/i) ?? [null, e.text])[1],
+              room: c.room?.name ?? frame?.room?.name ?? null,
+              room_num: c.room?.num ?? frame?.room?.num ?? null,
             });
           } catch { /* ledger must never break combat */ }
         }
