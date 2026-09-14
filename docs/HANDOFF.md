@@ -40,12 +40,11 @@ Make the Meridian 59 fleet operationally viable: characters should kill monsters
 ### In Progress
 - [ ] **A1 verified working** — 36 total arrivals (t2: 2, t3: 9, t4: 17, t5: 8) in 25-min V-live window. Zero oscillation, zero route drops.
 - [ ] **A2 unexercised** — fleet never crossed 200↔556 edge in the observation window.
-- [ ] **t2's flap is between two `site=` call sites** — `walk-past-boundary` and `escape-fan-probe` undo each other. 1176 `move-sent` in the window (~0.78/s). The `at=` (send target) and `srv=` (server-confirmed) are 5 squares apart. Mechanism open.
 
 ### Pending
 - [ ] **"Buy equipment" unaddressed** — zero `bought` events in `substrate/history/fleet-2026-09-14.jsonl` all session.
 - [ ] **"Level up" unaddressed** — `ready_to_learn` stays unsent. `buy_next_planned_skills` now works but characters need more points (e.g. "brawling still needs 176 point(s)").
-- [ ] **t4's spent max HP** — ceiling 20 vs 27 for t2/t3. Death-spiral has already spent max HP on this character. Hunt-band routing problem, not a movement bug.
+- [ ] **t4's ceiling 20, below peers' 26–28** — cause unattributed. No death count measurement for t4 in this session.
 - [ ] **Kill count is not reliable** — the 500-entry `combatLog` ring is shared by 5 characters. First-person kill prose is sent only to the victim's own client and carries no name. The kill count is a floor with unknown confidence.
 - [ ] **Death count is an artifact** — the `### X was just killed by Y` line is sent only to the dying player's own client, after the server has already moved them to the Underworld. The `room_num` values in the ledger are where the character happened to be after respawning, not where they died.
 - [ ] **`m59-client.mjs` has zero test coverage** — the combat classifier (`_noteCombatOutcome`) is the single function both the ledger and the `tougher` attribution key off, and it has no tests.
@@ -61,40 +60,31 @@ Make the Meridian 59 fleet operationally viable: characters should kill monsters
 - **`buy_next_planned_skills` KeeperProxy guard**: The `force:true` refresh routes into `readLive` which hits the KeeperProxy throw-stub. Skip the forced refresh for KeeperProxy sessions and rely on the push-maintained cache.
 
 ## Critical Context
-- **Fleet state (22:42, after V-live observation)**:
+- **Fleet state (23:02, final read)**:
   ```
-  t1: hp=25/25 goal=_fight room=Deep Woods of Ileria
-  t2: hp=15/27 goal=None room=West Merchant Way
-  t3: hp=14/27 goal=None room=West Merchant Way
-  t4: hp=14/20 goal=_fight room=West Merchant Way through Ilerian Woods
-  t5: hp=25/26 goal=None room=East Merchant Way through Ilerian Woods
+  t1: hp=20/25 goal=_fight room=Deep Woods of Ileria
+  t2: hp=18/26 goal=healthy room=The Streets of Tos
+  t3: hp=26/28 goal=hunt room=West Merchant Way through Ilerian Woods
+  t4: hp=2/20 goal=healthy room=The Limping Toad Inn and Tavern [FROZEN]
+  t5: hp=15/26 goal=_fight room=The Queen's Way
   ```
-  t4's ceiling is 20 (spent 7 max HP to deaths), t2/t3 are at 27.
+  t4 frozen at 2/20. t2 at 18/26 (was frozen at 4/26, revived, now at 18/26).
 
 - **V-live results (25-min window, broker pid 56557)**:
   - A1 (re-entry arrival): 36 total arrivals (t2: 2, t3: 9, t4: 17, t5: 8)
   - A2 (cross-room oscillation breaker): unexercised — fleet never crossed 200↔556
-  - t2's flap: 1176 `move-sent` in window (~0.78/s). `at=` and `srv=` 5 squares apart. Two `site=` call sites (`walk-past-boundary` and `escape-fan-probe`) undo each other. Mechanism open.
-  - t4: ceiling 20 (death-spiral spent max HP). Hunt-band routing problem.
+  - t2's flap: 1176 `move-sent` in window (~0.78/s). Sends cluster by room; the reversal is only visible within the room-544 stretch. `srv=864,160` (square 18,10) is the Underworld respawn — 146 of 1176 sends belong to that path, not the 544 stall. Two `site=` call sites (`walk-past-boundary` and `escape-fan-probe`) undo each other in the 544 stretch.
+  - t4: ceiling 20, below peers' 26–28. Cause unattributed.
 
 - **Kill ledger (88 kills / 5 deaths)**:
   - Kill count is a floor with unknown confidence (first-person prose has no name to validate against)
   - Death count is an artifact (broadcast only to dying client, room is post-respawn location, restarts lose deaths)
   - `substrate/tougher/*.json` gains are the only trustworthy progress signal
 
-- **Fleet state (22:52, final read)**:
-  ```
-  t1: hp=19/25 goal=_fight room=Deep Woods of Ileria
-  t2: hp=4/26 goal=healthy room=The Streets of Tos [FROZEN]
-  t3: hp=25/28 goal=_fight room=West Merchant Way through Ilerian Woods
-  t4: hp=10/20 goal=hunt room=Familiars
-  t5: hp=26/26 goal=_fight room=The Queen's Way
-  ```
-  t2 frozen at 4/26. t4's ceiling is 20 (spent 7 max HP to deaths).
 ## Next Steps
 1. **Outfit's teacher errand never completing a buy within its own lease** — the travel timeout (180s) and lease (300s) are set, but the errand still times out. The two `site=` call sites (`walk-past-boundary` and `escape-fan-probe`) undo each other, so the character never reaches the teacher.
 2. **`bought` events still zero** — the buy path is not producing any `bought` events in the ledger. The `buy_next_planned_skills` tool now returns a real preflight reason ("brawling still needs 176 point(s)"), but the outfit errand's buy path is separate and still not working.
-3. **t4's max-HP ceiling at 20 vs 27** — the death-spiral has spent 7 max HP. Route to a weaker-mob room, do not raise the ceiling.
-4. **Investigate t2's flap** — 1176 `move-sent` in 25 min (~0.78/s). `at=` and `srv=` 5 squares apart. Two `site=` call sites (`walk-past-boundary` and `escape-fan-probe`) undo each other. The `srv=` distribution shows 146 at (864,160), 67 at (1632,2720), 29 at (5088,4192) — the character is bouncing between distant squares.
+3. **t4's ceiling 20, below peers' 26–28** — cause unattributed. No death count measurement for t4 in this session. Route to a weaker-mob room if the ceiling continues to drop.
+4. **Investigate t2's flap** — 1176 `move-sent` in 25 min (~0.78/s). Sends cluster by room; the reversal is only visible within the room-544 stretch. `srv=864,160` (Underworld respawn) accounts for 146 of 1176 sends. Two `site=` call sites (`walk-past-boundary` and `escape-fan-probe`) undo each other in the 544 stretch.
 5. **Add test coverage for `m59-client.mjs`** — the combat classifier has zero tests. Pin the kill/death regexes in a new `tools/m59-client-test.mjs`.
 6. **Add the out-of-reach `flee_hurt` test case** — `m59-decide-test.mjs:372,515` only tests `in_reach: true`. Add a case with `in_reach: false` and `_mobCount: 1`.
