@@ -231,14 +231,11 @@ export class CombatController {
       }
       // Route kill prose into the ledger — the vanish heuristic at line 265
       // has produced zero `killed` events since fleet-2026-08-19.
-      const hw = this._killLedgerHwm ?? 0;
       const charName = c.me?.name ?? this.session?.name ?? 'unknown';
       for (const e of c.combatLog) {
-        if (e.kind === 'kill' && e.at > hw) {
-          // Skip third-person kill lines ("X has valiantly slain Y") — those
-          // are other players' kills, not ours.
-          if (/has valiantly slain/i.test(e.text)) continue;
-          this._killLedgerHwm = e.at;
+        if (e.kind === 'kill' && !e.ledgered) {
+          if (/has valiantly slain/i.test(e.text)) { e.ledgered = 'skip'; continue; }
+          e.ledgered = 'killed';
           try {
             recordLedgerEvent(charName, 'killed', {
               creature: (e.text.match(/^you (?:killed|slain) (?:the |an? )?(.+?)\.?$/i) ?? [null, e.text])[1],
@@ -247,13 +244,13 @@ export class CombatController {
             });
           } catch { /* ledger must never break combat */ }
         }
-        if (e.kind === 'died' && e.at > (this._deathLedgerHwm ?? 0)) {
+        if (e.kind === 'died' && !e.ledgered) {
           try {
             const m = e.text.match(/^###\s+(.+?)\s+was just killed by\s+(?:an?\s+|the\s+)?(.+?)\.?$/i);
             const victim = m?.[1] ?? null;
             const killer = m?.[2] ?? null;
-            if (victim && victim !== (c.me?.name ?? null)) continue;
-            this._deathLedgerHwm = e.at;
+            if (victim && victim !== (c.me?.name ?? null)) { e.ledgered = 'skip'; continue; }
+            e.ledgered = 'died';
             recordLedgerEvent(victim ?? charName, 'died', {
               killer,
               room: c.room?.name ?? frame?.room?.name ?? this.session?.world?.room?.name ?? null,
