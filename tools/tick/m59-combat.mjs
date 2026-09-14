@@ -239,8 +239,8 @@ export class CombatController {
           try {
             recordLedgerEvent(charName, 'killed', {
               creature: (e.text.match(/^you (?:killed|slain) (?:the |an? )?(.+?)\.?$/i) ?? [null, e.text])[1],
-              room: c.room?.name ?? frame?.room?.name ?? null,
-              room_num: c.room?.num ?? frame?.room?.num ?? null,
+              room: c.room?.name ?? frame?.room?.name ?? this.session?.world?.room?.name ?? null,
+              room_num: c.room?.num ?? frame?.room?.num ?? this.session?.world?.room?.num ?? null,
             });
           } catch { /* ledger must never break combat */ }
         }
