@@ -320,9 +320,9 @@ export class CombatController {
     const dist = Math.abs(tCol - me.col) + Math.abs(tRow - me.row);
     const isAggroed = !!(target.flags & 0x02000000); // OF.ENEMY
     // HP as a fraction (0-100). Drives the retreat decision.
-    const hpPct = frame?.vitals?.health?.pct ?? 100;
+    const _hpPct = frame?.vitals?.health?.pct;
+    const hpPct = _hpPct == null ? 100 : _hpPct;
     const hpLow = hpPct <= RETREAT_HP_PCT;
-    // Attack mode: casters (no weapon, has attack spell) use a bolt at
     // CAST_REACH; everyone else uses a melee swing at MELEE_REACH.
     const reach = this._attackSpell() ? CAST_REACH : MELEE_REACH;
     const tGeo = frame?.geometry ?? this.session?.world?.geometry;
@@ -687,7 +687,9 @@ export class CombatController {
       if (Date.now() - (this._lastSwingDiagAt ?? 0) > 10000) {
         this._lastSwingDiagAt = Date.now();
         const al = client?.attackLog;
-        console.error(`[swing-diag] ${this.session?.name ?? 'keeper'}: swingResult=${JSON.stringify(swingResult)} targetId=${this.targetId}`);
+        const targetStill = frame?.objects?.get?.(this.targetId) != null;
+        const targetHp = frame?.objects?.get?.(this.targetId)?.hp ?? 'n/a';
+        console.error(`[swing-diag] ${this.session?.name ?? 'keeper'}: swingResult=${JSON.stringify(swingResult)} targetId=${this.targetId} targetStill=${targetStill} targetHp=${targetHp} attackLog_len=${al?.length ?? 0}`);
       }
       return { kind: 'swing', what: `swing at ${this.targetName}${zapActive ? ' (zap active)' : ''}` };
     }

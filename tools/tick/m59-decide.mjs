@@ -2772,6 +2772,11 @@ function fleeExits(session, ws) {
         session._lastConjureLogAt = Date.now();
         console.error(`[conjure-check] ${session?.name ?? 'keeper'}: canConjure=${canConjure} spells=${JSON.stringify(knownSpells(client).map(s => s.name))}`);
       }
+      if (Date.now() - (session?._lastArmedDiagAt ?? 0) > 10000) {
+        session._lastArmedDiagAt = Date.now();
+        const eq = client?.equipment?.();
+        console.error(`[armed-diag] ${session?.name ?? 'keeper'}: ws.armed=${ws.armed} eq_count=${eq?.count ?? 'null'} eq_known=${eq?.known ?? 'null'}`);
+      }
       const wieldable = pickWieldableWeapon(client, session);
       if (wieldable) {
         const res = INTENTS.equip(frame, act, { client: session._client ?? client, session, ws });
@@ -2963,7 +2968,7 @@ export const DEFAULT_GOALS = [
       }
       return false;
     } },
-  { goal: 'armed',    when: ws => (ws.armed === false || ws._packWeapon === true) && ws.is_caster !== true
+  { goal: 'armed',    when: ws => ws.armed === false && ws.is_caster !== true
                                  && (ws._gold > 0 || ws._canConjureWeapon === true) && ws._equipCooldown !== true },
   // HUNT before eating: the character should go find work (a mob to fight)
   // rather than sitting in town eating. Vigor management matters during
