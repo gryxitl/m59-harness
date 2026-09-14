@@ -60,22 +60,22 @@ Make the Meridian 59 fleet operationally viable: characters should kill monsters
 - **`buy_next_planned_skills` KeeperProxy guard**: The `force:true` refresh routes into `readLive` which hits the KeeperProxy throw-stub. Skip the forced refresh for KeeperProxy sessions and rely on the push-maintained cache.
 
 ## Critical Context
-- **Fleet state (23:15, final read)**:
+- **Fleet state (23:22, final read)**:
   ```
-  t1: hp=15/25 goal=_fight
-  t2: hp=26/26 goal=healthy (recovered from 4/26 while frozen)
-  t3: hp=28/28 goal=hunt (full HP)
-  t4: hp=20/20 goal=healthy [FROZEN] (recovered from 2/20 while frozen)
-  t5: hp=8/26 goal=hunt [FROZEN]
+  t1: hp=15/25 goal=None
+  t2: hp=26/26 goal=healthy
+  t3: hp=28/28 goal=hunt
+  t4: hp=20/20 goal=healthy [FROZEN]
+  t5: hp=25/26 goal=hunt [FROZEN]
   ```
-  t4 and t5 frozen. t2 recovered to full HP. t3 at full HP.
+  All characters at or near full HP. t4 and t5 frozen.
 
 - **V-live results (25-min window, broker pid 56557)**:
   - A1 (re-entry arrival): 36 total arrivals (t2: 2, t3: 9, t4: 17, t5: 8)
   - A2 (cross-room oscillation breaker): unexercised — fleet never crossed 200↔556
-  - t2's flap: 1176 `move-sent` in window (~1/s, near-saturation). `aim=` jumps between distant pairs (n=22 aim=2092,3195 → n=23 aim=3296,1952) — goal/hunt repick rewriting the target every few seconds. `srv=864,160` (Underworld respawn) accounts for 146 of 1176 sends. `stride-declaration` dominates the 544 stretch, not `walk-past-boundary`/`escape-fan-probe`.
+  - t2's flap: 1176 `move-sent` in window (~1/s, near-saturation). `aim=` jumps ~37 squares between n=22 and n=23 — destination churn (goal/hunt repick), not send reversal. `srv=864,160` (Underworld respawn) accounts for 146 of 1176 sends. `stride-declaration` dominates the 544 stretch.
   - t4: ceiling 20, below peers' 26–28. Cause unattributed.
-  - Freeze is the control: t2 4→26, t4 2→20, t5 frozen at 8/26. Frozen characters recovered, unfrozen ones fell.
+  - Freeze stops locomotion; recovery not attributed. HP moved in both directions regardless of freeze state (t1 unfrozen fell 20→15, t3 unfrozen rose 26→28, t2 revived early and climbed 4→26 while running).
 
 - **Kill ledger (88 kills / 5 deaths)**:
   - Kill count is a floor with unknown confidence (first-person prose has no name to validate against)
