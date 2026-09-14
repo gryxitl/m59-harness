@@ -277,6 +277,7 @@ function state() {
     agent,
     character: me?.name ?? character,
     in_game: inGame,
+    inert: !!(session._tickLoop?._inert || session._inert),
     room: room ? { name: c?.rsc?.get?.(room.nameRsc) ?? room.name, num: room.num } : null,
     hp: v.health ? { value: v.health.value, max: v.health.max } : null,
     vigor: v.vigor ? { value: v.vigor.value, max: v.vigor.max } : null,
