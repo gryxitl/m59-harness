@@ -1014,7 +1014,7 @@ export class M59Client {
     const t = String(text);
     let kind = null;
     if (/out of range/i.test(t)) kind = 'out_of_range';
-    else if (/your .* (hits|slaps) /i.test(t) || /^you (hit|killed) /i.test(t)) kind = 'hit';
+    else if (/your .* (hits|slaps) /i.test(t) || /^you killed /i.test(t)) kind = 'hit';
     else if (/your .* misses /i.test(t) || /^you miss /i.test(t)) kind = 'miss';
     else if (/is (slightly|seriously) wounded/i.test(t)) kind = 'wounded';
     else if (/has valiantly slain/i.test(t)) kind = 'kill';

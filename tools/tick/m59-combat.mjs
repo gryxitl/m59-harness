@@ -276,7 +276,8 @@ export class CombatController {
       try {
         if (hadName && Date.now() - (this._lastSwingAt ?? 0) < 15000) {
           const c = this.session?.client;
-          recordKill(this.session?.name ?? 'unknown', {
+          const charName = c?.me?.name ?? this.session?.name ?? 'unknown';
+          recordKill(charName, {
             creature: hadName,
             room: c?.room?.name ?? frame?.room?.name ?? null,
             room_num: c?.room?.num ?? frame?.room?.num ?? null,
@@ -284,7 +285,7 @@ export class CombatController {
           // ...and into the ledger, which is what the dashboard's
           // kills_30m counts (ledger `killed` events).
           try {
-            recordLedgerEvent(this.session?.name ?? 'unknown', 'killed', {
+            recordLedgerEvent(charName, 'killed', {
               creature: hadName,
               room: c?.room?.name ?? frame?.room?.name ?? null,
               room_num: c?.room?.num ?? frame?.room?.num ?? null,
