@@ -234,11 +234,21 @@ export class CombatController {
       const charName = c.me?.name ?? this.session?.name ?? 'unknown';
       for (const e of c.combatLog) {
         if (e.kind === 'kill' && !e.ledgered) {
-          if (/has valiantly slain/i.test(e.text)) { e.ledgered = 'skip'; continue; }
+          let creature = null;
+          const firstPerson = e.text.match(/^you (?:killed|slain) (?:the |an? )?(.+?)\.?$/i);
+          const thirdPerson = e.text.match(/^(.+?) has valiantly slain (.+?)\.?$/i);
+          if (firstPerson) {
+            creature = firstPerson[1];
+          } else if (thirdPerson) {
+            if (thirdPerson[1] !== charName) { e.ledgered = 'skip'; continue; }
+            creature = thirdPerson[2];
+          } else {
+            e.ledgered = 'skip'; continue;
+          }
           e.ledgered = 'killed';
           try {
             recordLedgerEvent(charName, 'killed', {
-              creature: (e.text.match(/^you (?:killed|slain) (?:the |an? )?(.+?)\.?$/i) ?? [null, e.text])[1],
+              creature,
               room: c.room?.name ?? frame?.room?.name ?? this.session?.world?.room?.name ?? null,
               room_num: c.room?.num ?? frame?.room?.num ?? this.session?.world?.room?.num ?? null,
             });
