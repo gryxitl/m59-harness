@@ -235,6 +235,9 @@ export class CombatController {
       const charName = c.me?.name ?? this.session?.name ?? 'unknown';
       for (const e of c.combatLog) {
         if (e.kind === 'kill' && e.at > hw) {
+          // Skip third-person kill lines ("X has valiantly slain Y") — those
+          // are other players' kills, not ours.
+          if (/has valiantly slain/i.test(e.text)) continue;
           this._killLedgerHwm = e.at;
           try {
             recordLedgerEvent(charName, 'killed', {
