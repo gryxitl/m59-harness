@@ -8,7 +8,7 @@ Make the Meridian 59 fleet operationally viable: characters should kill monsters
 - **Back up logs before every restart** — restarts truncate `keeper-*.log` in place. Pattern: `TS=$(date +%Y%m%d-%H%M%S); mkdir -p /tmp/keeper-logs-$TS; cp substrate/keeper-*.log /tmp/keeper-logs-$TS/`.
 - **Port mapping**: t1→8911, t3→8912, t4→8913, t5→8914, t2→8915. Verified from `substrate/broker-default.log` `[keeper] spawned` lines.
 - **Fleet is "default"** (unnamed), 5 characters, broker on 8901. Verified via `node tools/m59-which.mjs`.
-- **`substrate/keeper-t*.log` is append-mode with no rotation (>276MB for t4).** `grep` only reads the first 4MB. Use `tail -c 2000000` for the live window.
+- **`substrate/keeper-t*.log` is append-mode with no rotation (>276MB for t4).** Use byte-offset recipe: `wc -c` at generation start, then `tail -c +<off+1> | grep -c` for the window. `grep` only reads the first 4MB; `tail -c 2000000` reads the wrong region on 400MB+ files.
 - **The user is frustrated with looping/going in circles.** Be direct, make progress, don't re-analyze the same issue repeatedly.
 - **Characters must not fight players.** The `is_player === false` check + `how === 'generator'` compendium filter prevent this.
 - **`m59-decide.mjs` imports only `{ trustedBuyer }` from `../m59-skills.mjs`** — `skills` is NOT a defined symbol in that file. Any `console.error` template that references `skills.isArmed(...)` throws a ReferenceError and kills the tick's decision loop.
@@ -82,12 +82,19 @@ Make the Meridian 59 fleet operationally viable: characters should kill monsters
   - Death count is an artifact (broadcast only to dying client, room is post-respawn location, restarts lose deaths)
   - `substrate/tougher/*.json` gains are the only trustworthy progress signal
 
-- **`m59-decide.mjs` imports**: Line 43: `import { trustedBuyer } from '../m59-skills.mjs';` — `skills` is NOT imported.
-
+- **Fleet state (22:52, final read)**:
+  ```
+  t1: hp=19/25 goal=_fight room=Deep Woods of Ileria
+  t2: hp=4/26 goal=healthy room=The Streets of Tos [FROZEN]
+  t3: hp=25/28 goal=_fight room=West Merchant Way through Ilerian Woods
+  t4: hp=10/20 goal=hunt room=Familiars
+  t5: hp=26/26 goal=_fight room=The Queen's Way
+  ```
+  t2 frozen at 4/26. t4's ceiling is 20 (spent 7 max HP to deaths).
 ## Next Steps
-1. **Address "buy equipment"** — zero `bought` events all session. Check whether the `buy` goal is being reached and whether the weapon-seller route is pinned on room 374.
-2. **Address "level up"** — `buy_next_planned_skills` now works but characters need more points. The `ready_to_learn: true` with `target=weaponcraft` is the automatic display target, not a configured plan. The actual plan is for specific abilities (e.g. "brawling" needs 176 more points).
-3. **Investigate t2's flap** — `walk-past-boundary` and `escape-fan-probe` undo each other. 1176 sends in 25 min. The `at=` and `srv=` are 5 squares apart. Mechanism open.
-4. **Address t4's spent max HP** — ceiling 20 vs 27 for t2/t3. Route to a weaker-mob room, do not raise the ceiling.
+1. **Outfit's teacher errand never completing a buy within its own lease** — the travel timeout (180s) and lease (300s) are set, but the errand still times out. The two `site=` call sites (`walk-past-boundary` and `escape-fan-probe`) undo each other, so the character never reaches the teacher.
+2. **`bought` events still zero** — the buy path is not producing any `bought` events in the ledger. The `buy_next_planned_skills` tool now returns a real preflight reason ("brawling still needs 176 point(s)"), but the outfit errand's buy path is separate and still not working.
+3. **t4's max-HP ceiling at 20 vs 27** — the death-spiral has spent 7 max HP. Route to a weaker-mob room, do not raise the ceiling.
+4. **Investigate t2's flap** — 1176 `move-sent` in 25 min (~0.78/s). `at=` and `srv=` 5 squares apart. Two `site=` call sites (`walk-past-boundary` and `escape-fan-probe`) undo each other. The `srv=` distribution shows 146 at (864,160), 67 at (1632,2720), 29 at (5088,4192) — the character is bouncing between distant squares.
 5. **Add test coverage for `m59-client.mjs`** — the combat classifier has zero tests. Pin the kill/death regexes in a new `tools/m59-client-test.mjs`.
 6. **Add the out-of-reach `flee_hurt` test case** — `m59-decide-test.mjs:372,515` only tests `in_reach: true`. Add a case with `in_reach: false` and `_mobCount: 1`.
