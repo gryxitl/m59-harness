@@ -2630,7 +2630,7 @@ function fleeExits(session, ws) {
             // trees, which are out of band). Leave so the room can reset,
             // or find a different room with valid targets.
             const _roomNum = resolveRoomNum(frame?.room ?? {}, session?.world?.map ?? null) ?? frame?.room?.num ?? frame?.room?.id ?? null;
-            if (session._huntWaitRoom != null && session._huntWaitRoom !== _roomNum) {
+            if (session._huntWaitRoom != null && _roomNum != null && session._huntWaitRoom !== _roomNum) {
               session._huntWaitStart = now; // reset on room change
               session._huntWaitRoom = _roomNum;
             }
