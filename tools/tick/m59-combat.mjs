@@ -222,6 +222,12 @@ export class CombatController {
   tick(frame, act, ws) {
     const c = this.session?.client;
     if (!c || c.state !== 'game') return { kind: 'idle', why: 'not in game' };
+    // Periodic combatLog dump: every 30s, log the last 5 combat outcomes.
+    if (c.combatLog?.length > 0 && Date.now() - (this._lastCombatLogAt ?? 0) > 30000) {
+      this._lastCombatLogAt = Date.now();
+      const recent = c.combatLog.slice(-5);
+      console.error(`[combat-log] ${this.session?.name ?? 'keeper'}: ${JSON.stringify(recent)}`);
+    }
 
     const me = frame?.position ?? this.session?._pose?.current?.() ?? c.self;
     if (!me || me.col == null) return { kind: 'idle', why: 'no position' };
@@ -670,7 +676,7 @@ export class CombatController {
         const deg = Math.atan2(target.row - me.row, target.col - me.col) * 180 / Math.PI;
         act.face(((deg % 360) + 360) % 360);
       }
-      act.swing(this.targetId);
+      const swingResult = act.swing(this.targetId);
       this._lastSwingAt = Date.now();
       if (process.env.M59_DEBUG_SWING) {
         const sinceLast = Date.now() - (this._lastSwingLogAt ?? 0);
@@ -678,6 +684,11 @@ export class CombatController {
         console.error(`[swing-debug] ${this.session?.name ?? "?"} swing at ${Date.now()} sinceLast=${sinceLast}ms lastSwing=${this.lastSwing} now=${Date.now()} gap=${Date.now()-this.lastSwing}ms`);
       }
       const zapActive = zapStatus(client).active;
+      if (Date.now() - (this._lastSwingDiagAt ?? 0) > 10000) {
+        this._lastSwingDiagAt = Date.now();
+        const al = client?.attackLog;
+        console.error(`[swing-diag] ${this.session?.name ?? 'keeper'}: swingResult=${JSON.stringify(swingResult)} targetId=${this.targetId}`);
+      }
       return { kind: 'swing', what: `swing at ${this.targetName}${zapActive ? ' (zap active)' : ''}` };
     }
     // In reach but on cooldown. Check if the zap enchantment just lapsed and

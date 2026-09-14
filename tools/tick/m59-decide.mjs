@@ -396,15 +396,6 @@ export const INTENTS = {
     const s = ctx.session;
     const atts = (s ? (s._equipAttempts ??= {}) : {});
     const rec = atts[item.id] ?? { n: 0 };
-    if (rec.n >= 3) {
-      delete atts[item.id];
-      const set = brokenSetFor(s, ctx.client);
-      if (!set.has(item.id)) {
-        set.add(item.id);
-        console.error(`[broken] ${s?.name ?? 'keeper'}: equip ${item.id} failed 3x with no equip; condemned as silent-broken`);
-      }
-      return { sent: false, why: `equip ${item.id} failed repeatedly; condemned` };
-    }
     const now8 = Date.now();
     if (now8 - (rec.at ?? 0) < 1000) {
       return { sent: false, why: 'equip coalesced (1/s)' };
@@ -425,13 +416,6 @@ export const INTENTS = {
       s._equipCooldownUntil = Date.now() + 60000;
       console.error(`[equip] ${s?.name ?? 'keeper'}: ${totalAttempts} total attempts; cooldown 60s`);
     }
-    // Session-wide 1s throttle: the server caps actions at 1/s, so don't
-    // send use faster than that regardless of which item is being tried.
-    const lastUseAt = s?._lastUseAt ?? 0;
-    if (Date.now() - lastUseAt < 1000) {
-      return { sent: false, why: 'use throttled (1/s)' };
-    }
-    s._lastUseAt = Date.now();
     const useResult = act.use(item.id);
     if (Date.now() - (s?._lastUsingLogAt ?? 0) > 30000) {
       s._lastUsingLogAt = Date.now();

@@ -227,9 +227,10 @@ console.log('\nequip condemns silent-broken weapons after 3 gated attempts');
   ok('three attempts submitted', used.length === 3, `${used.length}`);
   backdate();
   const r4 = fire();
-  ok('fourth attempt condemns instead of retrying', r4.sent === false && /condemned/.test(r4.why ?? ''), JSON.stringify(r4));
+  ok('fourth attempt sends use (no condemnation)', r4.sent === true && used.length === 4, JSON.stringify(r4));
+  backdate();
   const r5 = fire();
-  ok('condemned id routes to no-weapon refusal (conjure/buy next)', r5.sent === false && /no weapon/.test(r5.why ?? ''), JSON.stringify(r5));
+  ok('fifth attempt sends use (no condemnation)', r5.sent === true && used.length === 5, JSON.stringify(r5));
 }
 
 console.log('\ndanger-close: spiders and over-ceiling mobs in melee raise the alarm');
