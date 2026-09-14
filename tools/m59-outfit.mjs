@@ -947,7 +947,7 @@ async function outfit(row) {
     // steps over a character we are driving, which is the guard this was decomposed for.
     const owned = await armOwnership(brokerDriver(null, call), {
       agent: row.agent, by: OWNER, kind: 'arm', label: `arming ${who}`,
-      leaseMs: 120_000, heartbeatMs: 60_000, run: body,
+      leaseMs: 300_000, heartbeatMs: 120_000, run: body,
     });
     if (!owned.ran) return `${who}: skipped -- ${owned.refused}`;
     return owned.result;
