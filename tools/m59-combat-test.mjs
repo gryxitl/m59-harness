@@ -11,7 +11,7 @@ const ok = (what, cond, detail) => {
   else { fail++; console.log(`  FAIL ${what}${detail ? ' — ' + detail : ''}`); }
 };
 
-function rig({ meCol = 5, meRow = 5, targetCol = 8, targetRow = 5, targetId = 100, targetFlags = 0, hpPct = 100 } = {}) {
+function rig({ meCol = 5, meRow = 5, targetCol = 8, targetRow = 5, targetId = 100, targetFlags = 0, hpPct = 100, roomName = 'unknown' } = {}) {
   const sent = [];
   const isWalkable = (r, c) => r >= 1 && c >= 1;
   const geo = { fineWalkable: (r, c) => isWalkable(r, c), standable: (r, c) => isWalkable(r, c) };
@@ -42,6 +42,7 @@ function rig({ meCol = 5, meRow = 5, targetCol = 8, targetRow = 5, targetId = 10
     position: { col: session.client.self.col, row: session.client.self.row },
     objects,
     vitals: { health: { value: hpPct, max: 100, pct: hpPct } },
+    room: { name: roomName },
   });
   const controller = new CombatController(session);
   // Latch like live selection does: the decider sets ws._targetId and the
@@ -260,6 +261,21 @@ console.log('\nkill feed: a swung-at target that vanishes is recorded');
      JSON.stringify(after.slice(-1)));
 }
 
+console.log('\nretreat stuck: falls back to swing instead of idle');
+{
+  const { controller, act, sent, session, frame } = rig({ meCol: 5, meRow: 5, targetCol: 6, targetRow: 5, hpPct: 30, roomName: 'test-stuck-room' });
+  controller.phase = 'retreat';
+  controller._retreatStart = Date.now();
+  // Stub the mover to return a stuck verdict.
+  session._mover = { to(){}, tickLogged: () => ({ state: 'stuck', why: 'server static across 5 sends' }) };
+  const ws = { has_target: true, target_in_band: true, in_reach: true };
+  const r = controller.tick(frame(), act, ws);
+  ok(`stuck retreat swings (got ${r.kind})`, r.kind === 'swing');
+}
+
+
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
+
 

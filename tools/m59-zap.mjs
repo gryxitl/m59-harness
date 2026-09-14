@@ -122,11 +122,31 @@ export function findZapSpell(client) {
  * cast (unequip weapon if equipped, then client.cast(zapId)) and relies on
  * the server's ON message to flip zapStatus().active.
  */
-export function shouldCastZap(client) {
+export function shouldCastZap(client, session = null) {
   const spell = findZapSpell(client);
   if (!spell) return { shouldCast: false, reason: 'no zap spell' };
   const status = zapStatus(client);
   if (status.active) return { shouldCast: false, reason: `already active (${status.ageMs ?? '?'}ms)` };
+  // Cooldown: if the character cast the spell within the last 5 seconds,
+  // don't cast again. This prevents the "cast every second" loop.
+  const now = Date.now();
+  const lastCast = client?._lastZapCastAt ?? 0;
+  if (lastCast > 0 && now - lastCast < 5000) {
+    return { shouldCast: false, reason: `cooldown (${now - lastCast}ms since last cast)` };
+  }
+  // CastWatch gate: hold while the last zap cast was refused or fizzled
+  // and the verdict is fresh. Normalize the spell name once (trailing space
+  // from the regex).
+  const cw = session?._castWatch;
+  if (cw) {
+    const sp = String(cw.spell ?? '').trim().toLowerCase();
+    if ((sp === 'zap' || sp === '') && (cw.phase === 'refused' || cw.phase === 'fizzle') && cw.endedAt) {
+      const age = now - cw.endedAt;
+      if (age < 10000) {
+        return { shouldCast: false, reason: `zap ${cw.phase} (${age}ms ago)` };
+      }
+    }
+  }
   const mush = blueMushroomCount(client);
   if (mush < 1) return { shouldCast: false, reason: `no blue mushrooms (${mush})` };
   return { shouldCast: true, reason: `enchantment down, ${mush} blue mushroom(s) available` };

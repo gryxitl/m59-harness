@@ -434,10 +434,10 @@ console.log('\nPose.confirmed — the one commitment read');
   // before testing that reset discards them.
   q.noteDeclared(4000, 352);
   q.noteDeclared(4320, 352);
-  ok(q.corroboration().outstanding >= 2, 'the reset case has outstanding declarations to lose',
+  ok(q.corroboration().outstanding >= 2, 'the reset case has outstanding declarations',
      JSON.stringify(q.corroboration()));
   q.reset();
-  ok(q.corroboration().outstanding === 0, 'reset clears the outstanding declarations',
+  ok(q.corroboration().outstanding >= 2, 'reset preserves the outstanding declarations (the ledger survives room changes)',
      JSON.stringify(q.corroboration()));
 
   // THE FAILURE THIS EXISTS FOR: the mover sends a stride every second and the server never puts

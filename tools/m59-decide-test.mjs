@@ -219,7 +219,7 @@ console.log('\nequip condemns silent-broken weapons after 3 gated attempts');
   const act = { use: (id) => used.push(id) };
   const ctx = { client, session };
   const fire = () => intend('equip', {}, act, ctx);
-  const backdate = () => { const r = session._equipAttempts?.[9]; if (r) r.at = Date.now() - 2000; };
+  const backdate = () => { const r = session._equipAttempts?.[9]; if (r) r.at = Date.now() - 2000; session._lastUseAt = Date.now() - 2000; };
   const r1 = fire();
   ok('first attempt sends use', r1.sent === true && used.length === 1, JSON.stringify(r1));
   backdate(); fire();
@@ -313,7 +313,7 @@ console.log('\nknownLevel: variant names resolve danger-side');
 console.log('\ntarget_in_band: a wounded mob bands by kod level, not live HP');
 {
   const { session } = world({ maxHp: 17, vigor: 80,
-    objects: new Map([[2, { id: 2, name: 'giant rat', col: 6, row: 5, health: 3, max_health: 3 }]]) });
+    objects: new Map([[2, { id: 2, name: 'giant rat', col: 6, row: 5, health: 3, max_health: 3, is_player: false }]]) });
   const decide = makeDecider({ session, goals: DEFAULT_GOALS });
   const act = new Actuator(session);
   decide({ in_game: true, objects: session.client.room.objects }, act, null);
@@ -616,10 +616,6 @@ console.log('\na hurt character walks to a defensible square before sitting down
     // Asserted on the DECISION the decider reports, not on the command that reaches the
     // wire, and that is a deliberate choice rather than a shortcut. The `rest` INTENT
     // throttles itself to one call per second (m59-decide.mjs: `now7 - _lastRestStep >=
-    // 1000`) and returns `sent: true` while holding, so a rig that calls decide() once
-    // observes a decision with no command. Asserting on the wire here would be asserting
-    // on a throttle, and would pass or fail depending on when the test happened to run.
-    // What is under test is where the character CHOOSES to rest, which is the decision.
     const { sent, took } = run({ roomNum: roomOfRig, geo: inn, col: 3, row: 5 });
     ok('while a room with nothing defensible decides to rest at once',
        took.some(t => t.startsWith('healthy') && /rest/.test(t)) &&
@@ -646,6 +642,31 @@ console.log('\na hurt character walks to a defensible square before sitting down
        !took.some(t => /->walk/.test(t)) && took.some(t => /rest/.test(t)),
        took.join('|') || 'NONE');
   }
+}
+
+console.log('\nTIER BAND: lv25 character vs lv30 mob (floor=30, ceiling=37)');
+{
+  const { session, sent } = world({ hp: 25, maxHp: 25, equipped: [{ name: 'mace' }] });
+  const mob = { id: 100, name: 'giant rat', col: 6, row: 6, flags: 2, is_player: false };
+  session.client.room.objects.set(100, mob);
+  session.client.rsc = { get: (id) => id === 100 ? 'giant rat' : null };
+  const seen = [];
+  const decide = makeDecider({ session, goals: DEFAULT_GOALS, onDecision: d => seen.push(d) });
+  const act = new Actuator(session);
+  const frame = { in_game: true, objects: session.client.room.objects };
+  decide(frame, act, null);
+  await sleep(5);
+  const ws = decide.state?.()?.ws ?? session._ws;
+  ok('lv30 mob is in band for lv25 character (floor=30, ceiling=37)',
+     ws?.target_in_band === true, `target_in_band=${ws?.target_in_band}`);
+  session.client.room.objects.delete(100);
+  const mob25 = { id: 101, name: 'baby spider', col: 7, row: 7, flags: 2, is_player: false };
+  session.client.room.objects.set(101, mob25);
+  decide(frame, act, null);
+  await sleep(5);
+  const ws2 = decide.state?.()?.ws ?? session._ws;
+  ok('lv25 mob is in band for lv25 character (floor=23)',
+     ws2?.target_in_band === true, `target_in_band=${ws2?.target_in_band}`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

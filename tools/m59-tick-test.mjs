@@ -236,12 +236,14 @@ console.log('\nposition recovery fires even when the self id is lost');
   loop._lastPosRecovery = 0;
   loop.tick();
   ok('roomContents re-requested when the self id is lost', roomCalls >= 1, `calls=${roomCalls}`);
-  // A position-less frame with NO room at all (not yet in a room) does not spam recovery.
+  // A position-less frame with NO room identifiers still recovers: the character is
+  // in-game, and the server needs the room contents re-requested to re-establish
+  // the self reference. The recovery is throttled to 3s, so it does not spam.
   roomCalls = 0;
   session.client.room = { id: null, num: null, objects: new Map() };
   loop._lastPosRecovery = 0;
   loop.tick();
-  ok('no recovery when there is no room', roomCalls === 0, `calls=${roomCalls}`);
+  ok('recovery fires when in-game with no room identifiers (throttled)', roomCalls >= 1, `calls=${roomCalls}`);
   loop.stop();
 }
 

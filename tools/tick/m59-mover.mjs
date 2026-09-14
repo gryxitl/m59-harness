@@ -335,7 +335,7 @@ const HALF = KOD_FINENESS / 2; // 32 protocol units = half a square
 // the server tolerates a counter of 2 and decays it by elapsed time. `cadence_report()` now records
 // the real gap distribution so this is a measured risk rather than the unmeasured one it was: our
 // log lines have never carried a timestamp, and the gap has never once been recorded.
-export const MOVE_CAP_MS = 1000;
+export const MOVE_CAP_MS = 1050;
 
 // High-volume mover diagnostics (coarse-tier, movestuck, path-null, path-install,
 // movedbg fan-released), off by default. Set M59_MOVER_TRACE=1 to restore the full
@@ -384,6 +384,8 @@ export class Mover {
     this._blinkPending = false;
     this._blinkFrom = null;
     this._blinkAt = null;
+    this._lastLandedCount = 0;   // consume-once latch: CastWatch.counts.landed of last consumed verdict
+    this._lastFizzleCount = 0;   // consume-once latch: fizzle+refused+lost count of last consumed verdict
     this._voidBlinkAt = 0;   // wall-clock ms of the last void-blink attempt
     this._arriveBase = null;   // server square when the current dest was set
     this._roomKey = null;    // last seen room identity (id|num|name)
@@ -1107,44 +1109,48 @@ export class Mover {
       // server that moved us without saying so, or a build whose spell text changed.
       const _cw = this.session?._castWatch;
       if (_cw && _cw.state !== 'casting') {
+        // CONSUME-ONCE LATCH: _cw.phase is sticky — once set to 'landed'
+        // or 'fizzle', it stays that value until the next cast begins.
+        // Without a latch, the terminal verdict is re-consumed every tick,
+        // re-zeroing stuckTicks (landed) or re-incrementing it (fizzle).
+        // Use CastWatch.counts.landed as the monotonic identity: it
+        // increments exactly once per server text (m59-cast.mjs:161),
+        // is clock-independent, and survives consumption.
+        const _landedCount = _cw.counts?.landed ?? 0;
+        const _fizzleCount = (_cw.counts?.fizzle ?? 0) + (_cw.counts?.refused ?? 0) + (_cw.counts?.lost ?? 0);
         if (_cw.phase === 'landed') {
-          this._blinkPending = false;
-          this._blinkFrom = null;
-          this._lastWpKey = null;
-          this._simX = null; this._simY = null; this._simAt = 0;
-          try { this.session?._pose?.reset(); } catch {}
-          this.stuckTicks = 0;
-          this._blinkLandedAt = Date.now();   // blink-landing cooldown: don't re-cast immediately
-          this.path = null;   // replan from wherever the blink actually put us
-          // DELIBERATELY DOES NOT REPORT curX/curY. The server sends the completion text
-          // and the position packet as two separate packets, and nothing in this
-          // repository establishes which arrives first — there is no capture of a blink
-          // in the raw stream, and the spell text is server data with no ordering
-          // guarantee in the source. Reading the position on THIS tick could therefore
-          // replan from the position we left while the character is already somewhere
-          // else, which is a worse failure than the one being fixed: a stale position
-          // with a confident 'blinked' verdict. Releasing the hold is safe and immediate;
-          // the position is read next tick, by which point both packets have landed.
-          // The cost is one 0.30 s tick.
-          return { state: 'blinked', why: `blink confirmed by server text (${_cw.elapsed()}ms)` };
+          if (_landedCount === (this._lastLandedCount ?? 0)) {
+            // Already consumed this verdict — skip.
+          } else {
+            this._lastLandedCount = _landedCount;
+            this._blinkPending = false;
+            this._blinkFrom = null;
+            this._lastWpKey = null;
+            this._simX = null; this._simY = null; this._simAt = 0;
+            try { this.session?._pose?.reset(); } catch {}
+            this.stuckTicks = 0;
+            this._blinkLandedAt = Date.now();
+            this.path = null;
+            _cw.phase = null;  // clear so no later tick re-enters
+            return { state: 'blinked', why: `blink confirmed by server text (${_cw.elapsed()}ms)` };
+          }
         }
         if (_cw.phase === 'fizzle' || _cw.phase === 'lost' || _cw.phase === 'refused') {
-          this._blinkPending = false;
-          this._blinkFrom = null;
-          this.stuckTicks++;
-          // Do NOT fall through into the escape fan on the same tick: the fizzle is
-          // evidence that something moved during the cast, and if that something was us,
-          // the next move packet will fizzle the retry for the same reason. The fan's own
-          // gate paces the next attempt.
-          if (_cw.phase === 'refused') {
-            // A mana refusal is not bad luck, it is arithmetic: the server will say the
-            // same thing next time. Record when we last heard it so the caller can stop
-            // spending 20s holds on an unaffordable spell, and say so in the why rather
-            // than letting it look like a spell that nearly worked.
-            this._blinkRefusedAt = Date.now();
-            return { state: 'blink-refused', why: 'blink refused: not enough mana (server said so)' };
+          if (_fizzleCount === (this._lastFizzleCount ?? 0)) {
+            // Already consumed this verdict — skip.
+          } else {
+            this._lastFizzleCount = _fizzleCount;
+            this._blinkPending = false;
+            this._blinkFrom = null;
+            this.stuckTicks++;
+            if (_cw.phase === 'refused') {
+              this._blinkRefusedAt = Date.now();
+              _cw.phase = null;
+              return { state: 'blink-refused', why: 'blink refused: not enough mana (server said so)' };
+            }
+            _cw.phase = null;
+            return { state: 'blink-fizzled', why: `blink cancelled (${_cw.phase}) — movement during concentration` };
           }
-          return { state: 'blink-fizzled', why: `blink cancelled (${_cw.phase}) — movement during concentration` };
         }
       }
 
@@ -2199,16 +2205,19 @@ export class Mover {
         const wServerPX = curCol * KOD_FINENESS + HALF, wServerPY = curRow * KOD_FINENESS + HALF;
         if (segHeightOk(geo, myProtoX, myProtoY, pastX, pastY) === false) {
           this.stuckTicks++;
-          return { state: 'stuck', why: 'exit climb refused' };
-        }
-        if (this._movementGateOk(pastX, pastY, myProtoX, myProtoY, wServerPX, wServerPY)) {
-          const _sent = this._submitMove(s, c, () => c.moveTo(Math.round(pastX), Math.round(pastY), 18, c.room?.id ?? 0));
-          if (_sent) {
-            this._recordSend(pastX, pastY, myProtoX, myProtoY, Math.round(pastX), Math.round(pastY), 'walk-past-boundary');
+          // Fall through to the raw-door-push below: the walk-past-boundary
+          // is refused by the height check, but the raw push (which bypasses
+          // the height check for standOn exits) may still work.
+        } else {
+          if (this._movementGateOk(pastX, pastY, myProtoX, myProtoY, wServerPX, wServerPY)) {
+            const _sent = this._submitMove(s, c, () => c.moveTo(Math.round(pastX), Math.round(pastY), 18, c.room?.id ?? 0));
+            if (_sent) {
+              this._recordSend(pastX, pastY, myProtoX, myProtoY, Math.round(pastX), Math.round(pastY), 'walk-past-boundary');
+            }
+            this._recordReport(pastX, pastY);
           }
-          this._recordReport(pastX, pastY);
+          return { state: 'crossing', walkPast: true };
         }
-        return { state: 'crossing', walkPast: true };
       }
     }
 
@@ -2256,12 +2265,11 @@ export class Mover {
       // (stand_on), the geometry's "no floor" answer is wrong — the character is
       // meant to stand on this square to trigger a transition. Fire the raw push
       // whenever we are near it, regardless of the fine model's answer.
-      const standOnNear = this._destIsStandOn && distToDest0 < KOD_FINENESS * 4;
+      const standOnNear = this._destIsStandOn && distToDest0 < KOD_FINENESS * 5;
       // NEVER PUSH INTO A VOID: a floorless non-exit destination is a bad
-      // target, not a door alcove. Stand_on exits are exempt by design.
       const destGroundOk = (this._destIsStandOn === true || transitBanned(geoRef, destRow, destCol) !== true)
-        && !regionCornerBanned(geoRef, destRow, destCol, this._wantRoom);
-      if (distToDest0 < KOD_FINENESS * 4 && (destFineOk === false || noPathToNearDest || standOnNear) && destGroundOk) {
+        && (this._destIsStandOn === true || !regionCornerBanned(geoRef, destRow, destCol, this._wantRoom));
+      if (distToDest0 < KOD_FINENESS * 5 && (destFineOk === false || noPathToNearDest || standOnNear) && destGroundOk) {
         const rx = this.destProto.x - myProtoX, ry = this.destProto.y - myProtoY;
         const rd = Math.hypot(rx, ry) || 1;
         const stepProto = Math.min(rd, KOD_FINENESS);
@@ -2302,7 +2310,7 @@ export class Mover {
         // HEIGHT DISCIPLINE (move.c): a push into an unclimbable face is not a
         // door — skip the whole push (path included) and let the stepper/fan
         // below escalate to blink. Walls still pass (deliberate).
-        if (segHeightOk(geoRef, myProtoX, myProtoY, rawX, rawY) !== false) {
+        if (this._destIsStandOn || segHeightOk(geoRef, myProtoX, myProtoY, rawX, rawY) !== false) {
           if (Date.now() - (this._lastRawPushAt ?? 0) >= 500) {
             this._lastRawPushAt = Date.now();
             const _sent = this._submitMove(s, c, () => s.client.moveTo(rawX, rawY, 18, s.client.room?.id ?? 0));
@@ -2315,6 +2323,7 @@ export class Mover {
             console.error(`[raw-door-push] my=(${Math.round(myProtoX)},${Math.round(myProtoY)}) dest=(${destCol},${destRow}) dist=${distToDest0.toFixed(0)} wp=${wp?'yes':'no'}`);
           }
           this.path = null;  // drop any stale path; we're pushing through the gap  try { _trace(`[path-null] site 1407`); } catch {}
+          this._noteServerStatic(curCol, curRow);
           return { state: 'moving', to: { col: destCol, row: destRow }, raw: true };
         }
       }
@@ -2901,18 +2910,22 @@ export class Mover {
     if (this.stuckTicks >= 5) {
       const _lastMoved = this.session?._pose?.lastMovedAt ?? 0;
       const _lastMovedAge = _lastMoved > 0 ? Date.now() - _lastMoved : Infinity;
+      const _corr = this.session?._pose?.corroboration?.() ?? { outstanding: 0 };
       if (process.env.M59_MOVER_TRACE === '1')
-        console.error(`[movestuck] ${this.logName} server static x${this.stuckTicks} sends at srv=(${curCol},${curRow}) sim=(${myCol},${myRow}) lastMovedAge=${_lastMovedAge === Infinity ? 'none' : _lastMovedAge + 'ms'} — ${_lastMovedAge > 8000 ? 're-anchoring sim to server' : 'holding (path kept, position unchanged <8s)'}`);
+        console.error(`[movestuck] ${this.logName} server static x${this.stuckTicks} sends at srv=(${curCol},${curRow}) sim=(${myCol},${myRow}) lastMovedAge=${_lastMovedAge === Infinity ? 'none' : _lastMovedAge + 'ms'} corrOutstanding=${_corr.outstanding}`);
+      // After ~8s static: the path may point into an unwalkable square
+      // (ground=160 stopped=wall). Re-plan: clear the path and fan state
+      // so the next tick re-plans from the current position. NEVER call
+      // _pose.reset() — the sim is client-authoritative (the echo lags,
+      // the sim is where we are). The corroboration ledger climbs if
+      // sends are not landing; the router uses that to escalate.
       if (_lastMovedAge > 8000) {
-        this._simX = null; this._simY = null; this._simAt = 0;
-        try { this.session?._pose?.reset(); } catch {}
         this.path = null; this.pathIdx = 0;
         this._lastWpKey = null;
         this._fanIndex = null; this._fanTarget = null; this._fanFrom = null;
-        return { state: 'stuck', why: `server static across ${this.stuckTicks} sends — sim re-anchored to server` };
+        return { state: 'stuck', why: `server static across ${this.stuckTicks} sends — re-planning (corr=${_corr.outstanding})` };
       }
-      // Path kept: position unchanged <8s, likely a slow echo. Report stuck but don't destroy the route.
-      return { state: 'stuck', why: `server static across ${this.stuckTicks} sends — holding (position unchanged <8s)` };
+      return { state: 'stuck', why: `server static across ${this.stuckTicks} sends — holding (corr=${_corr.outstanding})` };
     }
     return { state: 'moving', to: { col: stepCol, row: stepRow } };
   }
@@ -3692,45 +3705,65 @@ export class Mover {
     // (the swing/attack interrupts the channel) and the blink fizzles. If you
     // are in combat, run — the fan tries to walk out. Only blink when fully
     // stuck (the fan is exhausted) AND not in combat.
-    const _inCombat = this.session?.ws?.has_target === true;
+    const _inCombat = this.session?._inMelee === true;
     let _recovered = false;
-    if (!_travelMode && !_inCombat) {
-      // SPELL-FREE ESCAPE: before trying blink (which requires mana these
-      // martial characters don't have), try walking to the nearest grounded
-      // square. Gated on a 30s cooldown to prevent per-tick reset loops.
-      const _recAt = this._recoveryAt ?? 0;
-      if (Date.now() - _recAt > 30000) {
-        const _geo = this.session?.world?.geometry;
-        const _srv = Pose.confirmed(this.session);
-        if (_srv.source !== 'none' && _geo) {
-          try {
-            const ng = nearestGrounded(_geo, _srv.col, _srv.row, { maxRadius: 40 });
-            if (ng && (ng.col !== _srv.col || ng.row !== _srv.row)) {
-              if (this.to(ng.col, ng.row, { by: 'recovery' })) {
-                this._recoveryAt = Date.now();
-                this._fanIndex = null;
-                this._fanTarget = null;
-                this._fanFrom = null;
-                this.path = null;
-                this.pathIdx = 0;
-                _recovered = true;
-                console.error(`[mover] ${this.logName} fan-exhausted: recovered to grounded square ${ng.col},${ng.row} (was ${_srv.col},${_srv.row})`);
-              } else {
-                console.error(`[mover] ${this.logName} recovery deferred; router owns dest`);
-              }
+    // SPELL-FREE ESCAPE: walking to the nearest grounded square needs no
+    // concentration and works during combat. Run it BEFORE the combat gate
+    // so a pinned character in melee can walk out of the pocket.
+    const _recAt = this._recoveryAt ?? 0;
+    if (Date.now() - _recAt > 30000) {
+      const _geo = this.session?.world?.geometry;
+      const _srv = Pose.confirmed(this.session);
+      if (_srv.source !== 'none' && _geo) {
+        try {
+          const ng = nearestGrounded(_geo, _srv.col, _srv.row, { maxRadius: 40 });
+          if (ng && (ng.col !== _srv.col || ng.row !== _srv.row)) {
+            if (this.to(ng.col, ng.row, { by: 'recovery' })) {
+              this._recoveryAt = Date.now();
+              this._fanIndex = null;
+              this._fanTarget = null;
+              this._fanFrom = null;
+              this.path = null;
+              this.pathIdx = 0;
+              _recovered = true;
+              console.error(`[mover] ${this.logName} fan-exhausted: recovered to grounded square ${ng.col},${ng.row} (was ${_srv.col},${_srv.row})`);
+            } else {
+              console.error(`[mover] ${this.logName} recovery deferred; router owns dest`);
             }
-          } catch { /* keep the blink path */ }
-        }
+          }
+        } catch { /* keep the blink path */ }
       }
-      if (!_recovered) {
-        const blinked = this._tryBlink();
-        if (blinked) {
-          this._blinkFrom = { x: curX, y: curY };
-          return { state: 'blink', why: 'all 8 raw moves landed on same square, casting blink' };
-        }
+    }
+    if (!_recovered && !_travelMode && !_inCombat) {
+      const blinked = this._tryBlink();
+      if (blinked) {
+        this._blinkFrom = { x: curX, y: curY };
+        return { state: 'blink', why: 'all 8 raw moves landed on same square, casting blink' };
       }
-    } else if (process.env.M59_MOVER_TRACE === '1') {
-      console.error(`[movestuck] ${this.logName} travel-mode pocket: all 8 raw moves landed on same square at srv=(${this.lastPos?.col},${this.lastPos?.row}) — blink parked, holding`);
+    }
+    // FAN EXHAUSTION CEILING: after 5 consecutive exhaustions within 60s,
+    // the pocket is real — no amount of re-entering the fan will fix it.
+    // Stamp the route-drop memory and clear the dest so the decider can
+    // hold and fight instead of grinding in place.
+    const _now = Date.now();
+    if (this._fanExhaustAt == null || _now - this._fanExhaustAt > 60000) {
+      this._fanExhaustAt = _now;
+      this._fanExhaustCount = 0;
+    }
+    this._fanExhaustCount = (this._fanExhaustCount ?? 0) + 1;
+    if (this._fanExhaustCount >= 5) {
+      this._fanExhaustCount = 0;
+      this._fanExhaustAt = null;
+      const router = this.session?._router;
+      if (router?.dest != null) {
+        console.error(`[mover] ${this.logName} fan exhausted 5x in 60s — dropping route ${router.dest}, stamping _routeDrop`);
+        this.session._routeDrop = { rooms: [this.session?.world?.room?.num, router.dest], at: Date.now() };
+        router.clear();
+        this.path = null;
+        this.pathIdx = 0;
+        this.stuckTicks = 0;
+        return { state: 'stuck', why: 'fan exhausted 5x; route dropped, holding for decider' };
+      }
     }
     return { state: _recovered ? 'recovered' : 'stuck', why: _recovered ? 'fan exhausted, walked to grounded square' : 'all 8 raw moves landed on same square' };
   }

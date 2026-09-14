@@ -174,6 +174,7 @@ export class Router {
     if (this.dest !== n) {
       console.error(`[route] RETARGET ${this.dest} -> ${n}`);
       this.dest = n; this.leg = null; this.mark = null; this.subWp = null; this._subWpReplans = 0;
+      this._goFireCount = 0;
       this._progress = []; this._oscillations = 0; this._badStandOn.clear();
       this._roomSeq = []; this._crossOsc = 0; this._crossOscAt = null;
       this.lastState = 'idle';  // a new destination is never mid-crossing
@@ -299,17 +300,53 @@ export class Router {
         ?? exit.alternates.find(a => a.stand_on);
       if (alt?.stand_on) standOn = alt.stand_on;
     }
+    // A declared standOn that the COARSE grid calls a wall is unpathable: the mover's
+    // coarse A* expands the whole room and gives up (watched: room 201 door (12,4),
+    // fine-floor / server-floor but coarse-wall, pinned the character at (4,7) for
+    // hours while a walkable alternate door (11,4) sat four squares away). The fine
+    // model and the server both call it floor, so the door is real — the coarse grid
+    // is the outlier. Aim at the nearest square the coarse grid can path to instead;
+    // from there the mover's walk-past-boundary closes the gap. No-op when the
+    // standOn is already walkable.
+    let _standOnSubstituted = false;
+    let _origStandOn = null;
+    if (this._geo()?.walkable?.(standOn.row, standOn.col) === false) {
+      const _near = this._nearestCoarseWalkable(this._geo(), standOn.col, standOn.row);
+      if (_near) {
+        _origStandOn = standOn;
+        console.error(`[route] standOn (${standOn.col},${standOn.row}) is a coarse wall; aiming at nearest walkable (${_near.col},${_near.row}) (leg to ${next})`);
+        standOn = _near;
+        _standOnSubstituted = true;
+      }
+    }
 
     // Compute an edge target if the exit doesn't provide one.
     // The edge target is one square beyond the staging square,
     // in the direction of the exit. Walking to it triggers
-    // the room change.
+    // the room change. NOTE: `standOn` may have been substituted above
+    // (a coarse-wall standOn replaced by the nearest walkable square), so this
+    // derives from the SUBSTITUTED standOn — the edge target stays one square
+    // past the actual staging square, and the edge direction (standOn ->
+    // edgeTarget) is unchanged. A direction-kind exit whose standOn was
+    // substituted therefore aims the walk-past-boundary at the correct square.
     let edgeTarget = exit.edge_target ?? null;
     if (!edgeTarget && exit.direction) {
       const dir = exit.direction.toLowerCase();
       const dx = dir === 'east' ? 1 : dir === 'west' ? -1 : 0;
       const dy = dir === 'south' ? 1 : dir === 'north' ? -1 : 0;
       edgeTarget = { col: standOn.col + dx, row: standOn.row + dy };
+    }
+    // A SUBSTITUTED standOn on a go-door exit (kind='go' carries no direction, so
+    // edgeTarget is still null) leaves the mover's walk-past-boundary without a
+    // direction vector: the substituted square is no longer the declared boundary
+    // square, so the mover's fallbacks (room-boundary, then character-to-standOn)
+    // aim the wrong way for an interior staging square. The ORIGINAL declared
+    // standOn is, by definition, one step past the real staging square in the
+    // server's boundary direction — it is the correct edge target. Setting it keeps
+    // the walk-past-boundary vector intact without inventing a direction. The mover
+    // normalizes {col,row} to protocol units (m59-mover.mjs:559).
+    if (!edgeTarget && _standOnSubstituted && _origStandOn) {
+      edgeTarget = { col: _origStandOn.col, row: _origStandOn.row };
     }
 
     return { leg: { fromRoom: here, next, standOn,
@@ -440,6 +477,36 @@ export class Router {
     }
     this._reachCache.set(cacheKey, { set: seen, at: Date.now() });
     return seen;
+  }
+
+  // The CLOSEST square to (col,row) that is COARSE-walkable, found by a bounded BFS
+  // on the coarse grid (expanding rings, first walkable hit is the nearest). Used when
+  // a declared standOn is a coarse wall (the grid says wall, the fine model / server
+  // say floor) — the character cannot path to a wall, so the router aims at the
+  // nearest square it can actually walk to. Bounded by the room size so it cannot run
+  // away. Returns {col,row} or null. No-op caller-side when the standOn is walkable.
+  _nearestCoarseWalkable(geo, col, row) {
+    if (!geo?.walkable) return null;
+    if (geo.walkable(row, col) === true) return { col, row };
+    const seen = new Set([`${col},${row}`]);
+    const queue = [[col, row]];
+    const DIRS = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+    const maxC = geo.cols ?? 1e9, maxR = geo.rows ?? 1e9;
+    let visited = 0;
+    const maxSteps = maxC * maxR;
+    while (queue.length && visited < maxSteps) {
+      const [c, r] = queue.shift();
+      visited++;
+      for (const [dc, dr] of DIRS) {
+        const nc = c + dc, nr = r + dr;
+        if (nc < 0 || nr < 0 || nc >= maxC || nr >= maxR) continue;
+        const key = `${nc},${nr}`;
+        if (seen.has(key)) continue;
+        if (geo.walkable(nr, nc) !== true) continue;
+        return { col: nc, row: nr };
+      }
+    }
+    return null;
   }
 
   // The CLOSEST square to `standOn` that is FINE-reachable from `me`. This is the
@@ -868,13 +935,52 @@ export class Router {
     // frame/pose may be sim-led; client.self is the echo. The frame stays as
     // a fallback so a slow echo never blocks a crossing the server took.
     const selfPosAt = Pose.confirmed(this.session);
-    const at = (selfPosAt && selfPosAt.col === this.leg.standOn.col && selfPosAt.row === this.leg.standOn.row)
-      || (me.col === this.leg.standOn.col && me.row === this.leg.standOn.row);
+    const _atCol = selfPosAt?.col ?? me.col;
+    const _atRow = selfPosAt?.row ?? me.row;
+    const _distToStandOn = Math.max(Math.abs(_atCol - this.leg.standOn.col), Math.abs(_atRow - this.leg.standOn.row));
+    const at = _distToStandOn === 0;
 
     if (at && this.leg.kind === 'go') {
       // Fire the go command to transition rooms.
       act.go();
       return this._say('crossing', { next: this.leg.next, why: 'go command fired' });
+    }
+
+    // GO-EXIT NEARBY FALLBACK: if the character is within 4 squares of the
+    // standOn and has been stationary for >= 5s, fire the go() command.
+    // Uses a separate _goStuckAt timestamp (not the mark, which is reset by
+    // route re-sets) so the 5s timer survives the buy intent re-setting the route.
+    if (_distToStandOn > 0 && _distToStandOn <= 4 && this.leg.kind === 'go') {
+      if (this._goStuckAt == null) {
+        // First time we're in the standOn vicinity: start the timer.
+        this._goStuckAt = t;
+        this._goStuckPos = `${_atCol},${_atRow}`;
+      } else if (this._goStuckPos !== `${_atCol},${_atRow}`) {
+        // Character moved: reset the timer.
+        this._goStuckAt = t;
+        this._goStuckPos = `${_atCol},${_atRow}`;
+      }
+      const _stuckMs = t - this._goStuckAt;
+      if (_stuckMs >= 5000) {
+        // Limit the number of go() firings: if the server won't transition
+        // from 3 squares away, 3 attempts is enough. Drop the route instead
+        // of looping forever (per the "press, don't alternate" rule).
+        this._goFireCount = (this._goFireCount ?? 0) + 1;
+        if (this._goFireCount > 3) {
+          this._goFireCount = 0;
+          this._goStuckAt = null;
+          this._goStuckPos = null;
+          return this._say('dropped', { why: `go-exit fallback fired 3x without transition; dropping route` });
+        }
+        act.go();
+        this._goStuckAt = null;
+        this._goStuckPos = null;
+        return this._say('crossing', { next: this.leg.next, why: `go command fired from nearby (stuck ${Math.round(_stuckMs / 1000)}s at ${_atCol},${_atRow} -> standOn ${this.leg.standOn.col},${this.leg.standOn.row})` });
+      }
+    } else {
+      // Not in the standOn vicinity: reset the timer.
+      this._goStuckAt = null;
+      this._goStuckPos = null;
     }
 
     // MULTI-LEG: if there is a sub-waypoint chain, the current target is the NEXT
@@ -1027,9 +1133,9 @@ export class Router {
       // The mover is trying to escape a geometry pocket.
       // Let it continue: report as moving so the decider
       // doesn't interrupt.
-      return this._say('moving', { to: aim, next: this.leg.next, why: mr.state });
+      return this._say('moving', { to: aim, next: this.leg?.next ?? null, why: mr.state });
     }
-    return this._say(at ? 'crossing' : 'moving', { to: aim, next: this.leg.next });
+    return this._say(at ? 'crossing' : 'moving', { to: aim, next: this.leg?.next ?? null });
   }
 
   _say(state, extra = {}) { this.lastState = state; try { this._stateAt = this.now(); } catch {} return { state, ...extra }; }

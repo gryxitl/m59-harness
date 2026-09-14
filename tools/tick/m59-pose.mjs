@@ -165,6 +165,7 @@ export class Pose {
   // against the declaration that produced it. Without this the log has a server position and
   // no way to know which send it is an answer to.
   noteDeclared(x, y) {
+    this._prevDeclared = this.lastDeclared;   // the declaration before this one
     this.lastDeclared = { x, y };
     // Every declaration is also a claim about where we will be, which the next echo can confirm or
     // deny. See corroboration().
@@ -262,22 +263,13 @@ export class Pose {
     // session; the oldest outstanding declaration is the one that matters and it is kept.
     if (this._pending.length > 32) this._pending.shift();
   }
-
-  // Called from updateServer with every echo that carries a position. An echo corroborates the most
-  // recent declaration it is near; anything it is near nothing leaves the count alone, because a
-  // missing echo is not a denial — the server is silent while resting, and reading silence as refusal
-  // would fire this on every vigor stop.
   _corroborate(px, py) {
     if (!this._pending || this._pending.length === 0) return;
-    const tol = this.corroborateTol ?? (2 * KOD_FINENESS);
     const last = this._pending[this._pending.length - 1];
+    const tol = this.corroborateTol ?? (2 * KOD_FINENESS);
     if (Math.hypot(px - last.x, py - last.y) <= tol) this._pending.length = 0;
     else this._pending.push({ x: last.x, y: last.y, at: last.at, denied: true });
   }
-
-  // { outstanding, oldest_ms, corroborated } — the number of sends the server has not put us at,
-  // and how long the oldest has been waiting. A mover that sends a stride every second and is
-  // corroborated within one or two sends reads 0-1; a mover whose declarations the server ignores
   // climbs without limit, which is the signature of the walk-in-place failure that was watched for
   // hours with stuck=0 because the sim advanced on every send and the static check could not see it.
   corroboration() {
@@ -286,9 +278,11 @@ export class Pose {
     return { outstanding: p.length, oldest_ms: oldest };
   }
 
-  // Called on teleport / blink / room change. Our feet are no longer valid.
+  // Called on teleport / blink / room change. Our feet are no longer valid,
+  // but the history of declarations (the corroboration ledger) survives:
+  // it is the quantity that distinguishes a healthy walk from a ping-pong,
+  // and a room change is exactly when the ping-pong happens.
   reset() {
-    this._pending = [];
     this.sim = null;
     this.simAt = 0;
   }

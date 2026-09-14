@@ -188,7 +188,9 @@ async function join() {
         const t0 = Date.now();
         if (router.dest != null) {
           const r = intend('travel', frame, act, { client: session.client, session, ws: {} });
-          if (r.sent) { decideTimes.push(Date.now() - t0); _maybeLogMetrics(); return; }
+          // Always fall through to plannerDecide: the stuck-detection block
+          // (blink escape) is only in plannerDecide, and a character can be
+          // stuck even when the travel intent sent a packet (server refused).
         }
         // ISOLATION SWITCH (mover testing): travel-only, no goal ladder.
         // policy.tickIsolate='travel' (fleet-state) or M59_TICK_ISOLATE=travel.

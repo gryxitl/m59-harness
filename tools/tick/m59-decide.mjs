@@ -36,7 +36,7 @@ import { KOD_FINENESS } from '../m59-roo.mjs';
 import { planFor } from '../m59-plan.mjs';
 import { pickWeapon } from '../m59-act/equip.mjs';
 import { pickFood } from '../m59-act/eat.mjs';
-import { knownSpells } from '../m59-act/cast.mjs';
+import { knownSpells, spellNamed } from '../m59-act/cast.mjs';
 import { affordances } from '../m59-parse.mjs';
 import { knownLevel } from './m59-levels.mjs';
 import '../m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
@@ -117,7 +117,7 @@ function pickWieldableWeapon(client, session = null) {
   // best is broken.
   const best = pickWeapon(client);
   if (!best) return null;
-  if (!broken.has(best.id)) return best;
+  if (!broken.has(best.id) && !held.has(best.id)) return best;
   // Best is broken: find the next-best that isn't.
   const candidates = inv
     .filter(o => o?.id != null && !held.has(o.id) && !broken.has(o.id)
@@ -125,7 +125,7 @@ function pickWieldableWeapon(client, session = null) {
   return candidates.sort((a, b) => String(client.rsc?.get?.(b.nameRsc) ?? b.name ?? '').localeCompare(String(client.rsc?.get?.(a.nameRsc) ?? a.name ?? '')))[0] ?? null;
 }
 import { nearestHuntRoom, huntRoomsAtOrBelow } from '../m59-hunt-room.mjs';
-import { loadSpawns } from '../m59-spawns.mjs';
+import { loadSpawns, characterBand } from '../m59-spawns.mjs';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -409,10 +409,42 @@ export const INTENTS = {
     if (now8 - (rec.at ?? 0) < 1000) {
       return { sent: false, why: 'equip coalesced (1/s)' };
     }
-    rec.n++; rec.at = now8;
+    // Only count equip attempts while the character is standing — resting
+    // blocks equip on the server side, so a slow equip while resting is
+    // not a refusal.
+    if (!(ctx.session?._resting ?? false)) {
+      if (rec.n === 0) rec.firstAt = now8;
+      rec.n++;
+    }
+    rec.at = now8;
     atts[item.id] = rec;
-    act.use(item.id);
-    ctx.session._lastEquipId = item.id;  // condemned on the next broken refusal (see scanBrokenFromEvents)
+    // Per-character equip cooldown: after 10 total failed attempts (across all
+    // ids), skip the armed goal for 60s so hunt can proceed.
+    const totalAttempts = Object.values(atts).reduce((sum, r) => sum + (r.n ?? 0), 0);
+    if (totalAttempts >= 10 && Date.now() > (s?._equipCooldownUntil ?? 0)) {
+      s._equipCooldownUntil = Date.now() + 60000;
+      console.error(`[equip] ${s?.name ?? 'keeper'}: ${totalAttempts} total attempts; cooldown 60s`);
+    }
+    // Session-wide 1s throttle: the server caps actions at 1/s, so don't
+    // send use faster than that regardless of which item is being tried.
+    const lastUseAt = s?._lastUseAt ?? 0;
+    if (Date.now() - lastUseAt < 1000) {
+      return { sent: false, why: 'use throttled (1/s)' };
+    }
+    s._lastUseAt = Date.now();
+    const useResult = act.use(item.id);
+    if (Date.now() - (s?._lastUsingLogAt ?? 0) > 30000) {
+      s._lastUsingLogAt = Date.now();
+      console.error(`[equip-diag] ${s?.name ?? 'keeper'}: using=${JSON.stringify(ctx.client?.using)} equipped=${JSON.stringify(ctx.client?.equipment?.())} inv_len=${(ctx.client?.inventory ?? []).length}`);
+    }
+    console.error(`[equip] ${ctx.session?.name ?? 'keeper'}: use(${item.id}) -> ${JSON.stringify(useResult)}`);
+    ctx.session._lastEquipId = item.id;
+    // Confirmation: on the following tick, check if the server put the item
+    // in the using list. If not, the equip failed and we should back off.
+    if (s) {
+      s._equipConfirmAt = Date.now() + 2000; // check in 2s
+      s._equipConfirmId = item.id;
+    }
     return { sent: true, what: `equip ${item.name ?? item.id}` };
   },
 
@@ -459,9 +491,9 @@ export const INTENTS = {
       // would otherwise steal the destination back).
       if (s?._router) {
         const roomNum = c.room?.num ?? s?.world?.room?.num;
-        // Invalidate the smith cache: the candidate list may have changed
-        // (catalogue update) and a stale dest pins the character on a far room.
-        if (s) s._smithDest = null;
+        // The "stale smith route" check at the top of decide() handles
+        // the case where the nearest smith has changed — it re-routes
+        // without clearing the oscillation counters.
         const dest = nearestSmith(s, roomNum, s?._map ?? loadMap());
         // Cooldown after an abandoned trip: without it, set/abandon alternates
         // every tick and `armed` still starves hunt. Hunt unarmed meanwhile;
@@ -548,6 +580,19 @@ export const INTENTS = {
     // _brokeUntil flag is stamped in the buy .then() when the result is
     // "no reply" or "cannot afford". This is evidence, not inference.
     if (Date.now() < (s?._brokeUntil ?? 0) && s?._router) {
+      // NO-REAGENT GATE: if the character has nothing to sell, skip the
+      // buyer route — let the hunt goal send them to fight baby spiders
+      // for loot. A broke character with an empty pack cannot sell, so
+      // routing to a buyer is a dead loop. Clear the broke flag so the
+      // hunt goal can route them to a hunt room.
+      const _hasReagents = (c.inventory ?? []).some(o =>
+        /herb|mushroom|elderberry|root|leaf|seed/i.test(
+          String(c.rsc?.get?.(o.nameRsc) ?? o.name ?? '')));
+      if (!_hasReagents) {
+        // Do NOT delete _brokeUntil — the armed goal demotion depends
+        // on it being active. Just suppress the buyer route.
+        return { sent: false, why: 'broke but nothing to sell; hunting for loot' };
+      }
       const roomNum2 = c.room?.num ?? s?.world?.room?.num;
       const buyerRoom = 202;  // Limping Toad Inn, Marion — Morrigan buys reagents
       if (roomNum2 !== buyerRoom) {
@@ -613,7 +658,10 @@ export const INTENTS = {
       // broke. Stamp a cooldown so the buy path doesn't hammer the server
       // every ~3.5 s. The sell goal (above armed) handles the economics.
       if (res && !res.bought && /no reply|cannot afford/i.test(res.reason ?? '')) {
-        if (s) s._brokeUntil = Date.now() + 120000;
+        // Always stamp the broke flag — the armed goal demotion
+        // (decide.mjs:2853) handles the "nothing to sell" case by
+        // suppressing the armed goal while broke with no reagents.
+        if (s) { s._brokeUntil = Date.now() + 1800000; console.error(`[buy] ${s?.name ?? 'keeper'}: STAMPED _brokeUntil for 30m`); }
       }
       // CLEAR THE BROKE FLAG ON SUCCESS: a confirmed purchase means the
       // character has coin. Stop the sell goal within one tick.
@@ -690,7 +738,15 @@ export const INTENTS = {
     const id = ctx.ws?._targetId;
     if (id == null) return { sent: false, why: 'no target in the world state' };
     if (!f.objects?.get?.(id)) return { sent: false, why: 'the target has left the room' };
+    const targetObj = f.objects.get(id);
+    const targetName = targetObj?.name ?? targetObj?.nameRsc ?? 'unknown';
+    const usingBefore = ctx.client?.using ? [...ctx.client.using] : null;
     act.swing(id);
+    const usingAfter = ctx.client?.using ? [...ctx.client.using] : null;
+    if (Date.now() - (ctx.session?._lastSwingDiagAt ?? 0) > 10000) {
+      ctx.session._lastSwingDiagAt = Date.now();
+      console.error(`[swing-diag] ${ctx.session?.name ?? 'keeper'}: target=${targetName} id=${id} using_before=${JSON.stringify(usingBefore)} using_after=${JSON.stringify(usingAfter)}`);
+    }
     return { sent: true, what: `attack ${id}` };
   },
 
@@ -712,7 +768,7 @@ export const INTENTS = {
     if (objects instanceof Map) {
       for (const o of objects.values()) {
         const name = c.rsc?.get?.(o.nameRsc) ?? o.name ?? '';
-        if (/portal/i.test(name) && o.col != null && o.row != null) matches.push(o);
+        if (/portal|rip/i.test(name) && o.col != null && o.row != null) matches.push(o);
       }
     }
     if (!matches.length) return { sent: false, why: 'no portal in room' };
@@ -728,22 +784,56 @@ export const INTENTS = {
     try {
       console.error(`[portal-dbg] me=(${me.col},${me.row}) portal=(${portal.col},${portal.row}) objId=${portal.id ?? '?'} matches=${matches.length} dead=${dead.length}`);
     } catch {}
-    // Standing on the chosen portal with no transition for 15s = dead portal:
-    // blacklist the square so the next tick walks to the next candidate.
+    // Per-candidate attempt counter: N escape ticks aimed at a candidate with
+    // no room change in M seconds ⇒ mark it dead. The old exact-square test
+    // (me.col === portal.col) never fired for a character 8 squares from the
+    // portal, so _goAt was reset every tick and the 10s dead verdict was
+    // unreachable. The attempt counter works regardless of distance.
+    const _attempts = ctx.session?._portalAttempts ?? {};
+    if (ctx.session) ctx.session._portalAttempts = _attempts;
+    const _pid = portal.id ?? `${portal.col},${portal.row}`;
+    const _att = _attempts[_pid] ?? { at: now3, count: 0, near: 0 };
+    _att.count += 1;
+    // Count ticks only when within 1.5 squares of the candidate. This
+    // distinguishes "we never got there" (wants a repath) from "it
+    // didn't work" (wants a blacklist).
+    if (Math.hypot(portal.col - me.col, portal.row - me.row) <= 1.5) _att.near = (_att.near ?? 0) + 1;
+    _attempts[_pid] = _att;
+    // Room number: if it changed, the escape worked — clear the counter.
+    const _curRoomNum = c.room?.num ?? ctx.session?.world?.room?.num;
+    if (_att.roomNum != null && _att.roomNum !== _curRoomNum) {
+      delete _attempts[_pid];
+    } else {
+      _att.roomNum = _curRoomNum;
+    }
+    // Standing on the chosen portal: send BP_REQ_GO (gated to 1/s).
     if (me.col === portal.col && me.row === portal.row) {
-      const key = `${portal.col},${portal.row}`;
-      if (ctx.session) {
-        if (ctx.session._portalStoodKey !== key) {
-          ctx.session._portalStoodKey = key;
-          ctx.session._portalStoodAt = now3;
-        } else if (now3 - (ctx.session._portalStoodAt ?? now3) > 15000 && !isDead(portal)) {
-          dead.push({ col: portal.col, row: portal.row, at: now3 });
-          ctx.session._deadPortals = dead;
-          ctx.session._portalStoodKey = null;
-        }
+      if (ctx.session && !ctx.session._goAt) {
+        ctx.session._goAt = now3;
+        ctx.session._goRoomNum = _curRoomNum;
+      }
+      if (now3 - (ctx.session?._lastGoAt ?? 0) >= 1000) {
+        if (ctx.session) ctx.session._lastGoAt = now3;
+        c.go?.();
+        try {
+          console.error(`[go-dbg] go sent, room=${_curRoomNum} portal=(${portal.col},${portal.row})`);
+        } catch {}
       }
     } else if (ctx.session) {
-      ctx.session._portalStoodKey = null;
+      ctx.session._goAt = 0;
+    }
+    // Attempt-counter dead verdict: 30 ticks (≈27s of real walking at
+    // ~1/s mover pace) aimed at a candidate, with at least 3 ticks
+    // within 1.5 squares of it, and no room change ⇒ mark it dead.
+    // The `near` requirement distinguishes "we never got there" (wants
+    // a repath) from "it didn't work" (wants a blacklist).
+    if (_att.count >= 30 && (_att.near ?? 0) >= 3 && _att.roomNum === _curRoomNum && !isDead(portal)) {
+      dead.push({ col: portal.col, row: portal.row, at: now3 });
+      ctx.session._deadPortals = dead;
+      delete _attempts[_pid];
+      try {
+        console.error(`[portal-dbg] candidate ${_pid} marked dead after ${_att.count} attempts (${_att.near} near, no room change)`);
+      } catch {}
     }
     // Walk toward the portal (one step per SEND LAW via the actuator —
     // act.step defaults to 250ms gaps (4/s) which trips speedhack detection
@@ -834,7 +924,6 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
   let _lastTargetId = null;      // previous tick's target (for stuck-detection, which runs before evaluate)
   let _ws = null;               // last tick's world state (for state() access)
   let retargetCheckAt = 0;       // wall-clock ms of last re-target check (throttle)
-  let _hpPokeAt = 0;             // wall-clock ms of last first-move poke (HP-regen unlock)
   let _uwDbgAt = 0;               // wall-clock ms of last underworld-identity diagnostic
   let _stuckDbgAt = 0;            // wall-clock ms of last stuck-gate diagnostic
   let lastSeenHp = null;         // last HP value (to detect "we just took damage")
@@ -851,6 +940,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     ticks++;
     const client = session.client;
     if (!client) return;
+
     // CLEAR STALE SMITH ROUTE: if the router's dest is a smith room from
     // the old candidate list and the nearest smith has changed, clear it.
     // This fixes the 10-hop route to room 201 when room 113 was 4 hops away.
@@ -859,10 +949,26 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       if (roomNum != null) {
         const nearest = nearestSmith(session, roomNum, session?._map ?? loadMap());
         if (nearest != null && nearest !== session._router.dest) {
-          console.error(`[decide] ${session.name} stale smith route: ${session._router.dest} -> ${nearest}; clearing`);
-          session._smithDest = null;
-          session._buyingRoute = null;
-          session._router.clear();
+          // Gate on stability: nearestSmith derives from the current room,
+          // which changes on every room transition. Only re-route after 3
+          // consecutive ticks agree on the same new target.
+          if (session._smithRerouteCandidate === nearest) {
+            session._smithRerouteCount = (session._smithRerouteCount ?? 0) + 1;
+          } else {
+            session._smithRerouteCandidate = nearest;
+            session._smithRerouteCount = 1;
+          }
+          if (session._smithRerouteCount >= 3) {
+            console.error(`[decide] ${session.name} stale smith route: ${session._router.dest} -> ${nearest}; re-routing`);
+            session._smithDest = null;
+            session._buyingRoute = null;
+            session._router.to(nearest);
+            session._smithRerouteCandidate = null;
+            session._smithRerouteCount = 0;
+          }
+        } else {
+          session._smithRerouteCandidate = null;
+          session._smithRerouteCount = 0;
         }
       }
     }
@@ -889,37 +995,11 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       if (me?.col != null) {
         if (_lastPos && me.col === _lastPos.col && me.row === _lastPos.row) {
           // Suppress stuck detection when the character is
-          // intentionally not moving: resting, fighting,
-          // or a hostile mob is in reach. The _fighting/
-          // _resting flags are from the previous tick, so
-          // also check the room directly for a nearby mob.
+          // intentionally not moving: resting, critically
+          // exhausted, or fighting. The _fighting/_resting
+          // flags are from the previous tick.
           const c2 = client;
           const objs = c2?.room?.objects;
-          // Is the current target out of reach? A "fight" frozen against a
-          // far target is stuck-on-a-ledge, not combat — allow the stuck
-          // detector to fire in that case.
-          let targetOutOfReach = false;
-          if (_lastTargetId != null && objs instanceof Map) {
-            const t2 = objs.get(_lastTargetId);
-            if (t2?.col != null) {
-              // "Out of reach" means the swing cannot connect. Melee is a disc
-              // of radius ~4 squares (MELEE_REACH), so use d2 > 16. The old
-              // threshold (d2 > 4, i.e. dist > 2) treated an in-range target as
-              // out-of-reach, which kept the stuck-detector firing while the
-              // character was actually in melee range and swinging.
-              targetOutOfReach = (t2.col - me.col) ** 2 + (t2.row - me.row) ** 2 > 16;
-            }
-          }
-          const mobNearby = objs instanceof Map && me?.col != null &&
-            [...objs.values()].some(o => {
-              if (o.is_self || o.col == null || o.row == null) return false;
-              if (o.is_player && o.can_attack) return Math.hypot(o.col - me.col, o.row - me.row) <= 4;
-              const nm = String(c2.rsc?.get?.(o.nameRsc) ?? o.name ?? '').toLowerCase();
-              if (nm && !/shilling|gold|mace|sword|food|mushroom|bone|skull|lever|brazier|target|jump|look|fight/.test(nm)) {
-                return Math.hypot(o.col - me.col, o.row - me.row) <= 4;
-              }
-              return false;
-            });
           if (_resting) {
             // Resting: not stuck, just not moving.
           } else if (session?._criticalRest === true) {
@@ -927,14 +1007,20 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             // stillness. Suppress detection (reset the timer) and do NOT
             // walk — walking it dry starts the drain spiral, and the escape
             // would steal a manual destination for a hunt room.
+            // EXCEPTION: if stuck > 60s during critical rest, allow the
+            // blink escape (blink doesn't require vigor — it's a safe
+            // escape from a geometry pocket that rest alone can't fix).
+            const _critHeld = now() - _lastPosAt;
+            if (_critHeld < 60000) {
+              _lastPosAt = now();
+            }
+          } else if (_fighting) {
+            // Genuinely engaged: the decider's own goal is _fight.
+            // Reset the timer so post-combat doesn't trip STUCK_MS.
             _lastPosAt = now();
-          } else if ((_fighting && !targetOutOfReach) || (mobNearby && !targetOutOfReach)) {
-            // Genuinely engaged: fighting a target in reach, or a hostile mob
-            // is within 4 squares. Not stuck — just holding position. A "fight"
-            // frozen against a far target (or no mob nearby) is stuck-on-a-ledge,
-            // so fall through and let the stuck-detector blink/walk out.
           } else {
             const held = now() - _lastPosAt;
+
             // DIAG (permanent, rate-limited): critical-rest gating. (ws
             // doesn't exist yet in section 0 — read vitals directly.)
             if (Date.now() - (_stuckDbgAt ?? 0) > 30000) {
@@ -973,7 +1059,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
                   const fullBand = policy?.threatBand ?? Math.floor(maxHp / 2);
                   const band = isArmed ? fullBand : Math.floor(fullBand / 2);
                   const ceiling = maxHp + band;
-                  const hunt = nearestHuntRoom(resolved, ceiling);
+                  const hunt = nearestHuntRoom(resolved, maxHp, ceiling, maxHp - 2);
                   // Don't steal an operator-ordered destination (travel
                   // command): it was set on purpose within the last 15 min.
                   // If the router dropped it (oscillation/arrival), REASSERT
@@ -1143,7 +1229,21 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // 1. SENSE -> VOCABULARY. Free: every producer reads pushed state.
     const ws = evaluate({ client, session, policy, agent: session.name });
     _ws = ws;
-    // Expose the raw vigor value for the vigor_low goal.
+    ws._pokeFailCount = session._hpPokeFailCount ?? 0;
+    // Reset the poke fail counter on room change or HP rise — a latched
+    // counter would permanently disable the healthy goal for this session.
+    const _roomNum = session?.world?.room?.num ?? client?.room?.num ?? null;
+    if (_roomNum != null && session._lastRoomNum != null && _roomNum !== session._lastRoomNum) {
+      session._hpPokeFailCount = 0;
+      session._pokeRelocate = false;
+    }
+    session._lastRoomNum = _roomNum;
+    const _hpNow = client?.vitals?.()?.health?.value ?? null;
+    if (_hpNow != null && session._lastHp != null && _hpNow > session._lastHp) {
+      session._hpPokeFailCount = 0;
+      session._pokeRelocate = false;
+    }
+    session._lastHp = _hpNow;
     ws._vigor = client?.vitals?.()?.vigor?.value ?? null;
     // Max vigor (informational/diagnostics only). The rest thresholds stay
     // ABSOLUTE: rest recovers only to ~80 whatever the max — food carries
@@ -1159,6 +1259,10 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       else if (ws._vigor != null && ws._vigor >= 60) session._criticalRest = false;
       ws._criticalRest = session._criticalRest === true;
     } catch {}
+    // LIVE MELEE READ: "something can hit me right now" — per-tick,
+    // not the CombatController's sticky targetId (which latches true
+    // through the post-fight loot window and permanently disables blink).
+    try { session._inMelee = ws.has_target === true && ws.in_reach === true; } catch {}
     // TRAVEL MODE (motion-only proving): a fresh operator travel order
     // (<15min) parks every non-motion goal — hurt-rest, vigor-rest, fight
     // engagement, blink escapes — so a crossing run measures the mover, not
@@ -1174,7 +1278,8 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       const _op = session?._operatorDest;
       const _opFresh = _op != null && Date.now() - (_op.at ?? 0) < 900000;
       const _hunt = session?._huntDest;
-      const _huntFresh = _hunt != null && Date.now() - (_hunt.at ?? 0) < 600000;
+      const _huntFresh = _hunt != null && Date.now() - (_hunt.at ?? 0) < 600000
+        && Number(session?.world?.room?.num ?? client?.room?.num) !== Number(_hunt.dest);
       // _travelMode suppresses rest (healthy, vigor_low) for both manual and hunt
       // journeys. _fight is gated on _manualMode (operator-ordered only), so a
       // hunt-bound character can still engage in-band targets mid-corridor.
@@ -1183,14 +1288,28 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       // not suppressed — a held character must defend itself instead of being
       // eaten mid-corridor.
       const _droppedFresh = session?._routeDrop && Date.now() - (session._routeDrop.at ?? 0) < 120000;
-      ws._travelMode = (_manFresh || _huntFresh || (session?._buyingRoute != null)) && !_droppedFresh;
+      const _inHuntRoom = _hunt != null && Number(session?.world?.room?.num ?? client?.room?.num) === Number(_hunt.dest);
+      ws._travelMode = ((_manFresh || _huntFresh || (session?._buyingRoute != null)) && !_droppedFresh) && !_inHuntRoom;
       ws._manualMode = _opFresh;
     } catch { ws._travelMode = false; ws._manualMode = false; }
     // Expose room number and max HP for the hunt goal's Raza check.
     ws._roomNum = session?.world?.room?.num ?? client?.room?.num
       ?? roomNumByRsc(client?.roomNameRsc) ?? roomNumByRsc(client?.roomRsc) ?? null;
+    ws._packWeapon = (client?.inventory ?? []).some(o => {
+      const name = String(client?.rsc?.get?.(o.nameRsc) ?? o.name ?? '').toLowerCase();
+      if (!/mace|sword|axe|club|dagger|staff|bow|spear|hammer|flail|war hammer|warhammer/.test(name)) return false;
+      if (o?.id != null && brokenSetFor(session, client).has(o.id)) return false;
+      return true;
+    });
     // Expose the broke observation for the sell goal (evidence, not inference).
     ws._brokeUntil = Date.now() < (session?._brokeUntil ?? 0);
+    ws._equipCooldown = Date.now() < (session?._equipCooldownUntil ?? 0);
+    // Expose the character's gold for the armed goal (no gold = can't buy).
+    ws._gold = (client?.inventory ?? [])
+      .filter(o => /shilling/i.test(client?.rsc?.get?.(o.nameRsc) ?? ''))
+      .reduce((sum, o) => sum + (o.amount ?? 1), 0);
+    ws._canConjureWeapon = knownSpells(client).some(sp =>
+      sp.name.toLowerCase() === 'create weapon');
     // Expose whether the character has reagents to sell (for the sell goal).
     ws._hasReagents = (client?.inventory ?? []).some(o =>
       /herb|mushroom|elderberry|root|leaf|seed/i.test(
@@ -1211,6 +1330,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       } catch {}
     }
     ws._maxHp = client?.vitals?.()?.health?.max ?? null;
+    ws._hp = client?.vitals?.()?.health?.value ?? null;
     // Expose whether the character is moving (the router has a destination).
     // The vigor_low goal yields when the character is moving — resting would
     // stop the movement.
@@ -1351,10 +1471,10 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           const hpPct = hpNow && hpNow.max ? (hpNow.value / hpNow.max) * 100 : 100;
           // Threat ceiling (same formula as target selection below).
           const maxHp = client.vitals?.()?.health?.max ?? 20;
-          const lvl = maxHp;
+          const charLevel = maxHp;
           const isArmed = ws.armed === true;
-          const fullBand = policy?.threatBand ?? Math.floor(lvl / 2);
-          const ceiling = lvl + (isArmed ? fullBand : Math.floor(fullBand / 2));
+          const fullBand = policy?.threatBand ?? Math.floor(charLevel / 2);
+          const ceiling = charLevel + (isArmed ? fullBand : Math.floor(fullBand / 2));
           // Creature names (same as the if(!target) block below).
           let cNames = new Set();
           try {
@@ -1403,6 +1523,8 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             const spawns = loadSpawns(SPAWNS_FILE);
             if (spawns?.byMonster) {
               for (const name of Object.keys(spawns.byMonster)) {
+                const entries = spawns.byMonster[name];
+                if (!Array.isArray(entries) || !entries.some(e => e.how === 'generator')) continue;
                 if (!prohibitedKind(name, session?.policy ?? policy)) creatureNames.add(mobNameKey(name));
               }
             }
@@ -1452,7 +1574,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             // exactly matches a compendium creature.
             // Exact match only: "baby spider" != "spider".
             const isMob = ((session?.policy ?? policy)?.defendAgainstPlayers === true && o.is_player && o.can_attack)
-              || (creatureNames.size > 0 && creatureNames.has(objName));
+              || (o.is_player === false && creatureNames.size > 0 && creatureNames.has(objName));
             if (!isMob) continue;
             const d2 = (o.col - me.col) ** 2 + (o.row - me.row) ** 2;
             candidates.push({ o, d2 });
@@ -1566,11 +1688,11 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             // compendium. The threat ceiling: same formula as the
             // GOAP keeper (level + band, halved when unarmed).
             const maxHp = client.vitals?.()?.health?.max ?? 20;
-            const level = maxHp;
+            const charLevel = maxHp;
             const isArmed = ws.armed === true;
-            const fullBand = policy?.threatBand ?? Math.floor(level / 2);
+            const fullBand = policy?.threatBand ?? Math.floor(charLevel / 2);
             const band = isArmed ? fullBand : Math.floor(fullBand / 2);
-            ws._threatCeiling = level + band;
+            ws._threatCeiling = charLevel + band;
             const targetLevel = targetLevelOf(best, (o) => client.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
             ws._targetLevel = targetLevel;
             // Re-derive the target-dependent symbols.
@@ -1581,18 +1703,29 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             // GOAP keeper's default: a ceiling that defaults
             // open is the one that kills somebody, but a
             // target with unknown level is probably a common
-            // mob in a room we already chose to hunt in).
-            ws.target_in_band = targetLevel == null ? true : targetLevel <= ws._threatCeiling;
+            ws.target_in_band = targetLevel == null ? true : (targetLevel <= ws._threatCeiling && targetLevel >= charLevel - 2);
           }
         } else {
-          // Target still in room: re-derive in_reach.
+          // this sticky path previously set has_target=true but NOT ws._targetId —
+          // it relied on _lastTargetId (module-level) for stickiness. The combat
+          // layer reads ws._targetId (m59-combat.mjs:251), so with it null the
+          // combat layer could only fight a target it had ALREADY bound (this.targetId);
+          // a character that arrived in a fresh room (this.targetId null) could never
+          // START the fight, even though has_target=true and goap.target showed the
+          // mob. Setting ws._targetId every tick (not just on a new pick) makes the
+          // decider's sticky target visible to the combat layer.
+          ws._targetId = target.id ?? target.obj_id;
           const d2 = (target.col - me.col) ** 2 + (target.row - me.row) ** 2;
           ws.in_reach = d2 <= 4;
           ws._targetD2 = d2;
           ws.has_target = true;
           const tLevel = targetLevelOf(target, (o) => client.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
-          ws._targetLevel = tLevel;
-          ws.target_in_band = tLevel == null ? true : tLevel <= (ws._threatCeiling ?? Infinity);
+          const _lvl = client.vitals?.()?.health?.max ?? 20;
+          const _isArmed = ws.armed === true;
+          const _fullBand = policy?.threatBand ?? Math.floor(_lvl / 2);
+          const _band = _isArmed ? _fullBand : Math.floor(_fullBand / 2);
+          ws._threatCeiling = _lvl + _band;
+          ws.target_in_band = tLevel == null ? true : (tLevel <= ws._threatCeiling && tLevel >= _lvl - 2);
         }
       }
     }
@@ -1663,7 +1796,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       }
     }
 
-    ws._traveling = (session._router?.dest ?? null) != null;
+    ws._traveling = (session._router?.dest ?? null) != null && Number(session?.world?.room?.num ?? client?.room?.num) !== Number(session._router?.dest);
     // IN HUNT ROOM: true when the character is standing in the room the hunt
     // goal is routing to, OR when no route is in progress (idle). Used to gate
     // flee_danger: a character in a hunt room with mobs is hunting, not fleeing.
@@ -1672,7 +1805,6 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // flag would be true for at most one tick and then false again.
     const _d = session._router?.dest;
     ws._inHuntRoom = _d == null || (ws._roomNum != null && Number(_d) === Number(ws._roomNum));
-    // 1b. POSITION CONFIRMATION. The server does not push our position.
     // Fire a confirm at a fixed cadence (the mover rate-limits internally).
     // This is fire-and-forget: the tick continues with dead reckoning
     // until the confirm resolves and syncs the mover.
@@ -1690,6 +1822,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // mummy or resting at an inn is intentionally not
     // moving — it's not stuck.
     _resting = active?.goal === 'healthy' || active?.goal === 'vigor_low';
+    try { session._resting = _resting; } catch {}
     _fighting = active?.goal === '_fight';
 
     // STAND BEFORE MOVING (OR EQUIPPING). Resting sits the character down, and a
@@ -1832,8 +1965,8 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
         }
         session._restSpotChoice = spot;
       }
-      if (hp < maxHp && now2 - _hpPokeAt > 30000) {
-        _hpPokeAt = now2;
+      if (hp < maxHp && now2 - (session._hpPokeAt ?? 0) > 30000) {
+        session._hpPokeAt = now2;
         const me = session._pose?.current?.() ?? client.self;
         if (me && me.col != null) {
           // Find the nearest walkable neighbor to step to (N, S, E, W).
@@ -1843,53 +1976,46 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             const w = geo?.walkable ? geo.walkable(r, c) : undefined;
             if (f === false) return false;
             if (f === undefined && w === false) return false;
-            if (isGrounded(geo, r, c) === false) return false; // never poke into a void
+            if (isGrounded(geo, r, c) === false) return false;
             return true;
           };
           let poked = false;
+          let anyWalkable = false;
           for (const [dr, dc] of [[0, 1], [1, 0], [0, -1], [-1, 0]]) {
             const nr = me.row + dr, nc = me.col + dc;
             if (!canStep(nr, nc)) continue;
+            anyWalkable = true;
             try {
               act.stand?.();
               act.step?.(nc, nr, { minGapMs: 0 });
-              // Sit back down so we rest. The step sets PFLAG_MOVED_SINCE_ENTRY.
               act.rest?.();
               poked = true;
               break;
             } catch { /* try the next direction */ }
           }
           if (poked) {
+            session._hpPokeFailCount = 0;
             onDecision?.({ ticks, goal: 'healthy', action: 'poke+rest', sent: true,
               what: 'poke to unlock HP regen, then rest' });
             return;
           }
-          // NO SQUARE TO POKE INTO — REST ANYWAY.
-          //
-          // THIS RETURNED BEFORE, AND IT IS A LIVE BUG THAT PREDATES THIS CHANGE. The poke
-          // exists because the server does not start regenerating HP from sitting still: the
-          // first rest in a room stands, steps one square, and sits back down to set the
-          // flag. When no adjacent square passes `canStep` — a doorway, an alcove, a void
-          // square, a ledge with nothing walkable beside it — `poked` stayed false, this
-          // reported `sent: false`, and RETURNED. The character never rested. Not once in
-          // that room, ever: the branch is taken on every tick, because nothing about being
-          // unable to move changed between ticks.
-          //
-          // 8,254 occurrences on one keeper log. Each one is a hurt character standing in a
-          // doorway not healing, and the decider reporting no action at all — which is why
-          // the dashboard showed idle characters at low HP with no explanation, and why I
-          // read the same empty command list in my own test rig and assumed the rig was
-          // wrong. The rig was showing me production.
-          //
-          // The trade is stated honestly: resting without the poke may not regenerate HP, so
-          // this character might not recover. That is still better than the alternative,
-          // which is certainly not recovering, and it is strictly better than what this
-          // branch did before. Falling through to `intend('rest')` below also means the
-          // rest-spot choice and the budget accounting above are honoured, which they were
-          // not while this returned early.
-          onDecision?.({ ticks, goal: 'healthy', action: 'rest', sent: false,
-            what: 'no walkable neighbor to poke; resting anyway',
-            why: 'the regen poke needs a square to step into and there is none here' });
+          if (!anyWalkable) {
+            session._hpPokeFailCount = (session._hpPokeFailCount ?? 0) + 1;
+            if (session._hpPokeFailCount >= 5) {
+              session._pokeRelocate = true;
+              onDecision?.({ ticks, goal: 'healthy', action: null, sent: false,
+                what: `poke failed ${session._hpPokeFailCount}x; flagging for hunt relocation`,
+                why: 'no walkable neighbor for regen poke; hunt will exclude this room' });
+              return;
+            }
+            onDecision?.({ ticks, goal: 'healthy', action: 'rest', sent: false,
+              what: 'no walkable neighbor to poke; resting anyway',
+              why: 'the regen poke needs a square to step into and there is none here' });
+          } else {
+            onDecision?.({ ticks, goal: 'healthy', action: 'rest', sent: false,
+              what: 'poke refused (walkable neighbor exists); resting anyway',
+              why: 'step was refused despite a walkable neighbor' });
+          }
           // deliberately no return — fall through to the rest below
         }
       }
@@ -2228,13 +2354,13 @@ function fleeExits(session, ws) {
           const map = loadMap();
           const resolved = resolveRoomNum({ id: roomNum, num: roomNum, name: roomName }, map) ?? roomNum;
           const maxHp = client.vitals?.()?.health?.max ?? 20;
-          const level = maxHp;
-          // Same formula as the GOAP keeper: policy.threatBand ?? floor(level/2),
-          // halved when unarmed. The ceiling is level + band.
+          const charLevel = maxHp;
+          // Same formula as the GOAP keeper: policy.threatBand ?? floor(charLevel/2),
+          // halved when unarmed. The ceiling is charLevel + band.
           const isArmed = ws.armed === true;
-          const fullBand = policy?.threatBand ?? Math.floor(level / 2);
+          const fullBand = policy?.threatBand ?? Math.floor(charLevel / 2);
           const band = isArmed ? fullBand : Math.floor(fullBand / 2);
-          const ceiling = level + band;
+          const ceiling = charLevel + band;
           // ASSIGNED ROOM (session.policy.assignedRoom — makeDecider's
           // closure policy is {} in production; the keeper puts the fleet
           // policy on session.policy): when set, it IS the destination and
@@ -2245,9 +2371,9 @@ function fleeExits(session, ws) {
           // unreachable.
           const pol = session?.policy ?? policy;
           let hunt = null;
-          const assigned = Number(pol?.assignedRoom);
-          if (Number.isFinite(assigned)) {
-            const cands = huntRoomsAtOrBelow(level, ceiling);
+          const assigned = pol?.assignedRoom != null ? Number(pol.assignedRoom) : NaN;
+          if (Number.isFinite(assigned) && assigned > 0) {
+            const cands = huntRoomsAtOrBelow(charLevel, ceiling, charLevel - 2);
             const match = cands.find(c => Number(c.room) === assigned);
             if (match && Number(resolved) === assigned) {
               hunt = { ...match, hops: 0, path: [] };
@@ -2270,7 +2396,7 @@ function fleeExits(session, ws) {
           // (hops=0) or after 10 minutes (stale hold).
           const held = session?._huntDestHold;
           if (held && Date.now() - held.at < 600000 && held.room !== resolved) {
-            const heldCands = huntRoomsAtOrBelow(level, ceiling).find(c => Number(c.room) === held.room);
+            const heldCands = huntRoomsAtOrBelow(charLevel, ceiling, charLevel - 2).find(c => Number(c.room) === held.room);
             if (heldCands) {
               try {
                 const r = findPath(map, resolved, heldCands.room, { danger: false });
@@ -2293,8 +2419,8 @@ function fleeExits(session, ws) {
           // the nearestHuntRoom re-pick and stamp _huntPickedAt.
           if (!hunt) {
             const _picked = session?._huntPickedAt;
-            if (_picked && Date.now() - _picked.at < 120000) {
-              const _pickedCands = huntRoomsAtOrBelow(level, ceiling).find(c => Number(c.room) === _picked.room);
+            if (_picked && Date.now() - _picked.at < 600000) {
+              const _pickedCands = huntRoomsAtOrBelow(charLevel, ceiling, charLevel - 2).find(c => Number(c.room) === _picked.room);
               if (_pickedCands) {
                 try {
                   const r = findPath(map, resolved, _pickedCands.room, { danger: false });
@@ -2311,7 +2437,8 @@ function fleeExits(session, ws) {
               }
             }
             if (!hunt) {
-              hunt = nearestHuntRoom(resolved, ceiling);
+              hunt = nearestHuntRoom(resolved, charLevel, ceiling, charLevel - 2, session._pokeRelocate ? roomNum : undefined);
+              if (session._pokeRelocate) session._pokeRelocate = false;
               // Stamp the re-pick floor when a NEW hunt room is picked (the
               // nearestHuntRoom path and the assigned fallback path, not the held
               // path). Only stamp when the room actually changed (or is first set)
@@ -2335,7 +2462,7 @@ function fleeExits(session, ws) {
             const rdRooms = rd.rooms.map(Number);
             const inPair = rdRooms.includes(Number(resolved)) || (hunt && rdRooms.includes(Number(hunt.room)));
             if (inPair) {
-              const cands = huntRoomsAtOrBelow(level, ceiling);
+              const cands = huntRoomsAtOrBelow(charLevel, ceiling, charLevel - 2);
               const avoid = cands.find(c => !rdRooms.includes(Number(c.room)));
               if (!avoid) {
                 onDecision?.({ ticks, goal: 'hunt', action: null,
@@ -2361,9 +2488,9 @@ function fleeExits(session, ws) {
           // of 12 allows the character to hunt mobs up to 12 levels above
           // their own, which is the game's own rule.
           const MAX_LEVEL_DELTA = 12;
-          if (hunt && hunt.level > level + MAX_LEVEL_DELTA) {
+          if (hunt && hunt.level > charLevel + MAX_LEVEL_DELTA) {
             onDecision?.({ ticks, goal: 'hunt', action: null,
-              what: `hunt ${hunt.creature} lv${hunt.level} is too far above level ${level} (max delta ${MAX_LEVEL_DELTA}); not entering`, sent: false });
+              what: `hunt ${hunt.creature} lv${hunt.level} is too far above level ${charLevel} (max delta ${MAX_LEVEL_DELTA}); not entering`, sent: false });
             return;
           }
           if (hunt && hunt.room !== resolved) {
@@ -2522,10 +2649,12 @@ function fleeExits(session, ws) {
             const waitMs = now - session._huntWaitStart;
             if (waitMs > 30000) {
               session._huntWaitStart = now; // reset the timer
-              const roomNum = frame?.room?.num ?? frame?.room?.id ?? null;
+              const roomNum = resolveRoomNum(frame?.room ?? {}, session?.world?.map ?? null) ?? frame?.room?.num ?? frame?.room?.id ?? null;
               if (roomNum != null) {
-                const map = session?._map ?? loadMap();
-                const alt = nearestHuntRoom(roomNum, ceiling);
+                const _cb = characterBand(client, session?.policy ?? policy, ws.armed === true);
+                if (_cb == null) return; // vitals not ready
+                const { charLevel, band: _band, ceiling: _ceiling } = _cb;
+                const alt = nearestHuntRoom(roomNum, charLevel, _ceiling, charLevel - 2, roomNum);
                 if (alt && alt.room !== roomNum) {
                   session._huntWaitStart = now;
                   if (router && router.dest == null) {
@@ -2632,8 +2761,13 @@ function fleeExits(session, ws) {
         return;
       }
       // No hunt room to travel to: we may already be in one,
-      // or there's none in range. Fall through to the normal
-      // goal stack so _fight, has_food, etc. can fire.
+      // or there's none in range. Return early — do NOT fall
+      // through to the GOAP planner (it will be exhausted and
+      // the goal will fail, which is what produces "exhausted
+      // 115 nodes" every tick).
+      onDecision?.({ ticks, goal: 'hunt', action: null,
+        what: 'no hunt room in range; holding', sent: false });
+      return;
     }
 
     if (!active) { onDecision?.({ ticks, goal: null, why: 'nothing to do' }); return; }
@@ -2646,6 +2780,35 @@ function fleeExits(session, ws) {
     if (active.goal === 'sell') {
       const res = INTENTS.sell(frame, act, { client: session._client ?? client, session });
       onDecision?.({ ticks, goal: 'sell', action: 'sell', what: res.what ?? null, why: res.why ?? null });
+      return;
+    }
+    if (active.goal === 'armed' && ws._packWeapon === true) {
+      const canConjure = spellNamed(client, 'create weapon') != null;
+      if (Date.now() - (session?._lastConjureLogAt ?? 0) > 30000) {
+        session._lastConjureLogAt = Date.now();
+        console.error(`[conjure-check] ${session?.name ?? 'keeper'}: canConjure=${canConjure} spells=${JSON.stringify(knownSpells(client).map(s => s.name))}`);
+      }
+      const wieldable = pickWieldableWeapon(client, session);
+      if (wieldable) {
+        const res = INTENTS.equip(frame, act, { client: session._client ?? client, session, ws });
+        onDecision?.({ ticks, goal: 'armed', action: 'equip', what: res.what ?? null, why: res.why ?? null });
+        return;
+      }
+      // No wieldable weapon (broken or absent): fall through to conjure/buy.
+      const now5 = now();
+      if (canConjure && ws.has_mana === true && now5 - (session?._lastCreateWeaponAt ?? 0) > 30000) {
+        if (session) session._lastCreateWeaponAt = now5;
+        try { if (session) session._castingUntil = now5 + 5000; } catch {}
+        const r = intend('cast create weapon', frame, act, { client, session, ws });
+        note(active.goal, r.sent);
+        onDecision?.({ ticks, goal: 'armed', action: 'cast create weapon', sent: r.sent,
+                       what: r.what ?? null, why: r.why ?? null });
+        return;
+      }
+      const r = intend('buy', frame, act, { client, session, ws });
+      note(active.goal, r.sent);
+      onDecision?.({ ticks, goal: 'armed', action: 'buy', sent: r.sent,
+                     what: r.what ?? null, why: r.why ?? null });
       return;
     }
     const p = planFor(client, { [active.goal]: true }, { session, policy, ws });
@@ -2688,8 +2851,7 @@ function fleeExits(session, ws) {
       // the created weapon lands in the pack and equip picks it up next pass.
       // Cooldown so a slow conjuration doesn't cast every tick.
       const now5 = now();
-      const canConjure = knownSpells(client).some(sp =>
-        String(client.rsc?.get?.(sp.nameRsc) ?? sp.name ?? '').toLowerCase() === 'create weapon');
+      const canConjure = spellNamed(client, 'create weapon') != null;
       if (canConjure && now5 - (session?._lastCreateWeaponAt ?? 0) > 30000) {
         if (session) session._lastCreateWeaponAt = now5;
         // Stamp the casting hold HERE (before any mover driving this tick),
@@ -2743,15 +2905,18 @@ export const DEFAULT_GOALS = [
   // Rest when hurt, but only when there's no target in
   // the room. If a target is in reach, the flee_hurt or
   // _fight goal handles it. Parked in travel mode (motion-only: a
-  // hurt-rest stop mid-crossing is indistinguishable from a stall).
-  { goal: 'healthy',  when: ws => ws._travelMode === true ? false : (ws.hurt === true && ws.has_target !== true) },
+  { goal: 'healthy',  when: ws => {
+      const hp = ws._hp, maxHp = ws._maxHp;
+      const criticallyLow = hp != null && maxHp != null && (hp / maxHp) < 0.3;
+      if (ws._travelMode === true && !criticallyLow) return false;
+      return ws.hurt === true && ws.has_target !== true && (ws._pokeFailCount ?? 0) < 5;
+    } },
   // Rest when vigor is low. Vigor IS health regeneration —
   // keeping it high keeps HP topping up. Rest below 60 to
   // maintain a buffer, but this is lower priority than
   // _fight so a character will still engage a target that's
   // in reach even at 40 vigor.
   { goal: 'vigor_low', when: ws => {
-      // TRAVEL MODE: never rest mid-crossing (motion-only). The mover
       // walks at speed 18 below RUN_VIGOR_FLOOR, so travel continues at
       // any vigor; rest happens on arrival. (Without this, the
       // rest/stand/step flap both stalls the run AND trips the stuck
@@ -2803,21 +2968,19 @@ export const DEFAULT_GOALS = [
                                  && fightEnvelopeOk({ traveling: ws._traveling, targetD2: ws._targetD2 })
                                  && (ws._traveling !== true || ws.in_reach === true) },
   { goal: 'sell',     when: ws => {
-      // SELL: the character is broke (observed via _brokeUntil) and is in a
-      // room with a trusted buyer, and is unarmed. Sell reagents to earn
       // gold. Gated on the observation (evidence), not on holdings (inference).
       // Requires ws.armed === false so a rich armed character in the buyer
       // room is not compelled to sell.
       const roomNum = ws._roomNum;
       if (roomNum != null && roomNum === 202
           && ws._brokeUntil === true
-          && ws.armed === false
           && ws._hasReagents === true) {
         return true;
       }
       return false;
     } },
-  { goal: 'armed',    when: ws => ws.armed === false && ws.is_caster !== true },
+  { goal: 'armed',    when: ws => (ws.armed === false || ws._packWeapon === true) && ws.is_caster !== true
+                                 && (ws._gold > 0 || ws._canConjureWeapon === true) && ws._equipCooldown !== true },
   // HUNT before eating: the character should go find work (a mob to fight)
   // rather than sitting in town eating. Vigor management matters during
   // combat, not while idle. If vigor is truly too low to fight, the

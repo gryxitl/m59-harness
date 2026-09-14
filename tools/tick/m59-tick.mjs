@@ -506,12 +506,12 @@ export class TickLoop {
       // never fires and the character sits positionless for ever, flapping between
       // "equip" and "travel" doing nothing (JayB in Raza, 2026). Recover whenever we are
       // in-game with a room but no position, whether or not the self id survived.
-      if (frame.in_game && frame.room && (frame.room.id != null || frame.room.num != null) && !frame.position) {
+      if (frame.in_game && (!frame.position || frame.objects == null || (frame.objects instanceof Map && frame.objects.size === 0))) {
         const now = Date.now();
         if (!this._lastPosRecovery || now - this._lastPosRecovery > 3000) {
           this._lastPosRecovery = now;
           try {
-            this.session.client.roomContents?.();
+            this.session.client?.roomContents?.();
           } catch { /* best effort */ }
         }
       }

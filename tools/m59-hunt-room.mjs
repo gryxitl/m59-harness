@@ -20,7 +20,7 @@ let _objIdToNum = null;
 
 function loadSpawns() {
   if (_spawns) return _spawns;
-  const file = 'substrate/m59-spawns.json';
+  const file = new URL('../substrate/m59-spawns.json', import.meta.url).pathname;
   if (!existsSync(file)) return null;
   _spawns = JSON.parse(readFileSync(file, 'utf8'));
   return _spawns;
@@ -72,22 +72,24 @@ const DANGEROUS_SPIDER_ROOMS = new Set([
   377, 378, 379, 108, 111, 112, 380,
 ]);
 
-export function huntRoomsAtOrBelow(level, ceiling) {
+export function huntRoomsAtOrBelow(level, ceiling, minLevel) {
   const spawns = loadSpawns();
   if (!spawns) return [];
   const maxLevel = ceiling ?? level;
+  const min = minLevel ?? level + 5;
   const out = [];
   for (const [num, entries] of Object.entries(spawns.rooms ?? {})) {
     const roomNum = parseInt(num);
-    // Skip rooms with dangerous spiders — a character can filter out the
-    // spider as a target, but the spider can still aggro and kill them.
     if (DANGEROUS_SPIDER_ROOMS.has(roomNum)) continue;
+    // Collect all qualifying entries and take the highest level ≤ ceiling
+    // (a room can have multiple huntable entries at different levels).
+    let best = null;
     for (const e of entries) {
-      if (e.huntable && e.level != null && e.level <= maxLevel) {
-        out.push({ room: roomNum, creature: e.creature, level: e.level });
-        break;  // one match per room is enough
+      if (e.huntable && e.level != null && e.level <= maxLevel && e.level >= min) {
+        if (!best || e.level > best.level) best = e;
       }
     }
+    if (best) out.push({ room: roomNum, creature: best.creature, level: best.level });
   }
   return out;
 }
@@ -99,17 +101,22 @@ export function huntRoomsAtOrBelow(level, ceiling) {
  * @param {number} level - the character's level
  * @returns {{room: number, creature: string, level: number, hops: number, path: number[]}|null}
  */
-export function nearestHuntRoom(fromRoom, level, ceiling) {
+export function nearestHuntRoom(fromRoom, level, ceiling, minLevel, excludeRoom = null) {
   // Convert objId to map num if needed.
   const mapNum = objIdToNum(fromRoom) ?? fromRoom;
-  const candidates = huntRoomsAtOrBelow(level, ceiling);
+  const candidates = huntRoomsAtOrBelow(level, ceiling, minLevel);
   if (!candidates.length) return null;
 
   const map = loadMap();
   if (!map) return null;
 
   let best = null;
-  for (const c of candidates) {
+  // Check at most 3 candidates to keep the tick loop unblocked. The
+  // findPath function takes ~5s on a cache miss; checking all 11
+  // candidates would block the tick loop for 55s.
+  const toCheck = candidates.slice(0, excludeRoom != null ? 5 : 3);
+  for (const c of toCheck) {
+    if (excludeRoom != null && c.room === excludeRoom) continue;
     if (c.room === mapNum) {
       // Already there.
       return { ...c, hops: 0, path: [] };
@@ -123,3 +130,4 @@ export function nearestHuntRoom(fromRoom, level, ceiling) {
   }
   return best;
 }
+

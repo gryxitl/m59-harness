@@ -119,9 +119,7 @@ export async function scavenge(client, session, opts = {}) {
   // Filter out mobs whose compendium level is above the character's
   // hunt level. This is the only way to know a spider is level 50
   // when Kage is level 20.
-  const huntLevel = opts.huntLevel ?? null;
-  const band = opts.threatBand ?? Math.floor(huntLevel / 2);
-  const levelCeiling = huntLevel != null ? huntLevel + band : null;
+  const levelCeiling = opts.threatCeiling ?? null;
   const roomNum = opts.mapRoomNum ?? room?.num ?? room?.id ?? null;
   if (levelCeiling != null && roomNum != null) {
     const filtered = hostiles.filter(o => {
@@ -145,7 +143,7 @@ export async function scavenge(client, session, opts = {}) {
       // ALL mobs in the room are above the ceiling. Don't fight.
       const names = hostiles.map(o => client?.rsc?.get?.(o.nameRsc) ?? '?').join(', ');
       return { sent: false, killed: false,
-        reason: `all mobs in room are above ceiling ${levelCeiling} (hunt lv${huntLevel} + band ${band}) (${names}) — travel to a safer room` };
+        reason: `all mobs in room are above ceiling ${levelCeiling} (${names}) — travel to a safer room` };
     }
   }
 

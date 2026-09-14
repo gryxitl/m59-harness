@@ -3078,17 +3078,6 @@
     "cap": null
    }
   ],
-  "Izzio": [
-   {
-    "room": "GodRoom",
-    "name": "The meeting place of the Gods",
-    "cite": "kod/object/active/holder/room/godroom.kod:72",
-    "how": "create",
-    "count": 1,
-    "chance": null,
-    "cap": null
-   }
-  ],
   "JasperBanker": [
    {
     "room": "JasBank",

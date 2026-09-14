@@ -413,7 +413,26 @@ export class CombatController {
         // every tick by a fresh one-square re-target. The dist <= reach check above
         // switches to fighting when we get close enough.
         this.phase = 'close';
-        return this._walkToward(act, moveTarget, 'close gap', me);
+        const walkResult = this._walkToward(act, moveTarget, 'close gap', me);
+        const isStuck = walkResult.kind === 'idle' && /stuck|no-route/.test(walkResult.what);
+        if (isStuck && pathDist <= reach) {
+          // Stuck but in reach: swing instead of idle.
+          const now = Date.now();
+          if (now - this.lastSwing >= SWING_MS) {
+            this.lastSwing = now;
+            const deg = Math.atan2(target.row - me.row, target.col - me.col) * 180 / Math.PI;
+            act.face(deg);
+            const spell = this._attackSpell();
+            if (spell) {
+              this.session?.cast?.(spell.id, []);
+              return { kind: 'cast', what: `close stuck: cast ${spell.name} at mob (${hpPct}%)` };
+            }
+            act.swing(this.targetId);
+            this._lastSwingAt = Date.now();
+            return { kind: 'swing', what: `close stuck: swing at mob (${hpPct}%)` };
+          }
+        }
+        return walkResult;
       }
 
       case 'fight': {
@@ -429,7 +448,26 @@ export class CombatController {
         // to closing the gap instead of swinging at air.
         if (pathDist > reach) {
           this.phase = 'close';
-          return this._walkToward(act, moveTarget, 'out of reach, closing', me);
+          const walkResult = this._walkToward(act, moveTarget, 'out of reach, closing', me);
+          const isStuck = walkResult.kind === 'idle' && /stuck|no-route/.test(walkResult.what);
+          if (isStuck) {
+            // Stuck but in reach: swing instead of idle.
+            const now = Date.now();
+            if (now - this.lastSwing >= SWING_MS) {
+              this.lastSwing = now;
+              const deg = Math.atan2(target.row - me.row, target.col - me.col) * 180 / Math.PI;
+              act.face(deg);
+              const spell = this._attackSpell();
+              if (spell) {
+                this.session?.cast?.(spell.id, []);
+                return { kind: 'cast', what: `fight stuck: cast ${spell.name} at mob (${hpPct}%)` };
+              }
+              act.swing(this.targetId);
+              this._lastSwingAt = Date.now();
+              return { kind: 'swing', what: `fight stuck: swing at mob (${hpPct}%)` };
+            }
+          }
+          return walkResult;
         }
         return this._doFight(frame, act, target, dist, isAggroed, pathDist);
       }
@@ -479,12 +517,76 @@ export class CombatController {
             }
             return { kind: 'idle', what: `retreat: at cover (${hpPct}%), mob ${dist.toFixed(1)} away` };
           }
-          return this._walkTo(act, this._retreatSpot, `retreat to cover (${spot.col},${spot.row})`, me);
+          const walkResult = this._walkTo(act, this._retreatSpot, `retreat to cover (${spot.col},${spot.row})`, me);
+          const isStuck = walkResult.kind === 'idle' && /stuck|no-route/.test(walkResult.what);
+          if (isStuck) {
+            // Stuck: fall back to adjacent-swing instead of idle.
+            if (dist <= reach) {
+              const now = Date.now();
+              if (now - this.lastSwing >= SWING_MS) {
+                this.lastSwing = now;
+                const deg = Math.atan2(tRow - me.row, tCol - me.col) * 180 / Math.PI;
+                act.face(deg);
+                const spell = this._attackSpell();
+                if (spell) {
+                  this.session?.cast?.(spell.id, []);
+                  return { kind: 'cast', what: `retreat stuck: cast ${spell.name} at mob (${hpPct}%)` };
+                }
+                act.swing(this.targetId);
+                this._lastSwingAt = Date.now();
+                return { kind: 'swing', what: `retreat stuck: swing at mob (${hpPct}%)` };
+              }
+            }
+            return { kind: 'idle', what: `retreat stuck: ${walkResult.what}, waiting` };
+          }
+          return walkResult;
         }
         // No safe spot: back away from the mob (one square opposite).
         const awayCol = me.col + Math.sign(me.col - tCol) || me.col;
         const awayRow = me.row + Math.sign(me.row - tRow) || me.row;
-        return this._walkTo(act, { col: awayCol, row: awayRow }, 'retreat: back away', me);
+        if (!isWalkable(awayRow, awayCol)) {
+          // Fallback square is a wall: swing at the mob instead.
+          if (dist <= reach) {
+            const now = Date.now();
+            if (now - this.lastSwing >= SWING_MS) {
+              this.lastSwing = now;
+              const deg = Math.atan2(tRow - me.row, tCol - me.col) * 180 / Math.PI;
+              act.face(deg);
+              const spell = this._attackSpell();
+              if (spell) {
+                this.session?.cast?.(spell.id, []);
+                return { kind: 'cast', what: `retreat: cast ${spell.name} at mob (${hpPct}%)` };
+              }
+              act.swing(this.targetId);
+              this._lastSwingAt = Date.now();
+              return { kind: 'swing', what: `retreat: swing at mob (${hpPct}%)` };
+            }
+          }
+          return { kind: 'idle', what: `retreat: wall, no cover, mob ${dist.toFixed(1)} away` };
+        }
+        const walkResult2 = this._walkTo(act, { col: awayCol, row: awayRow }, 'retreat: back away', me);
+        const isStuck2 = walkResult2.kind === 'idle' && /stuck|no-route/.test(walkResult2.what);
+        if (isStuck2) {
+          // Stuck: fall back to adjacent-swing instead of idle.
+          if (dist <= reach) {
+            const now = Date.now();
+            if (now - this.lastSwing >= SWING_MS) {
+              this.lastSwing = now;
+              const deg = Math.atan2(tRow - me.row, tCol - me.col) * 180 / Math.PI;
+              act.face(deg);
+              const spell = this._attackSpell();
+              if (spell) {
+                this.session?.cast?.(spell.id, []);
+                return { kind: 'cast', what: `retreat stuck: cast ${spell.name} at mob (${hpPct}%)` };
+              }
+              act.swing(this.targetId);
+              this._lastSwingAt = Date.now();
+              return { kind: 'swing', what: `retreat stuck: swing at mob (${hpPct}%)` };
+            }
+          }
+          return { kind: 'idle', what: `retreat stuck: ${walkResult2.what}, waiting` };
+        }
+        return walkResult2;
       }
 
       default:
@@ -513,7 +615,26 @@ export class CombatController {
       // Out of reach (by path distance). Walk toward it.
       if (!isAggroed) {
         this.phase = 'close';
-        return this._walkToward(act, { col: target.col, row: target.row }, 'close gap', me);
+        const walkResult = this._walkToward(act, { col: target.col, row: target.row }, 'close gap', me);
+        const isStuck = walkResult.kind === 'idle' && /stuck|no-route/.test(walkResult.what);
+        if (isStuck && dist <= reach) {
+          // Stuck but in reach (by Manhattan): swing instead of idle.
+          const now = Date.now();
+          if (now - this.lastSwing >= SWING_MS) {
+            this.lastSwing = now;
+            const deg = Math.atan2(target.row - me.row, target.col - me.col) * 180 / Math.PI;
+            act.face(deg);
+            const spell = this._attackSpell();
+            if (spell) {
+              this.session?.cast?.(spell.id, []);
+              return { kind: 'cast', what: `doFight stuck: cast ${spell.name} at mob` };
+            }
+            act.swing(this.targetId);
+            this._lastSwingAt = Date.now();
+            return { kind: 'swing', what: `doFight stuck: swing at mob` };
+          }
+        }
+        return walkResult;
       }
       return { kind: 'idle', what: `waiting for ${this.targetName} to close (path ${effDist})` };
     }
@@ -599,7 +720,7 @@ export class CombatController {
    */
   _maybeCastZap(client) {
     if (!client) return null;
-    const { shouldCast, reason } = shouldCastZap(client);
+    const { shouldCast, reason } = shouldCastZap(client, this.session);
     if (!shouldCast) return null;
     const spell = findZapSpell(client);
     if (!spell) return null;
@@ -609,6 +730,7 @@ export class CombatController {
       client.unuse?.(weapon.id);
     }
     client.cast?.(spell.id, []);
+    client._lastZapCastAt = Date.now();
     // Log the cast for visibility. The ON message confirms it took.
     console.error(`[combat] ${this.session?.name} casting zap (${reason})`);
     return { kind: 'zap-cast', what: `cast zap (${reason})` };
@@ -624,6 +746,7 @@ export class CombatController {
   _attackSpell() {
     const client = this.session?.client;
     if (!client) return null;
+    console.error(`[attackSpell] checking, client=${!!client}`);
     // Do NOT use skills.isArmed here — it defaults to `true` when the
     // equipment read is unknown ("a failed read must not idle the fleet"),
     // which makes a caster look like a melee fighter. Instead, directly
