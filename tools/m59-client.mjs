@@ -1021,6 +1021,7 @@ export class M59Client {
     else if (/^the\b.*\b(nips|hits|claws|bites|slaps) you\b/i.test(t)) kind = 'damaged';
     else if (/^you avoid /i.test(t)) kind = 'damaged';
     else if (/is (slightly|seriously) wounded/i.test(t)) kind = 'wounded';
+    else if (/^###\s+.+\s+was just killed by/i.test(t)) kind = 'died';
     if (!kind) return;
     if (!Array.isArray(this.combatLog)) this.combatLog = [];
     this.combatLog.push({ at: Date.now(), kind, text: t.slice(0, 120) });

@@ -244,6 +244,17 @@ export class CombatController {
             });
           } catch { /* ledger must never break combat */ }
         }
+        if (e.kind === 'died' && e.at > (this._deathLedgerHwm ?? 0)) {
+          this._deathLedgerHwm = e.at;
+          try {
+            const killer = (e.text.match(/^###\s+.+\s+was just killed by\s+(?:an?\s+|the\s+)?(.+?)\.?$/i) ?? [null, e.text])[1];
+            recordLedgerEvent(charName, 'died', {
+              killer,
+              room: c.room?.name ?? frame?.room?.name ?? this.session?.world?.room?.name ?? null,
+              room_num: c.room?.num ?? frame?.room?.num ?? this.session?.world?.room?.num ?? null,
+            });
+          } catch { /* ledger must never break combat */ }
+        }
       }
     }
 
