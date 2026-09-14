@@ -223,10 +223,28 @@ export class CombatController {
     const c = this.session?.client;
     if (!c || c.state !== 'game') return { kind: 'idle', why: 'not in game' };
     // Periodic combatLog dump: every 30s, log the last 5 combat outcomes.
-    if (c.combatLog?.length > 0 && Date.now() - (this._lastCombatLogAt ?? 0) > 30000) {
-      this._lastCombatLogAt = Date.now();
-      const recent = c.combatLog.slice(-5);
-      console.error(`[combat-log] ${this.session?.name ?? 'keeper'}: ${JSON.stringify(recent)}`);
+    if (c.combatLog?.length > 0) {
+      if (Date.now() - (this._lastCombatLogAt ?? 0) > 30000) {
+        this._lastCombatLogAt = Date.now();
+        const recent = c.combatLog.slice(-5);
+        console.error(`[combat-log] ${this.session?.name ?? 'keeper'}: ${JSON.stringify(recent)}`);
+      }
+      // Route kill prose into the ledger — the vanish heuristic at line 265
+      // has produced zero `killed` events since fleet-2026-08-19.
+      const hw = this._killLedgerHwm ?? 0;
+      const charName = c.me?.name ?? this.session?.name ?? 'unknown';
+      for (const e of c.combatLog) {
+        if (e.kind === 'kill' && e.at > hw) {
+          this._killLedgerHwm = e.at;
+          try {
+            recordLedgerEvent(charName, 'killed', {
+              creature: e.text.replace(/^You killed the /, '').replace(/\.$/, ''),
+              room: c.room?.name ?? null,
+              room_num: c.room?.num ?? null,
+            });
+          } catch { /* ledger must never break combat */ }
+        }
+      }
     }
 
     const me = frame?.position ?? this.session?._pose?.current?.() ?? c.self;
