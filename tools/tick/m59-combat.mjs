@@ -746,7 +746,6 @@ export class CombatController {
   _attackSpell() {
     const client = this.session?.client;
     if (!client) return null;
-    console.error(`[attackSpell] checking, client=${!!client}`);
     // Do NOT use skills.isArmed here — it defaults to `true` when the
     // equipment read is unknown ("a failed read must not idle the fleet"),
     // which makes a caster look like a melee fighter. Instead, directly
