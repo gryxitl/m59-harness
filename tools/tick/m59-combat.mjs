@@ -240,9 +240,13 @@ export class CombatController {
           if (firstPerson) {
             creature = firstPerson[1];
           } else if (thirdPerson) {
-            if (thirdPerson[1] !== charName) { e.ledgered = 'skip'; continue; }
+            if (thirdPerson[1] !== charName) {
+              console.error(`[kill-skip] ${charName}: third-person kill by ${thirdPerson[1]} (not us)`);
+              e.ledgered = 'skip'; continue;
+            }
             creature = thirdPerson[2];
           } else {
+            console.error(`[kill-skip] ${charName}: unrecognised kill prose: ${e.text.slice(0, 80)}`);
             e.ledgered = 'skip'; continue;
           }
           e.ledgered = 'killed';
