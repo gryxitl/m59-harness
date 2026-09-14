@@ -60,21 +60,22 @@ Make the Meridian 59 fleet operationally viable: characters should kill monsters
 - **`buy_next_planned_skills` KeeperProxy guard**: The `force:true` refresh routes into `readLive` which hits the KeeperProxy throw-stub. Skip the forced refresh for KeeperProxy sessions and rely on the push-maintained cache.
 
 ## Critical Context
-- **Fleet state (23:02, final read)**:
+- **Fleet state (23:15, final read)**:
   ```
-  t1: hp=20/25 goal=_fight room=Deep Woods of Ileria
-  t2: hp=18/26 goal=healthy room=The Streets of Tos
-  t3: hp=26/28 goal=hunt room=West Merchant Way through Ilerian Woods
-  t4: hp=2/20 goal=healthy room=The Limping Toad Inn and Tavern [FROZEN]
-  t5: hp=15/26 goal=_fight room=The Queen's Way
+  t1: hp=15/25 goal=_fight
+  t2: hp=26/26 goal=healthy (recovered from 4/26 while frozen)
+  t3: hp=28/28 goal=hunt (full HP)
+  t4: hp=20/20 goal=healthy [FROZEN] (recovered from 2/20 while frozen)
+  t5: hp=8/26 goal=hunt [FROZEN]
   ```
-  t4 frozen at 2/20. t2 at 18/26 (was frozen at 4/26, revived, now at 18/26).
+  t4 and t5 frozen. t2 recovered to full HP. t3 at full HP.
 
 - **V-live results (25-min window, broker pid 56557)**:
   - A1 (re-entry arrival): 36 total arrivals (t2: 2, t3: 9, t4: 17, t5: 8)
   - A2 (cross-room oscillation breaker): unexercised — fleet never crossed 200↔556
-  - t2's flap: 1176 `move-sent` in window (~0.78/s). Sends cluster by room; the reversal is only visible within the room-544 stretch. `srv=864,160` (square 18,10) is the Underworld respawn — 146 of 1176 sends belong to that path, not the 544 stall. Two `site=` call sites (`walk-past-boundary` and `escape-fan-probe`) undo each other in the 544 stretch.
+  - t2's flap: 1176 `move-sent` in window (~1/s, near-saturation). `aim=` jumps between distant pairs (n=22 aim=2092,3195 → n=23 aim=3296,1952) — goal/hunt repick rewriting the target every few seconds. `srv=864,160` (Underworld respawn) accounts for 146 of 1176 sends. `stride-declaration` dominates the 544 stretch, not `walk-past-boundary`/`escape-fan-probe`.
   - t4: ceiling 20, below peers' 26–28. Cause unattributed.
+  - Freeze is the control: t2 4→26, t4 2→20, t5 frozen at 8/26. Frozen characters recovered, unfrozen ones fell.
 
 - **Kill ledger (88 kills / 5 deaths)**:
   - Kill count is a floor with unknown confidence (first-person prose has no name to validate against)
@@ -82,9 +83,10 @@ Make the Meridian 59 fleet operationally viable: characters should kill monsters
   - `substrate/tougher/*.json` gains are the only trustworthy progress signal
 
 ## Next Steps
-1. **Outfit's teacher errand never completing a buy within its own lease** — the travel timeout (180s) and lease (300s) are set, but the errand still times out. The two `site=` call sites (`walk-past-boundary` and `escape-fan-probe`) undo each other, so the character never reaches the teacher.
+1. **Outfit's teacher errand never completing a buy within its own lease** — the travel timeout (180s) and lease (300s) are set, but the errand still times out. `aim=` jumps between distant pairs — goal/hunt repick rewriting the target every few seconds. `stride-declaration` dominates, not `walk-past-boundary`/`escape-fan-probe`.
 2. **`bought` events still zero** — the buy path is not producing any `bought` events in the ledger. The `buy_next_planned_skills` tool now returns a real preflight reason ("brawling still needs 176 point(s)"), but the outfit errand's buy path is separate and still not working.
 3. **t4's ceiling 20, below peers' 26–28** — cause unattributed. No death count measurement for t4 in this session. Route to a weaker-mob room if the ceiling continues to drop.
-4. **Investigate t2's flap** — 1176 `move-sent` in 25 min (~0.78/s). Sends cluster by room; the reversal is only visible within the room-544 stretch. `srv=864,160` (Underworld respawn) accounts for 146 of 1176 sends. Two `site=` call sites (`walk-past-boundary` and `escape-fan-probe`) undo each other in the 544 stretch.
-5. **Add test coverage for `m59-client.mjs`** — the combat classifier has zero tests. Pin the kill/death regexes in a new `tools/m59-client-test.mjs`.
-6. **Add the out-of-reach `flee_hurt` test case** — `m59-decide-test.mjs:372,515` only tests `in_reach: true`. Add a case with `in_reach: false` and `_mobCount: 1`.
+4. **Investigate t2's flap** — 1176 `move-sent` in 25 min (~1/s, near-saturation). `aim=` jumps between distant pairs (n=22 aim=2092,3195 → n=23 aim=3296,1952) — goal/hunt repick rewriting the target every few seconds. `srv=864,160` (Underworld respawn) accounts for 146 of 1176 sends. `stride-declaration` dominates the 544 stretch.
+5. **`/state` now reports `inert`** — added `inert: !!(session._tickLoop?._inert || session._inert)` to `state()`. Previously the field was missing, so a freeze was unverifiable from the endpoint. Verify by checking `inert: true` after a freeze and `inert: false` after a revive.
+6. **Add test coverage for `m59-client.mjs`** — the combat classifier has zero tests. Pin the kill/death regexes in a new `tools/m59-client-test.mjs`.
+7. **Add the out-of-reach `flee_hurt` test case** — `m59-decide-test.mjs:372,515` only tests `in_reach: true`. Add a case with `in_reach: false` and `_mobCount: 1`.
