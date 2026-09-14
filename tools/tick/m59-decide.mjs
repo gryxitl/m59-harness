@@ -2887,10 +2887,12 @@ export const DEFAULT_GOALS = [
   // target that is NOT in reach is handled by the hunt goal (route to a better target or
   // approach it), not by fleeing.
   { goal: 'flee_danger', when: ws => ((ws.has_target === true && ws.target_in_band === false && ws.in_reach === true) || ws._dangerClose != null || (ws._traveling === true && (ws._mobCount ?? 0) >= 3)) && ws._inHuntRoom !== true },
-  // FLEE when hurt AND a target is actively in reach
-  // (attacking you). If the target is in the room but
-  // not in reach, fight it instead of fleeing.
-  { goal: 'flee_hurt', when: ws => ws.below_flee === true && ws.has_target === true && ws.in_reach === true },
+  // FLEE when hurt AND mobs are present — whether the target is in
+  // reach (attacking you) or out of reach (chasing you). The old
+  // `in_reach === true` requirement left a gap: low HP + chasing mob
+  // out of reach matched no goal, so the character walked toward what
+  // was killing it. Six characters died this way.
+  { goal: 'flee_hurt', when: ws => ws.below_flee === true && (ws.has_target === true || (ws._mobCount ?? 0) > 0) },
   // Rest when hurt, but only when there's no target in
   // the room. If a target is in reach, the flee_hurt or
   // _fight goal handles it. Parked in travel mode (motion-only: a
