@@ -1315,6 +1315,15 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     }
     ws._maxHp = client?.vitals?.()?.health?.max ?? null;
     ws._hp = client?.vitals?.()?.health?.value ?? null;
+    // LEVEL-UP HOLD RESET: when maxHp increases, clear the hunt hold so the
+    // character immediately re-evaluates its hunt target. The ceiling rises,
+    // so the old destination may no longer be in band.
+    if (ws._maxHp != null && session?._lastMaxHp != null && ws._maxHp > session._lastMaxHp) {
+      if (session._huntDestHold) delete session._huntDestHold;
+      if (session._huntPickedAt) delete session._huntPickedAt;
+      try { console.error(`[level-up] maxHp ${session._lastMaxHp} -> ${ws._maxHp}; hunt hold cleared`); } catch {}
+    }
+    if (ws._maxHp != null) session._lastMaxHp = ws._maxHp;
     // Expose whether the character is moving (the router has a destination).
     // The vigor_low goal yields when the character is moving — resting would
     // stop the movement.
