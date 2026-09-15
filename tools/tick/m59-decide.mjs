@@ -1305,7 +1305,9 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // NUMBER 1 is The Underworld and is the stable identity: authoritative
     // both ways.
     if (ws._roomNum != null) ws.in_underworld = ws._roomNum === 1;
-    // DIAG (permanent, rate-limited): the in_underworld flap cost hours.
+    // STAMP DEATH: when the character is in the Underworld, record the time.
+    // Used by the post_death_rest goal to gate hunting until full HP + vigor 80.
+    if (ws.in_underworld === true) session._lastUnderworldAt = Date.now();
     // Log the room identity inputs whenever the symbol is true.
     if (ws.in_underworld === true && Date.now() - (_uwDbgAt ?? 0) > 30000) {
       _uwDbgAt = Date.now();
@@ -2892,6 +2894,20 @@ function fleeExits(session, ws) {
 // precondition cannot, which is the one rule docs/HANDOFF.md says must not be broken.
 export const DEFAULT_GOALS = [
   { goal: '!in_underworld', when: ws => ws.in_underworld === true },
+  // POST-DEATH REST: after escaping the Underworld, rest until full HP and
+  // vigor >= 80 before re-engaging. A freshly-respawned character is
+  // vulnerable; sending it straight back to the hunting grounds is how
+  // JayB got killed by a baby spider.
+  { goal: 'post_death_rest', when: ws => {
+      const uw = ws.session?._lastUnderworldAt;
+      if (uw == null) return false;
+      if (Date.now() - uw > 300000) return false; // 5-min window
+      const hp = ws._hp, maxHp = ws._maxHp;
+      const vigor = ws._vigor;
+      if (hp != null && maxHp != null && hp < maxHp) return true;
+      if (vigor != null && vigor < 80) return true;
+      return false;
+    } },
   // FLEE first: if an out-of-band mob is IN REACH (actually threatening us), run before
   // anything else. The old condition fired on ANY out-of-band target (has_target &&
   // !target_in_band), which made the character FLEE from a passive mummy just because it
