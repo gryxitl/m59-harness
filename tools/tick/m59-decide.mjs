@@ -1307,7 +1307,10 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     if (ws._roomNum != null) ws.in_underworld = ws._roomNum === 1;
     // STAMP DEATH: when the character is in the Underworld, record the time.
     // Used by the post_death_rest goal to gate hunting until full HP + vigor 80.
-    if (ws.in_underworld === true) session._lastUnderworldAt = Date.now();
+    if (ws.in_underworld === true) {
+      session._lastUnderworldAt = Date.now();
+      try { console.error(`[death-stamp] _lastUnderworldAt=${Date.now()}`); } catch {}
+    }
     ws._lastUnderworldAt = session._lastUnderworldAt ?? null;
     // Log the room identity inputs whenever the symbol is true.
     if (ws.in_underworld === true && Date.now() - (_uwDbgAt ?? 0) > 30000) {
