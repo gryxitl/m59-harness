@@ -2060,6 +2060,17 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       const r = intend('rest', frame, act, { client, session, ws });
       note(active.goal, r.sent);
       if (r.sent === true) { try { session._restHold = true; } catch {} }
+      // DISARM post_death_rest when fully rested: clear the stamp so the
+      // gate doesn't stay armed forever.
+      if (active?.goal === 'post_death_rest') {
+        const hp = ws._hp, maxHp = ws._maxHp;
+        const vigor = ws._vigor;
+        const fullyRested = (hp == null || maxHp == null || hp >= maxHp) && (vigor == null || vigor >= 80);
+        if (fullyRested) {
+          try { delete session._lastUnderworldAt; } catch {}
+          try { console.error(`[post_death_rest] disarmed — fully rested (hp=${hp}/${maxHp} vigor=${vigor})`); } catch {}
+        }
+      }
       onDecision?.({ ticks, goal: active.goal, action: 'rest',
         sent: r.sent, what: r.what ?? null, why: r.why ?? null });
       return;
@@ -2919,12 +2930,11 @@ export const DEFAULT_GOALS = [
   // was killing it. Six characters died this way.
   { goal: 'flee_hurt', when: ws => ws.below_flee === true && (ws.has_target === true || (ws._mobCount ?? 0) > 0) },
   // POST-DEATH REST: after escaping the Underworld, rest until full HP and
-  // vigor >= 80 before re-engaging. Placed below flee_danger/flee_hurt so
-  // a post-death character in a mob room can still flee.
+  // vigor >= 80 before re-engaging. No time window — the gate stays active
+  // until the character is fully rested. Placed below flee_danger/flee_hurt
   { goal: 'post_death_rest', when: ws => {
       const uw = ws._lastUnderworldAt;
       if (uw == null) return false;
-      if (Date.now() - uw > 300000) return false; // 5-min window
       const hp = ws._hp, maxHp = ws._maxHp;
       const vigor = ws._vigor;
       if (hp != null && maxHp != null && hp < maxHp) return true;
