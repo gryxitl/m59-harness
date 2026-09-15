@@ -2046,14 +2046,14 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       // STAND UNDER FIRE (same rule as healthy above).
       if (ws._justDamaged && ws._mobNear) {
         act.stand?.();
-        onDecision?.({ ticks, goal: 'vigor_low', action: 'stand',
+        onDecision?.({ ticks, goal: active.goal, action: 'stand',
           sent: true, what: 'taking damage with a hostile near — standing, not sitting' });
         return;
       }
       const r = intend('rest', frame, act, { client, session, ws });
       note(active.goal, r.sent);
       if (r.sent === true) { try { session._restHold = true; } catch {} }
-      onDecision?.({ ticks, goal: 'vigor_low', action: 'rest',
+      onDecision?.({ ticks, goal: active.goal, action: 'rest',
         sent: r.sent, what: r.what ?? null, why: r.why ?? null });
       return;
     }
@@ -2895,20 +2895,6 @@ function fleeExits(session, ws) {
 // precondition cannot, which is the one rule docs/HANDOFF.md says must not be broken.
 export const DEFAULT_GOALS = [
   { goal: '!in_underworld', when: ws => ws.in_underworld === true },
-  // POST-DEATH REST: after escaping the Underworld, rest until full HP and
-  // vigor >= 80 before re-engaging. A freshly-respawned character is
-  // vulnerable; sending it straight back to the hunting grounds is how
-  // JayB got killed by a baby spider.
-  { goal: 'post_death_rest', when: ws => {
-      const uw = ws.session?._lastUnderworldAt;
-      if (uw == null) return false;
-      if (Date.now() - uw > 300000) return false; // 5-min window
-      const hp = ws._hp, maxHp = ws._maxHp;
-      const vigor = ws._vigor;
-      if (hp != null && maxHp != null && hp < maxHp) return true;
-      if (vigor != null && vigor < 80) return true;
-      return false;
-    } },
   // FLEE first: if an out-of-band mob is IN REACH (actually threatening us), run before
   // anything else. The old condition fired on ANY out-of-band target (has_target &&
   // !target_in_band), which made the character FLEE from a passive mummy just because it
@@ -2925,6 +2911,19 @@ export const DEFAULT_GOALS = [
   // out of reach matched no goal, so the character walked toward what
   // was killing it. Six characters died this way.
   { goal: 'flee_hurt', when: ws => ws.below_flee === true && (ws.has_target === true || (ws._mobCount ?? 0) > 0) },
+  // POST-DEATH REST: after escaping the Underworld, rest until full HP and
+  // vigor >= 80 before re-engaging. Placed below flee_danger/flee_hurt so
+  // a post-death character in a mob room can still flee.
+  { goal: 'post_death_rest', when: ws => {
+      const uw = ws._lastUnderworldAt;
+      if (uw == null) return false;
+      if (Date.now() - uw > 300000) return false; // 5-min window
+      const hp = ws._hp, maxHp = ws._maxHp;
+      const vigor = ws._vigor;
+      if (hp != null && maxHp != null && hp < maxHp) return true;
+      if (vigor != null && vigor < 80) return true;
+      return false;
+    } },
   // Rest when hurt, but only when there's no target in
   // the room. If a target is in reach, the flee_hurt or
   // _fight goal handles it. Parked in travel mode (motion-only: a
