@@ -98,6 +98,20 @@ const SYNTHETIC_EDGE_EXITS = Object.freeze({
     Object.freeze({ leave: LEAVE.SOUTH, leaveName: 'south', to: 598,
       arriveRow: null, arriveCol: null, synthetic: true, dynamic: true }),
   ]),
+  // MARION (200) WAS CHECKED FOR A MISSING EDGE ON 2026-09-09 AND HAS NONE. Recorded here so
+  // nobody re-does this search. Marion's outdoor borders ARE hand-written corner tests inside
+  // SomethingMoved (marion.kod:150; new_row<32 && new_col>66 -> RID_C4 at 34,5 and new_row>83 &&
+  // new_col>48 -> RID_C5 at 3,23), and `plEdge_Exits` is genuinely empty for it -- so this table
+  // LOOKS like the right place for them. It is not: the baker already captures both transfers,
+  // through the REGION-exit mechanism rather than the edge-exit one, and findPath(534,535) returns
+  // 534 ->200[region: row>35,col<9]-> 535 ->200[region: row>83,col>48]-> 535[region] with no
+  // change at all when an edge entry is added. Adding it here would only create a second
+  // description of one physical action, which is the thing the note above warns about.
+  //
+  // The asymmetry is real and must not be "fixed": 534's kod (c4.kod:70) transfers to Marion, and
+  // 534 has NO edge exit to Marion (c4.kod:95-96 are east->544 and north->533 only). Walking east
+  // out of 534 does not get you to town; walking into its south-west CORNER does.
+
 });
 
 export function edgeExitsOf(room) {
@@ -801,12 +815,41 @@ export function codeExits(roomNum) {
   const idx = loadCodeExits(CODE_EXITS_FILE);
   const list = idx?.rooms?.[roomNum];
   if (!list) return [];
-  return list.map(e => ({
-    kind: 'region', to: e.to, when: e.when, arrive: e.arrive,
-    how: 'walk into the part of this room where ' +
-         e.when.map(c => `${c.axis} ${c.op} ${c.value}`).join(' and ') +
-         ' — the room moves you across by itself, there is nothing to press',
-  }));
+  return list.map(e => {
+    // COMPUTE THE TRIGGER TARGET FROM THE `when` CONDITION.
+    // For example, `row < 32 AND col > 66` means the top-right corner of the room.
+    // We compute a target position that satisfies the condition, so the character
+    // knows where to walk to trigger the exit.
+    let trigger_targets = null;
+    if (e.when && Array.isArray(e.when)) {
+      const targets = [];
+      for (const c of e.when) {
+        if (c.axis === 'row' && c.op === '<') targets.push({ row: c.value - 2, col: null });
+        if (c.axis === 'row' && c.op === '>') targets.push({ row: c.value + 2, col: null });
+        if (c.axis === 'row' && c.op === '==') targets.push({ row: c.value, col: null });
+        if (c.axis === 'col' && c.op === '<') targets.push({ row: null, col: c.value - 2 });
+        if (c.axis === 'col' && c.op === '>') targets.push({ row: null, col: c.value + 2 });
+        if (c.axis === 'col' && c.op === '==') targets.push({ row: null, col: c.value });
+      }
+      // Merge the targets into a single position.
+      const merged = { row: null, col: null };
+      for (const t of targets) {
+        if (t.row != null) merged.row = t.row;
+        if (t.col != null) merged.col = t.col;
+      }
+      if (merged.row != null && merged.col != null) {
+        trigger_targets = [merged];
+      }
+    }
+    
+    return {
+      kind: 'region', to: e.to, when: e.when, arrive: e.arrive,
+      trigger_targets,
+      how: 'walk into the part of this room where ' +
+           e.when.map(c => `${c.axis} ${c.op} ${c.value}`).join(' and ') +
+           ' — the room moves you across by itself, there is nothing to press',
+    };
+  });
 }
 
 // ROOMS TO WALK AROUND WHEN THERE IS ANY OTHER WAY, MEASURED RATHER THAN GUESSED.

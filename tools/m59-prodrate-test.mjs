@@ -16,7 +16,7 @@
 // already at its destination must submit ZERO moves (the current bug is a re-issue every
 // tick).
 
-import { Actuator } from './m59-tick.mjs';
+import { Actuator } from './tick/m59-tick.mjs';
 
 let pass = 0, fail = 0;
 const ok = (what, cond, detail) => {

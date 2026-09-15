@@ -6,8 +6,8 @@
 // A route is the case that most obviously does not fit a blocking model, and the thing
 // under test is that it is STATE: each tick sends at most one square and returns, and
 // progress is observed between ticks rather than assumed within a call.
-import { Router, routeIntent } from './m59-route.mjs';
-import { Actuator } from './m59-tick.mjs';
+import { Router, routeIntent } from './tick/m59-route.mjs';
+import { Actuator } from './tick/m59-tick.mjs';
 
 let pass = 0, fail = 0;
 const ok = (what, cond, detail) => {
@@ -18,7 +18,7 @@ const ok = (what, cond, detail) => {
 // A fake world with a known two-room map, so the leg is predictable.
 function rig({ here = 10, dest = 20, col = 5, row = 5,
                standOn = { col: 8, row: 5 }, edgeTarget = { col: 9, row: 5 },
-               exits = null, pathFound = true } = {}) {
+               exits = null, pathFound = true, customMap = null, legMaxMs = 30000 } = {}) {
   const sent = [];
   let exitCalls = 0;
   const session = {
@@ -65,9 +65,9 @@ function rig({ here = 10, dest = 20, col = 5, row = 5,
       },
     },
   };
-  const map = { rooms: { 10: { name: 'A' }, 15: { name: 'C' }, 20: { name: 'B' } } };
+  const map = customMap ?? { rooms: { 10: { name: 'A' }, 15: { name: 'C' }, 20: { name: 'B' } } };
   let t = 1000;
-  const router = new Router({ session, map, now: () => t });
+  const router = new Router({ session, map, now: () => t, legMaxMs });
   // findPath is imported by the module; give the router a stub leg planner by handing it
   // a map the real findPath can answer for is overkill — instead patch the one call.
   router._planLeg = (h) => pathFound
@@ -367,6 +367,25 @@ console.log('\nmulti-leg: a fine-model island standOn is decomposed into reachab
   }
 }
 
+console.log('\noscillation breaker: presses the same approach, condemns only at MAX');
+{
+  const { router, act, frame, advance } = rig({ col: 5, row: 5 });
+  router.to(20);
+  router.tick(frame(5, 5), act);
+  // One dead window: bounce with zero net displacement.
+  let firstVerdict = null;
+  for (let i = 0; i < 10; i++) {
+    advance(3000);
+    const pos = i % 2 === 0 ? [6, 5] : [5, 5];
+    const r = router.tick(frame(pos[0], pos[1]), act);
+    if (r.state === 'oscillating' && !firstVerdict) firstVerdict = r;
+    if (firstVerdict) break;
+  }
+  ok('first dead window earns a verdict', !!firstVerdict, firstVerdict?.why ?? 'none');
+  ok('the leg is kept (pressing, not alternating)', router.leg != null, 'leg=' + (router.leg ? 'kept' : 'null'));
+  ok('nothing condemned yet', router._badStandOn.size === 0, 'size=' + router._badStandOn.size);
+}
+
 console.log('\noscillation breaker: a bouncing character drops the route, not just the leg');
 {
   // A character that alternates between two squares forever is "moving" — every
@@ -416,5 +435,204 @@ console.log('\noscillation breaker: real progress forgives earlier verdicts');
      `sawVerdict=${sawVerdict} sawMovingAfter=${sawMovingAfter}`);
 }
 
+console.log('\nRouter.to refuses never-enter rooms');
+{
+  const router = new Router({ session: {}, now: () => 0 });
+  ok('hazard dest refused', router.to(555) === false, 'to(555)=' + router.to(555));
+  ok('dest not latched', router.dest !== 555, 'dest=' + router.dest);
+  ok('refusal recorded', !!router._refusedHazard?.why, router._refusedHazard?.why ?? 'none');
+  ok('normal dest accepted', router.to(535) === true && router.dest === 535, 'dest=' + router.dest);
+}
+
+console.log('\nsub-leg chains never head into a wall square (557 pin: (27,33) fine-blocked)');
+{
+  // Geometry where (6,5) is a fine-blocked wall square, everything else open.
+  const wallGeo = {
+    collisionReady: true,
+    fineWalkable: (r, c) => !(r === 5 && c === 6),
+    standable: () => true,
+    traceFineMoveClient: () => ({ blocked: false, arrived: true }),
+    finePathProtocol: (fx, fy, tx, ty) => ({ found: true, waypoints: [{ x: tx, y: ty }] }),
+  };
+  const { router } = rig();
+  router.session.world.geometry = wallGeo;
+  // Build time: truncate to the standable prefix.
+  const s = router._sanitizeChain([{ col: 5, row: 5 }, { col: 6, row: 5 }, { col: 7, row: 5 }], wallGeo);
+  ok('chain truncates at the first blocked square', s.chain.length === 1 && s.chain[0].col === 5 && s.dropped === 2,
+     JSON.stringify(s));
+  const s2 = router._sanitizeChain([{ col: 5, row: 5 }, { col: 7, row: 5 }], wallGeo);
+  ok('all-standable chain passes through untouched', s2.chain.length === 2 && s2.dropped === 0,
+     JSON.stringify(s2));
+  ok('no geometry reads pass (fixtures without grids)',
+     router._chainSquareOk(null, 1, 1) === true, 'null geo');
+  // Runtime: a frozen wall head is dropped on tick so the aim falls through
+  // to the next square instead of pinning the mover forever.
+  router.to(20);
+  router.leg = { fromRoom: 10, next: 20, standOn: { col: 8, row: 5 }, edgeTarget: null,
+                 direction: 'east', kind: 'edge', startedAt: 1000 };
+  router.subWp = [{ col: 6, row: 5 }, { col: 7, row: 5 }];
+  const { act, frame } = rig();
+  // NOTE: fresh rig session for act/frame would desync the router's session;
+  // reuse this router's own session pieces instead.
+  const selfRef = router.session.client.self;
+  selfRef.col = 5; selfRef.row = 5; selfRef.x = 5 * 64 + 32; selfRef.y = 5 * 64 + 32;
+  router.tick({ room: { num: 10, name: 'A' },
+                position: { col: 5, row: 5, x: 5 * 64 + 32, y: 5 * 64 + 32 } }, act);
+  ok('blocked head dropped at runtime', router.subWp && router.subWp[0].col === 7 && router.subWp[0].row === 5,
+     JSON.stringify(router.subWp));
+}
+
+console.log('\nsub-leg chains drop edge-blocked heads only while the mover is stuck');
+{
+  // (22,17)->(23,17) in 557: both squares open, the edge between them fenced.
+  // The head must go when the mover is honestly stuck (server static 3+ sends)
+  // and stay while steps land (the step search may cross what moverStepLands
+  // refuses on radius strictness).
+  const { router, act } = rig({ col: 5, row: 5 });
+  router.session.world.geometry.moverStepLands = (r1, c1, r2, c2) =>
+    !((r1 === 5 && c1 === 5 && r2 === 5 && c2 === 6));  // only the (5,5)->(6,5) edge walled
+  router.to(20);
+  router.leg = { fromRoom: 10, next: 20, standOn: { col: 8, row: 5 }, edgeTarget: null,
+                 direction: 'east', kind: 'edge', startedAt: 1000 };
+  const frm = { room: { num: 10, name: 'A' },
+                position: { col: 5, row: 5, x: 5 * 64 + 32, y: 5 * 64 + 32 } };
+  // Steps landing: the head stays even though the strict edge test refuses it.
+  router.subWp = [{ col: 6, row: 5 }, { col: 7, row: 5 }];
+  router.mover.stuckTicks = 0;
+  router.tick(frm, act);
+  ok('head kept while steps land', router.subWp && router.subWp[0].col === 6,
+     JSON.stringify(router.subWp));
+  // Honestly stuck: the unenterable head goes, aim falls to the next square.
+  router.subWp = [{ col: 6, row: 5 }, { col: 7, row: 5 }];
+  router.mover.stuckTicks = 4;
+  router.tick(frm, act);
+  ok('edge-blocked head dropped while stuck', router.subWp && router.subWp[0].col === 7,
+     JSON.stringify(router.subWp));
+}
+
+console.log('\nONE PREDICATE: the router asks the geometry, never re-derives one');
+{
+  // The aim flap that cost 13,619 destination changes: the router's chain
+  // questions each had their own walkability predicate (coarse `walkable` in one
+  // place, `fineWalkable`/`standable` in another, raw `moverStepLands` in a
+  // third), so the SAME chain head could be kept by one and dropped by another.
+  // Every flip changes the mover's destination, which resets its path, its stuck
+  // signal and its escape fan. The fix is structural: `chainStepOk` is the single
+  // door, and it delegates to the geometry's own `moverStepLands`.
+  const { router, session } = rig();
+  const geo = session.world.geometry;
+  const asked = [];
+  geo.moverStepLands = (r1, c1, r2, c2) => { asked.push(`${r1},${c1}->${r2},${c2}`); return true; };
+  router.chainStepOk(geo, 5, 5, 5, 6);
+  ok('chainStepOk delegates to moverStepLands', asked.length === 1, JSON.stringify(asked));
+  ok('_fineStep is the same function, not a second one',
+     router._fineStep(geo, 5, 5, 5, 6) === true && asked.length === 2, JSON.stringify(asked));
+  // A square-level question uses the mover's own square test (transitBanned).
+  const banned = { inBounds: () => true, fineWalkable: () => false };
+  ok('_chainSquareOk refuses what the mover refuses',
+     router._chainSquareOk(banned, 3, 3) === false);
+  ok('_chainSquareOk passes an unknown geometry', router._chainSquareOk({}, 3, 3) === true);
+}
+
+console.log('\nAIM IS STABLE when the coarse and fine grids disagree');
+{
+  // A fixture where the two grids DISAGREE about every square: coarse says
+  // walkable everywhere, fine says open only on row 5. Under the old code the
+  // sub-leg BFS (coarse) planned a chain through row 9 while the mover's own
+  // planner (fine) refused it, the sanitizer dropped the head, the aim fell to
+  // the standOn, and the next tick rebuilt the chain — the 30,33<->29,33 flap.
+  // Now all three questions read one predicate, so the disagreement has one
+  // answer and the aim cannot move.
+  const { router, act, frame, session } = rig({ col: 5, row: 5 });
+  const geo = session.world.geometry;
+  const FINE_OPEN_ROW = 5;
+  geo.walkable = () => true;                              // coarse: blind, all open
+  geo.fineWalkable = (r) => (r === FINE_OPEN_ROW);         // fine: only row 5
+  geo.standable = (r) => (r === FINE_OPEN_ROW);
+  geo.standPoint = (r) => (r === FINE_OPEN_ROW ? { x: 512, y: 512 } : null);
+  geo.inBounds = () => true;
+  // One honest edge predicate: open only along row 5.
+  geo.moverStepLands = (r1, c1, r2, c2) =>
+    (r1 === FINE_OPEN_ROW && r2 === FINE_OPEN_ROW);
+  // The mover's planner agrees with it (coarse mode aside, this is the point).
+  geo.finePathProtocol = () => ({ found: false, reason: 'no fine path', waypoints: [] });
+
+  router.to(20);
+  router.leg = { fromRoom: 10, next: 20, standOn: { col: 12, row: 9 }, edgeTarget: null,
+                 direction: 'east', kind: 'edge', startedAt: 1000 };
+  router._initSubLegs({ col: 5, row: 5 });
+  const chainAfterBuild = (router.subWp ?? []).map(s => `${s.col},${s.row}`).join(' ');
+
+  const aims = [];
+  for (let i = 0; i < 12; i++) {
+    router.mover.stuckTicks = 0;              // steps landing: nothing may be dropped
+    router.tick(frame(5, 5), act);
+    aims.push(`${router.mover.dest.col},${router.mover.dest.row}`);
+  }
+  const uniq = [...new Set(aims)];
+  ok('the aim never changes across 12 ticks', uniq.length === 1, aims.join(' | '));
+  // And it is a square the honest predicate admits: no head inside fine-blocked
+  // ground, because the chain was built and sanitized with the same verdict.
+  if (router.subWp && router.subWp.length) {
+    const head = router.subWp[0];
+    ok('chain head is on ground the mover will enter',
+       geo.moverStepLands(5, 5, head.row, head.col) === true,
+       `head ${head.col},${head.row} chain[${chainAfterBuild}]`);
+  } else {
+    ok('no chain means the aim is the standOn itself (stable)', true);
+  }
+}
+
+console.log('\narrival is reachable when the destination is the current room');
+{
+  // RE-ENTRY ARRIVAL DEGENERATE CASE (V-new): if dest == here at route start,
+  // to() already returns arrived at the first tick (the existing :653 check). The
+  // re-entry rule (A1) must not break this — a character standing in the
+  // destination room is "arrived" on the first tick, no walk required.
+  const { router, act, frame } = rig({ here: 20, dest: 20 });
+  router.to(20);
+  const r = router.tick(frame(5, 5), act);
+  ok('dest == here at route start is arrived on the first tick', r.state === 'arrived',
+     JSON.stringify(r));
+}
+
+console.log('\na cross-room ping-pong drops the route and stamps the drop memory');
+{
+  // CROSS-ROOM OSCILLATION BREAKER (V-new): a character oscillating between two
+  // non-destination rooms (200 and 556) for OSCILLATION_MAX consecutive windows
+  // has the route dropped and the route-drop memory stamped (A2 + A3). The
+  // destination is 603 (a different room), so the re-entry to 200/556 is a
+  // ping-pong, not an arrival.
+  const { router, act, frame, advance, session, at } = rig({
+    here: 200, dest: 603,
+    customMap: { rooms: { 200: { name: 'Marion' }, 556: { name: 'Deep Forest' }, 603: { name: 'Hunt' } } },
+    legMaxMs: 1e9,   // huge: the leg-timeout must not preempt the A2 breaker
+  });
+  router.to(603);
+  // The rig's _planLeg stub hard-codes next: 20, which cannot route to 603. Override
+  // it to hop 200<->556 so the only thing that can clear the route is the A2 breaker.
+  router._planLeg = (h) => ({ leg: { fromRoom: h, next: h === 200 ? 556 : 200,
+    standOn: { col: 8, row: 5 }, edgeTarget: { col: 9, row: 5 }, direction: 'east',
+    startedAt: at() } });
+  // Alternate between 200 and 556 for 3 windows (each PROGRESS_WINDOW_MS = 20s).
+  // Use different positions per room so the room-local detector (net=0) does not
+  // preempt A2 — only the cross-room breaker should fire.
+  router.tick(frame(5, 5, 200), act);   // tick 1: room 200, pos (5,5)
+  advance(20000);
+  router.tick(frame(10, 10, 556), act);   // tick 2: room 556, pos (10,10)
+  advance(20000);
+  router.tick(frame(5, 5, 200), act);   // tick 3: room 200, pos (5,5) — re-entry
+  advance(20000);
+  router.tick(frame(10, 10, 556), act);   // tick 4: room 556, pos (10,10) — re-entry
+  advance(20000);
+  ok('A2 counted a re-entry window (crossOsc >= 1)', router._crossOsc >= 1,
+     JSON.stringify({ crossOsc: router._crossOsc, roomSeq: router._roomSeq.map(x => x.room) }));
+  const r = router.tick(frame(5, 5, 200), act);   // tick 5: room 200, pos (5,5) — re-entry, _crossOsc = 3 = MAX
+  ok('the cross-room breaker dropped the route', router.dest == null,
+     JSON.stringify({ state: r.state, crossOsc: router._crossOsc, roomSeq: router._roomSeq.map(x => x.room), oscillations: router._oscillations }));
+  ok('and stamped the route-drop memory',
+     session._routeDrop != null && Array.isArray(session._routeDrop.rooms) && session._routeDrop.rooms.length >= 2,
+     JSON.stringify(session._routeDrop));
+}
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

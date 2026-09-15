@@ -107,6 +107,40 @@ function shopRooms() {
 // server reassigns IDs on each startup). This helper resolves the
 // live room ID to a map room ID by name before calling findPath.
 let _roomNameToMapNum = null;
+
+// TRULY-STUCK REJOIN COOLDOWN, keyed on POSITION (not the GOAPKeeper instance).
+// A rejoin destroys the GOAPKeeper instance (the broker spawns a fresh keeper
+// process), so an instance field cannot hold the cooldown across a rejoin. A
+// module-level Map keyed on the stuck square persists across instances: a
+// character parked on a genuinely unreachable square rejoins at most once per
+// COOLDOWN_MS, not on every 10-pass stuck cycle.
+const _stuckRejoinAt = new Map();
+const _unstuckDestCache = new Map();
+const STUCK_REJOIN_COOLDOWN_MS = 5 * 60 * 1000;
+function triggerRejoin(who, col, row) {
+  // The proven escape hatch is the keeper process's /rejoin endpoint
+  // (m59-keeper-process.mjs:973): autopilot.stop + client.close + join().
+  // A bare client.close() is a no-op here — `session.client` IS the live client
+  // during gameplay (set in join(), m59-game.mjs:1424), but closing it does not
+  // rejoin: the keeper process has no socket-close handler that rejoins, and
+  // join() is only called at startup and from /rejoin, so a raw close leaves
+  // the character in-game forever. The GOAP keeper runs inside the keeper
+  // process, so it reads the port from process.argv (--port, passed at spawn,
+  // m59-broker.mjs:776) and POSTs to its own /rejoin endpoint, which runs the
+  // full stop+close+join sequence. The fetch is fire-and-forget (the pass
+  // returns before join() runs — no deadlock, no hang): join() is awaited
+  // inside the /rejoin handler, so an awaited fetch would block for the full
+  // socket timeout on an unreachable server, and the stuck block runs on every
+  // pass once _stuckCount >= 10. The cooldown Map is stamped optimistically in
+  // the stuck block (before this call), capping the rejoin at one per 5 min
+  // even on a network outage.
+  const i = process.argv.indexOf('--port');
+  const port = i >= 0 ? Number(process.argv[i + 1]) : 0;
+  console.error(`[goap] ${who} TRULY STUCK at (${col},${row}) — all unstuck methods failed, triggering rejoin (port=${port})`);
+  if (!port) { console.error(`[goap] ${who} rejoin skipped: no --port in argv`); return; }
+  fetch(`http://127.0.0.1:${port}/rejoin`, { method: 'POST' }).catch(e =>
+    console.error(`[goap] ${who} rejoin request failed: ${e.message}`));
+}
 function roomNameToMapNum() {
   if (_roomNameToMapNum) return _roomNameToMapNum;
   _roomNameToMapNum = new Map();
@@ -578,48 +612,129 @@ export class GOAPKeeper {
         if (this._lastPosKey === posKey && !this._inCombatLastPass) {
           this._stuckCount = (this._stuckCount ?? 0) + 1;
           if (this._stuckCount === 10) {
-            console.error(`[goap] ${this.policy.agent} STUCK at (${me.col},${me.row}) for ${this._stuckCount} passes`);
+            console.error(`[goap] ${this._agentName()} STUCK at (${me.col},${me.row}) for ${this._stuckCount} passes`);
           }
         } else if (!this._inCombatLastPass) {
           this._stuckCount = 0;
           this._lastPosKey = posKey;
         }
         if (this._stuckCount >= 10) {
-          console.error(`[goap] ${this.policy.agent} forcing room change to unstick`);
+          console.error(`[goap] ${this._agentName()} forcing room change to unstick`);
           this._stuckCount = 0;
           this._lastPosKey = null;
-          // First: try to travel to a nearby room
+          // First: try to travel to a nearby room. The travel is wrapped in a
+          // timeout: a stuck character's travel never completes (the mover can't
+          // move from the stuck position), so an unbounded await here hangs the
+          // whole unstick sequence and the blink/escape_pocket/"TRULY STUCK"
+          // states are never reached. Watched live: JayB stuck at (9,32), the
+          // travel hung for 43 minutes and the character sat still the whole time.
+          // The race is paired with a cancel: when the timeout wins, the losing
+          // session.travel() is cancelled (via a control token) so it cannot
+          // still drive a room change minutes later, and the timer is cleared
+          // when the travel wins so no orphaned setTimeout stays armed. Without
+          // this, every unstick pass armed a fresh 30s timer and left the losing
+          // travel running — movementGeneration only invalidates it if a NEWER
+          // command bumps the generation, which the no-op cycle never does.
+          const travelWithTimeout = (p, ms, cancelFn) => {
+            let timer = null;
+            const timeoutP = new Promise(res => {
+              timer = setTimeout(() => { cancelFn?.(); res({ arrived: false, timeout: true }); }, ms);
+            });
+            return Promise.race([p, timeoutP]).finally(() => clearTimeout(timer));
+          };
           try {
             const { nearestHuntRoom } = await import('./m59-hunt-room.mjs');
             const here = c.room?.num ?? c.room?.id;
             const resolved = resolveMapRoom(here, this._roomName());
-            // Find a hunt room that is NOT the current room
-            const allRooms = await import('./m59-hunt-room.mjs').then(m => m.huntRoomsAtOrBelow(999));
-            const otherRooms = allRooms.filter(r => r.room !== resolved);
-            const neighbors = otherRooms.length > 0 ? nearestHuntRoom(resolved, 999, otherRooms[0].level) : null;
-            // If the nearest hunt room IS the current room, pick the next closest
-            if (neighbors && neighbors.room === resolved && otherRooms.length > 0) {
-              const next = otherRooms[0];
-              const travelResult = await this.session.travel(next.room, { maxHops: 1 });
-              if (travelResult?.arrived) {
-                console.error(`[goap] ${this.policy.agent} unstuck: moved to room ${next.room} (${next.creature} lv${next.level})`);
+            // Find a hunt room that is NOT the current room. CRITICAL: reject any
+            // candidate that is the current room — `nearestHuntRoom` returns the
+            // current room as a candidate (hops:0) when the character is standing in
+            // a hunt room, and `travel(currentRoom)` "succeeds" instantly
+            // (arrived:true, here.num === toRoomNum) without moving the character.
+            // That was the 11s no-op cycle: the travel "succeeded" every pass, the
+            // unstick sequence early-returned, and the character sat pinned forever
+            // with no timeout, blink, or rejoin ever reached. The candidate must
+            // actually move the character to a DIFFERENT room.
+            // Compute the engagement ceiling (the same idiom as :1616-1622): a
+            // stuck character is often wounded, so cap the candidate list at
+            // its threat ceiling (level + band) rather than 999 (which caps
+            // nothing and can route a wounded character to a too-tough mob —
+            // the "death spiral" AGENTS.md calls out).
+            const charLevel = c.vitals?.()?.health?.max ?? 20;
+            const fullBand = this.policy?.threatBand ?? Math.floor(charLevel / 2);
+            const levelCeiling = charLevel + fullBand;
+            const allRooms = await import('./m59-hunt-room.mjs').then(m => m.huntRoomsAtOrBelow(charLevel, levelCeiling, charLevel - 2));
+            // Exclude the current room (by live num AND resolved map num) so the
+            // fallback offers a different destination instead of the same one.
+            // The findPath scan is the only thing that can give a distance-ordered
+            // non-current room (nearestHuntRoom short-circuits with hops:0 as
+            // soon as it hits the current room). Cache the result per resolved
+            // room with a 5-min TTL so it costs 100+ BFS walks once, not once
+            // per stuck pass (which would trip the max-pass guard at :1780).
+            const otherRooms = allRooms.filter(r => r.room !== resolved && r.room !== here);
+            let dest = null;
+            if (otherRooms.length > 0) {
+              // The findPath scan is the only thing that can give a distance-ordered
+              // non-current room (nearestHuntRoom short-circuits with hops:0 as
+              // soon as it hits the current room). Cache the result per resolved
+              // room with a 5-min TTL so it costs 100+ BFS walks once, not once
+              // per stuck pass (which would trip the max-pass guard at :1780).
+              const cacheKey = `unstuck-dest-${resolved}-${levelCeiling}`;
+              const cached = _unstuckDestCache.get(cacheKey);
+              if (cached && Date.now() - cached.at < 5 * 60 * 1000) {
+                dest = cached.destObj;
+              } else {
+                const { loadMap, findPath } = await import('./m59-map.mjs');
+                const map = loadMap();
+                let best = null;
+                let bestHops = Infinity;
+                for (const r of otherRooms) {
+                  const p = findPath(map, resolved, r.room);
+                  if (p.found && p.hops.length > 0 && p.hops.length < bestHops) {
+                    best = r;
+                    bestHops = p.hops.length;
+                  }
+                }
+                if (best) {
+                  dest = best;
+                  _unstuckDestCache.set(cacheKey, { at: Date.now(), dest: best.room, destObj: best });
+                }
+              }
+            }
+            if (dest) {
+              // Read the position from the same object before and after the
+              // travel (c.room?.num) so the comparison is in one id space. The
+              // travel's return sources its room from this.world.room.num, the
+              // same value c.room?.num reads (m59-game.mjs:6808/6816), so the
+              // real bug fixed here is a travel to the current room returning
+              // arrived:true with zero hops — the 11s no-op cycle. Verifying
+              // the room actually changed (before != after) rejects that false
+              // positive. Log both raw values so the first live run proves the
+              // comparison is in one id space.
+              const beforeRoom = c.room?.num ?? c.room?.id;
+              const travelToken = `unstuck-${Date.now()}`;
+              const travelResult = await travelWithTimeout(
+                this.session.travel(dest.room, { maxHops: 1, controlToken: travelToken }),
+                30000,
+                () => this.session.cancelMovement(travelToken, 'unstick travel timeout'),
+              );
+              const afterRoom = c.room?.num ?? c.room?.id;
+              // Treat the travel as success ONLY when the room actually changed
+              // (read from the same object before and after). `arrived:true`
+              // alone is a false positive when the destination is the current
+              // room (the 11s no-op cycle).
+              const moved = travelResult?.arrived && Number(afterRoom) !== Number(beforeRoom);
+              if (moved) {
+                console.error(`[goap] ${this._agentName()} unstuck: moved ${beforeRoom} -> ${afterRoom} (dest ${dest.room}, ${dest.creature} lv${dest.level})`);
                 this._travelInFlight = true;
-                this._travelFromRoom = here;
+                this._travelFromRoom = beforeRoom;
                 this._travelStartedAt = Date.now();
                 return { acted: true, action: 'unstuck_travel', reason: 'stuck detection: moved to different hunt room' };
               }
-            } else if (neighbors) {
-              const travelResult = await this.session.travel(neighbors.room, { maxHops: 1 });
-              if (travelResult?.arrived) {
-                console.error(`[goap] ${this.policy.agent} unstuck: arrived in room ${neighbors.room}`);
-                this._travelInFlight = true;
-                this._travelFromRoom = here;
-                this._travelStartedAt = Date.now();
-                return { acted: true, action: 'unstuck_travel', reason: 'stuck detection: forced room change' };
-              }
+              console.error(`[goap] ${this._agentName()} travel to ${dest.room} did not move the character (${beforeRoom} -> ${afterRoom}), falling through to blink`);
             }
           } catch (e) {
-            console.error(`[goap] ${this.policy.agent} travel failed: ${e.message}`);
+            console.error(`[goap] ${this._agentName()} travel failed: ${e.message}`);
           }
           // Travel failed (character can't move from no-floor position).
           // Try: cast blink to teleport to a random nearby position.
@@ -636,25 +751,64 @@ export class GOAPKeeper {
             });
             const blink = blinkSpell ?? blinkSkill;
             if (blink) {
+              // STAND BEFORE BLINK: a resting character has PFLAG_NO_MAGIC set
+              // (player.kod:1166) and the server refuses the cast whole. UC_STAND ->
+              // StopResting() -> ResetPlayerFlagList() clears the flag; wait 2s for
+              // the server to process it before the cast begins.
+              await this.session?.pacer?.submit?.('stand', () => c.stand?.()).catch?.(() => {});
+              await new Promise(res => setTimeout(res, 2000));
               await c.cast(blink.id, []);
               await new Promise(res => setTimeout(res, 1500));
               const newMe = c.self;
               if (newMe && (newMe.col !== me.col || newMe.row !== me.row)) {
-                console.error(`[goap] ${this.policy.agent} unstuck by blink: now at (${newMe.col},${newMe.row})`);
+                console.error(`[goap] ${this._agentName()} unstuck by blink: now at (${newMe.col},${newMe.row})`);
                 return { acted: true, action: 'unstuck_blink', reason: 'stuck detection: blinked to new position' };
               }
-              console.error(`[goap] ${this.policy.agent} blink cast but position unchanged`);
+              console.error(`[goap] ${this._agentName()} blink cast but position unchanged`);
             } else {
-              console.error(`[goap] ${this.policy.agent} blink not found in spells (${(c.spells??[]).length}) or skills (${(c.skills??[]).length})`);
+              console.error(`[goap] ${this._agentName()} blink not found in spells (${(c.spells??[]).length}) or skills (${(c.skills??[]).length})`);
             }
           } catch (e) {
-            console.error(`[goap] ${this.policy.agent} blink error: ${e.message}`);
+            console.error(`[goap] ${this._agentName()} blink error: ${e.message}`);
           }
-          // Last resort: the character is truly stuck. Log it and let
-          // the rejoin mechanism handle it (broker will rejoin the session
-          // which resets the position to the last valid saved position).
-          console.error(`[goap] ${this.policy.agent} TRULY STUCK at (${me.col},${me.row}) — all unstuck methods failed`);
-          return { acted: false, action: null, reason: 'truly stuck: no valid position' };
+          // Last resort before giving up: the escape_pocket atomic. It
+          // stands, freezes the tick loop, casts blink, and waits for the
+          // moved event. The inline blink above is fire-and-forget and
+          // does not wait for the relocation to land, so it can report
+          // "position unchanged" even when the blink worked. The atomic
+          // also handles the no-blink-room case explicitly.
+          try {
+            const { escapePocket } = await import('./m59-act/escape-pocket.mjs');
+            const ep = await escapePocket(c, this.session);
+            if (ep?.sent) {
+              console.error(`[goap] ${this._agentName()} unstuck by escape_pocket: ${ep.what}`);
+              return { acted: true, action: 'unstuck_pocket', reason: `stuck detection: ${ep.what}` };
+            }
+            console.error(`[goap] ${this._agentName()} escape_pocket refused: ${ep?.reason ?? 'no reason'}`);
+          } catch (e) {
+            console.error(`[goap] ${this._agentName()} escape_pocket error: ${e.message}`);
+          }
+          // Truly stuck. All unstuck methods (travel, blink, escape_pocket)
+          // failed. The character cannot move from this position. The only way
+          // to unstick it is to rejoin the session, which resets the position
+          // to the last valid saved position. The rejoin is triggered via the
+          // keeper process's /rejoin endpoint (the proven stop+close+join
+          // sequence); a bare client.close() is a no-op here (see
+          // triggerRejoin). The cooldown is keyed on POSITION (module-level
+          // Map), not the GOAPKeeper instance, because a rejoin destroys the
+          // instance — a character parked on a genuinely unreachable square
+          // rejoins at most once per cooldown, not on every 10-pass cycle.
+          const who = this._agentName();
+          const posKey = `${me.col},${me.row}`;
+          const now = Date.now();
+          const last = _stuckRejoinAt.get(posKey) ?? 0;
+          if (now - last > STUCK_REJOIN_COOLDOWN_MS) {
+            _stuckRejoinAt.set(posKey, now);
+            triggerRejoin(who, me.col, me.row);
+            return { acted: false, action: null, reason: 'truly stuck: rejoin triggered' };
+          }
+          console.error(`[goap] ${who} TRULY STUCK at (${me.col},${me.row}) — all unstuck methods failed, rejoin on cooldown (${Math.round((STUCK_REJOIN_COOLDOWN_MS - (now - last)) / 1000)}s remaining)`);
+          return { acted: false, action: null, reason: 'truly stuck: rejoin on cooldown' };
         }
       }
     }
@@ -764,7 +918,6 @@ export class GOAPKeeper {
         // specific farming targets), but the default is the character's
         // own level — fight mobs at or near your level.
         const charLevel = c.vitals?.()?.health?.max ?? 20;
-        const huntLevel = this.policy.huntLevel ?? charLevel;
         const fullBand = this.policy?.threatBand ?? Math.floor(charLevel / 2);
         // Unarmed characters deal less damage, so halve the band.
         const eq = c?.equipment?.();
@@ -775,7 +928,7 @@ export class GOAPKeeper {
               return /sword|mace|hammer|staff|club|axe|dagger|spear|bow|crossbow|weapon/i.test(nm);
             });
         const band = isArmedNow ? fullBand : Math.floor(fullBand / 2);
-        const ceiling = huntLevel + band;
+        const ceiling = charLevel + band;
 
         const hostiles = list.filter(o => {
           // Raw room objects have o.flags (bit flags), NOT o.can (action list).
@@ -850,7 +1003,11 @@ export class GOAPKeeper {
           const liveRoomNum = c.room?.num ?? c.room?.id ?? null;
           const mapRoomNum = liveRoomNum != null ? resolveMapRoom(liveRoomNum, this._roomName()) : null;
           const compLevel = mapRoomNum != null ? _compendiumLevel(mapRoomNum, targetName) : null;
-          const targetLevel = target.max_health ?? target.health ?? compLevel ?? null;
+          // Compendium viLevel first (TRUE kod level); HP fallback for mobs
+          // that walked in from a neighbour room and aren't in this room's
+          // spawn list. A wounded mob's live HP is NOT its level, but it's
+          // better than null (which fails the band open).
+          const targetLevel = compLevel ?? target.max_health ?? null;
 
           ws._targetId = target.id ?? target.obj_id;
           ws._targetLevel = targetLevel;
@@ -890,7 +1047,7 @@ export class GOAPKeeper {
           // flee_danger: false when an out-of-band AND aggroed hostile is present
           ws.flee_danger = ws.target_in_band || !ws.target_aggro; // true=safe
 
-          console.error(`[goap] ${who} target detected: ${targetName} (lv${targetLevel ?? '?'}, ${isPlayer ? 'PLAYER' : 'npc'}, hunt lv${huntLevel}, ceiling ${ceiling}, aggro=${ws.target_aggro})`);
+          console.error(`[goap] ${who} target detected: ${targetName} (lv${targetLevel ?? '?'}, ${isPlayer ? 'PLAYER' : 'npc'}, char lv${charLevel}, ceiling ${ceiling}, aggro=${ws.target_aggro})`);
           // Persist the target across passes so the character sticks
           // with it instead of re-picking the nearest every 2 seconds.
           this._persistedTargetId = ws._targetId;
@@ -1040,7 +1197,7 @@ export class GOAPKeeper {
           try {
             const { nearestHuntRoom } = await import('./m59-hunt-room.mjs');
             const resolvedHere = resolveMapRoom(here, this._roomName());
-            const level = this.policy.huntLevel ?? c.vitals?.()?.health?.max ?? 20;
+            const charLevel = c.vitals?.()?.health?.max ?? 20;
             const eqH = c?.equipment?.();
             const isArmedH = !eqH || eqH.known === false
               ? true
@@ -1048,26 +1205,24 @@ export class GOAPKeeper {
                   const nm = o.name ?? c.rsc?.get?.(o.nameRsc) ?? '';
                   return /sword|mace|hammer|staff|club|axe|dagger|spear|bow|crossbow|weapon/i.test(nm);
                 });
-            const fullBandH = this.policy?.threatBand ?? Math.floor(level / 2);
+            const fullBandH = this.policy?.threatBand ?? Math.floor(charLevel / 2);
             const bandH = isArmedH ? fullBandH : Math.floor(fullBandH / 2);
-            const ceilingH = level + bandH;
-            const hunt = nearestHuntRoom(resolvedHere, ceilingH);
+            const ceilingH = charLevel + bandH;
+            const hunt = nearestHuntRoom(resolvedHere, charLevel, ceilingH, charLevel - 2);
+            if (process.env.M59_GOAP_DEBUG !== '0') {
+              console.error(`[goap-dbg] ${who} hunt=${JSON.stringify(hunt)} resolvedHere=${resolvedHere} ceilingH=${ceilingH}`);
+            }
             if (hunt && hunt.hops > 0) {
               const dest = hunt.path?.[0] ?? hunt.room;
-              const travelToHunt = (client, session) => this._travelOneHop(dest);
-              travelToHunt.atomic = 'travel_to';
-              travelToHunt.pre = [];
-              travelToHunt.effects = ['has_target', 'has_money', 'has_loot'];
-              travelToHunt.cost = hunt.hops;
-              const p = planFor(c, '_fight', { session: this.session, policy: this.policy, agent: this.policy.agent, ws, extra: [travelToHunt] });
-              if (p.found) {
-                const step = p.names?.[0];
-                if (step === 'travel_to') {
-                  this._travelInProgress = true;
-                  const r = await this._travelOneHop(dest);
-                  this._travelInProgress = false;
-                  return { acted: true, action: 'travel_to', reason: `idle→hunt: travelling to ${hunt.creature ?? 'prey'} in room ${dest}` };
-                }
+              // TRAVEL DIRECTLY. The planFor path was unreliable (found=false
+              // even when nearestHuntRoom returned a valid room), so bypass
+              // the planner and travel directly. The character is idle with
+              // no target, so there is no higher-priority action to defer to.
+              this._travelInProgress = true;
+              const r = await this._travelOneHop(dest);
+              this._travelInProgress = false;
+              if (r?.arrived || r?.sent) {
+                return { acted: true, action: 'travel_to', reason: `idle→hunt: travelling to ${hunt.creature ?? 'prey'} in room ${dest}` };
               }
             }
           } catch (e) {
@@ -1141,7 +1296,14 @@ export class GOAPKeeper {
     }
     // Inject travel_to bank when the character needs money but is not at a bank.
     // Chain: at_bank -> withdraw -> has_money -> at_shop -> buy -> armed.
-    if (ws.has_money === false && ws.at_bank === false && ws.at_shop === false) {
+    // DEFER while actively fighting (ws.has_target): a bank travel is a travel command
+    // that bumps the movement generation (m59-game.mjs:1359), which cancels the
+    // combat's kiting movement ("movement cancelled by a newer command"). Watched live:
+    // JayB kiting a baby spider at a safe spot, the bank travel firing every pass and
+    // cancelling the "get back to safe spot" movement, so the character crawled. The
+    // character should finish the fight (which is often how it earns the money) before
+    // travelling to the bank.
+    if (ws.has_money === false && ws.at_bank === false && ws.at_shop === false && ws.has_target !== true) {
       const here = c.room?.num ?? c.room?.id;
       if (here != null) {
         const { objIdToNum } = await import('./m59-hunt-room.mjs');
@@ -1192,7 +1354,7 @@ export class GOAPKeeper {
       // travel_to because it directly achieves has_money — trapping the character in a
       // mobless room. The travel_to injection below is the right action in that case.
       const here = c.room?.num ?? c.room?.id;
-      const level = this.policy.huntLevel ?? c.vitals?.()?.health?.max ?? 20;
+      const charLevel = c.vitals?.()?.health?.max ?? 20;
       const eq2 = c?.equipment?.();
       const isArmed2 = !eq2 || eq2.known === false
         ? true
@@ -1200,16 +1362,16 @@ export class GOAPKeeper {
             const nm = o.name ?? c.rsc?.get?.(o.nameRsc) ?? '';
             return /sword|mace|hammer|staff|club|axe|dagger|spear|bow|crossbow|weapon/i.test(nm);
           });
-      const fullBand2 = this.policy?.threatBand ?? Math.floor(level / 2);
+      const fullBand2 = this.policy?.threatBand ?? Math.floor(charLevel / 2);
       const band2 = isArmed2 ? fullBand2 : Math.floor(fullBand2 / 2);
-      const levelCeiling2 = level + band2;
+      const levelCeiling2 = charLevel + band2;
 
       let inHuntRoom = false;
       if (ws.armed === true && combatGoal && ws.has_target === false && here != null) {
         try {
           const { nearestHuntRoom } = await import('./m59-hunt-room.mjs');
           const resolvedHere = resolveMapRoom(here, this._roomName());
-          const hunt = nearestHuntRoom(resolvedHere, levelCeiling2);
+          const hunt = nearestHuntRoom(resolvedHere, charLevel, levelCeiling2, charLevel - 2);
           inHuntRoom = !!(hunt && hunt.hops === 0);
         } catch {}
       }
@@ -1397,7 +1559,7 @@ export class GOAPKeeper {
             try {
               const { nearestHuntRoom } = await import('./m59-hunt-room.mjs');
               const resolvedHere = resolveMapRoom(here, this._roomName());
-              const level = this.policy.huntLevel ?? c.vitals?.()?.health?.max ?? 20;
+              const charLevel = c.vitals?.()?.health?.max ?? 20;
               const eqH = c?.equipment?.();
               const isArmedH = !eqH || eqH.known === false
                 ? true
@@ -1405,10 +1567,10 @@ export class GOAPKeeper {
                     const nm = o.name ?? c.rsc?.get?.(o.nameRsc) ?? '';
                     return /sword|mace|hammer|staff|club|axe|dagger|spear|bow|crossbow|weapon/i.test(nm);
                   });
-              const fullBandH = this.policy?.threatBand ?? Math.floor(level / 2);
+              const fullBandH = this.policy?.threatBand ?? Math.floor(charLevel / 2);
               const bandH = isArmedH ? fullBandH : Math.floor(fullBandH / 2);
-              const ceilingH = level + bandH;
-              const hunt = nearestHuntRoom(resolvedHere, ceilingH);
+              const ceilingH = charLevel + bandH;
+              const hunt = nearestHuntRoom(resolvedHere, charLevel, ceilingH, charLevel - 2);
               if (hunt && hunt.hops > 0) {
                 const dest = hunt.path?.[0] ?? hunt.room;
                 const travelToHunt = (client, session) => {
@@ -1469,7 +1631,7 @@ export class GOAPKeeper {
       // fight something to earn money for a weapon.
       if (ws.has_target === false || ws.target_in_band === false) {
         const here = c.room?.num ?? c.room?.id;
-        const level = this.policy.huntLevel ?? c.vitals?.()?.health?.max ?? 20;
+        const charLevel = c.vitals?.()?.health?.max ?? 20;
         // Use the same reduced band for unarmed characters as the
         // target detection, so the hunt room matches what he can fight.
         const eq3 = c?.equipment?.();
@@ -1479,13 +1641,13 @@ export class GOAPKeeper {
               const nm = o.name ?? c.rsc?.get?.(o.nameRsc) ?? '';
               return /sword|mace|hammer|staff|club|axe|dagger|spear|bow|crossbow|weapon/i.test(nm);
             });
-        const fullBand3 = this.policy?.threatBand ?? Math.floor(level / 2);
+        const fullBand3 = this.policy?.threatBand ?? Math.floor(charLevel / 2);
         const band3 = isArmed3 ? fullBand3 : Math.floor(fullBand3 / 2);
-        const levelCeiling3 = level + band3;
+        const levelCeiling3 = charLevel + band3;
         if (here != null) {
           const { nearestHuntRoom } = await import('./m59-hunt-room.mjs');
           const resolvedHere = resolveMapRoom(here, this._roomName());
-          const hunt = nearestHuntRoom(resolvedHere, levelCeiling3);
+          const hunt = nearestHuntRoom(resolvedHere, charLevel, levelCeiling3, charLevel - 2);
           if (hunt && hunt.hops > 0) {
             // Travel to a hunt room with mobs.
             const travelToHunt = (client, session) => {
@@ -1642,7 +1804,7 @@ export class GOAPKeeper {
     // character walks toward a mob it should be running from.
     const charLevel2 = c.vitals?.()?.health?.max ?? 20;
     const mapRoomNum = resolveMapRoom(c.room?.num ?? c.room?.id ?? null, this._roomName());
-    const execArgs = { threatCeiling: ws._threatCeiling ?? null, targetInBand: ws.target_in_band ?? null, huntLevel: this.policy.huntLevel ?? charLevel2, threatBand: this.policy.threatBand ?? Math.floor(charLevel2 / 2), mapRoomNum };
+    const execArgs = { threatCeiling: ws._threatCeiling ?? null, targetInBand: ws.target_in_band ?? null, charLevel: charLevel2, threatBand: this.policy.threatBand ?? Math.floor(charLevel2 / 2), mapRoomNum };
     // MAX PASS GUARD: if this step takes longer than 8s, the broker's
     // event loop has been monopolised for too long. We cannot abort the
     // atomic mid-flight (it's awaiting socket I/O), but we log the

@@ -12,9 +12,11 @@
 // holds the current phase and produces one action per tick.
 // The decider queries it when the _fight goal is active.
 
-import { KOD_FINENESS, protocolToClient } from './m59-roo.mjs';
-import { zapStatus, shouldCastZap, findZapSpell, equippedWeapon } from './m59-zap.mjs';
-import './m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
+import { KOD_FINENESS, protocolToClient } from '../m59-roo.mjs';
+import { zapStatus, shouldCastZap, findZapSpell, equippedWeapon } from '../m59-zap.mjs';
+import { recordKill } from '../m59-tougher.mjs';
+import { recordEvent as recordLedgerEvent } from '../m59-ledger.mjs';
+import '../m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
 
 /**
  * Compute the adjacent square to walk to when engaging a target.
@@ -40,7 +42,7 @@ function engageSquare(me, target) {
 const PULL_RANGE = 12;
 // How close (in squares) for "in reach" — melee is a disc of
 // radius 2-3 on square coordinates.
-const MELEE_REACH = 3;
+const MELEE_REACH = 2;
 // CAST_REACH: how close a caster needs to be to cast a bolt at a mob.
 // Bolt spells (zap, fire bolt) travel several squares, so casters can
 // engage from farther out than melee.
@@ -194,11 +196,86 @@ export class CombatController {
    *   the swing must land on the same one.
    * @returns {object} { kind, what, why? }
    */
+  // Bind a target id to its room object, or null. Single choke for all
+  // three latch paths (selection, memory, fallback): exists, not self or a
+  // player, has coords, and never a prohibited kind (spiders/centipedes
+  // unless specialized — the decider excludes them from selection and this
+  // is the backstop; baby spiders exempt). Blindly grabbing the first named
+  // object swung at furniture (a flagpole, 10k+ swings). No decide import
+  // (cycle); canonical rule lives in m59-decide prohibitedKind.
+  _bindTarget(objects, id, c) {
+    if (id == null || !(objects instanceof Map)) return null;
+    const o = objects.get(id);
+    if (!o) return null;
+    const oNm = String(c?.rsc?.get?.(o?.nameRsc) ?? o?.name ?? '')
+      .replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()
+      .split(/[^a-z]+/).filter(Boolean).sort().join(' ');
+    const pol = (this.session?.policy ?? {});
+    if (oNm.split(' ').includes('spider') && oNm !== 'baby spider'
+        && pol?.huntSpiders !== true) return null;
+    if (oNm.split(' ').includes('centipede') && pol?.huntCentipedes !== true) return null;
+    if (o.is_self || o.is_player || o.col == null || o.row == null) return null;
+    this.targetId = o.id;
+    this.targetName = c?.rsc?.get?.(o.nameRsc) ?? o.name ?? 'mob';
+    return o;
+  }
   tick(frame, act, ws) {
     const c = this.session?.client;
     if (!c || c.state !== 'game') return { kind: 'idle', why: 'not in game' };
+    // Periodic combatLog dump: every 30s, log the last 5 combat outcomes.
+    if (c.combatLog?.length > 0) {
+      if (Date.now() - (this._lastCombatLogAt ?? 0) > 30000) {
+        this._lastCombatLogAt = Date.now();
+        const recent = c.combatLog.slice(-5);
+        console.error(`[combat-log] ${this.session?.name ?? 'keeper'}: ${JSON.stringify(recent)}`);
+      }
+      // Route kill prose into the ledger — the vanish heuristic at line 265
+      // has produced zero `killed` events since fleet-2026-08-19.
+      const charName = c.me?.name ?? this.session?.name ?? 'unknown';
+      for (const e of c.combatLog) {
+        if (e.kind === 'kill' && !e.ledgered) {
+          let creature = null;
+          const firstPerson = e.text.match(/^you (?:killed|slain) (?:the |an? )?(.+?)\.?$/i);
+          const thirdPerson = e.text.match(/^(.+?) has valiantly slain (.+?)\.?$/i);
+          if (firstPerson) {
+            creature = firstPerson[1];
+          } else if (thirdPerson) {
+            if (thirdPerson[1] !== charName) {
+              console.error(`[kill-skip] ${charName}: third-person kill by ${thirdPerson[1]} (not us)`);
+              e.ledgered = 'skip'; continue;
+            }
+            creature = thirdPerson[2];
+          } else {
+            console.error(`[kill-skip] ${charName}: unrecognised kill prose: ${e.text.slice(0, 80)}`);
+            e.ledgered = 'skip'; continue;
+          }
+          e.ledgered = 'killed';
+          try {
+            recordLedgerEvent(charName, 'killed', {
+              creature,
+              room: c.room?.name ?? frame?.room?.name ?? this.session?.world?.room?.name ?? null,
+              room_num: c.room?.num ?? frame?.room?.num ?? this.session?.world?.room?.num ?? null,
+            });
+          } catch { /* ledger must never break combat */ }
+        }
+        if (e.kind === 'died' && !e.ledgered) {
+          try {
+            const m = e.text.match(/^###\s+(.+?)\s+was just killed by\s+(?:an?\s+|the\s+)?(.+?)\.?$/i);
+            const victim = m?.[1] ?? null;
+            const killer = m?.[2] ?? null;
+            if (victim && victim !== (c.me?.name ?? null)) { e.ledgered = 'skip'; continue; }
+            e.ledgered = 'died';
+            recordLedgerEvent(victim ?? charName, 'died', {
+              killer,
+              room: c.room?.name ?? frame?.room?.name ?? this.session?.world?.room?.name ?? null,
+              room_num: c.room?.num ?? frame?.room?.num ?? this.session?.world?.room?.num ?? null,
+            });
+          } catch { /* ledger must never break combat */ }
+        }
+      }
+    }
 
-    const me = frame?.position ?? c.self;
+    const me = frame?.position ?? this.session?._pose?.current?.() ?? c.self;
     if (!me || me.col == null) return { kind: 'idle', why: 'no position' };
 
     // Build a walkable checker from the geometry.
@@ -223,14 +300,9 @@ export class CombatController {
     // when the world state has no target (e.g. the controller was
     // created before the first evaluate).
     const objects = frame?.objects ?? c.room?.objects;
-    let target = null;
-    const wsTargetId = ws?._targetId;
-    if (wsTargetId != null && objects) {
-      target = objects instanceof Map ? objects.get(wsTargetId) : null;
-      if (target) { this.targetId = target.id; this.targetName = target.name ?? c.rsc?.get?.(target.nameRsc) ?? 'mob'; }
-    }
+    let target = this._bindTarget(objects, ws?._targetId ?? null, c);
     if (!target && this.targetId != null && objects) {
-      target = objects instanceof Map ? objects.get(this.targetId) : null;
+      target = this._bindTarget(objects, this.targetId, c);
     }
     // If the target left (died or fled), loot the floor before clearing.
     // The corpse's drops (gold, reagents, equipment) are on the ground where
@@ -242,26 +314,42 @@ export class CombatController {
       this.targetId = null;
       this.targetName = null;
       this.phase = 'idle';
+      // KILL FEED: the dashboard's kill tally reads the ledger's `kill`
+      // events, which only the legacy keeper wrote — the tick driver went
+      // silent when the fleet moved over. Record when we were actively
+      // swinging at it (a target that vanishes mid-fight died; one that
+      // leaves untouched is a flee, not a kill).
+      try {
+        if (hadName && Date.now() - (this._lastSwingAt ?? 0) < 15000) {
+          const c = this.session?.client;
+          const charName = c?.me?.name ?? this.session?.name ?? 'unknown';
+          recordKill(charName, {
+            creature: hadName,
+            room: c?.room?.name ?? frame?.room?.name ?? null,
+            room_num: c?.room?.num ?? frame?.room?.num ?? null,
+          });
+          // ...and into the ledger, which is what the dashboard's
+          // kills_30m counts (ledger `killed` events).
+          try {
+            recordLedgerEvent(charName, 'killed', {
+              creature: hadName,
+              room: c?.room?.name ?? frame?.room?.name ?? null,
+              room_num: c?.room?.num ?? frame?.room?.num ?? null,
+            });
+          } catch { /* ledger must never break combat */ }
+        }
+      } catch { /* feed must never break combat */ }
       return { kind: 'loot', what: `target ${hadName ?? hadTarget} left — looting`, lootId: hadTarget };
     }
     if (!target) {
-      // No target from world state or memory: only scan the room
-      // for a hostile when the world state says there is one.
-      // This prevents swinging at items or exits.
-      if ((ws == null || ws?.has_target === true) && objects instanceof Map) {
-        for (const o of objects.values()) {
-          if (o.is_player || o.is_self) continue;
-          // Only consider objects that look like mobs (have a name
-          // that's not an item/exit). The world state already
-          // filtered for hostiles; we just need to find the object.
-          if (o.col != null && o.row != null) {
-            target = o;
-            this.targetId = o.id;
-            this.targetName = c.rsc?.get?.(o.nameRsc) ?? o.name ?? 'mob';
-            break;
-          }
-        }
-      }
+      // No target from world state or memory: latch the SELECTED target by
+      // id (the decider picked a real mob — bind to it, never scan). The old
+      // blind scan grabbed the first named object: furniture (a flagpole,
+      // 10k+ swings, never dies) and logoff ghosts. If the selected id is
+      // gone from the room, the target died or fled — idle out and let the
+      // decider loot/re-target rather than swinging at scenery.
+      const wantId = this.targetId ?? ws?._targetId ?? null;
+      if (wantId != null) target = this._bindTarget(objects, wantId, c);
       if (!target) {
         this.phase = 'idle';
         return { kind: 'idle', what: 'no target in room' };
@@ -279,9 +367,9 @@ export class CombatController {
     const dist = Math.abs(tCol - me.col) + Math.abs(tRow - me.row);
     const isAggroed = !!(target.flags & 0x02000000); // OF.ENEMY
     // HP as a fraction (0-100). Drives the retreat decision.
-    const hpPct = frame?.vitals?.health?.pct ?? 100;
+    const _hpPct = frame?.vitals?.health?.pct;
+    const hpPct = _hpPct == null ? 100 : _hpPct;
     const hpLow = hpPct <= RETREAT_HP_PCT;
-    // Attack mode: casters (no weapon, has attack spell) use a bolt at
     // CAST_REACH; everyone else uses a melee swing at MELEE_REACH.
     const reach = this._attackSpell() ? CAST_REACH : MELEE_REACH;
     const tGeo = frame?.geometry ?? this.session?.world?.geometry;
@@ -335,7 +423,16 @@ export class CombatController {
             { maxNodes: 4000 }
           );
           if (p.found) {
-            this._cachedPathDist = p.waypoints.length;
+            // PATH DISTANCE IN SQUARES, not nodes: a direct 3-square path has
+            // 2 endpoint waypoints, and comparing node count to MELEE_REACH
+            // reads it as "in reach" — swinging at air forever 3 squares out
+            // (watched live). Sum segment lengths from our square instead.
+            const pts = [{ x: me.col * F + H, y: me.row * F + H }, ...(p.waypoints ?? [])];
+            let squares = 0;
+            for (let i = 1; i < pts.length; i++) {
+              squares += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y) / F;
+            }
+            this._cachedPathDist = squares;
           } else {
             this._cachedPathDist = 999; // no path: separate island or walled off
             if (this.session && this.targetId != null) {
@@ -369,7 +466,26 @@ export class CombatController {
         // every tick by a fresh one-square re-target. The dist <= reach check above
         // switches to fighting when we get close enough.
         this.phase = 'close';
-        return this._walkToward(act, moveTarget, 'close gap', me);
+        const walkResult = this._walkToward(act, moveTarget, 'close gap', me);
+        const isStuck = walkResult.kind === 'idle' && /stuck|no-route/.test(walkResult.what);
+        if (isStuck && pathDist <= reach) {
+          // Stuck but in reach: swing instead of idle.
+          const now = Date.now();
+          if (now - this.lastSwing >= SWING_MS) {
+            this.lastSwing = now;
+            const deg = Math.atan2(target.row - me.row, target.col - me.col) * 180 / Math.PI;
+            act.face(deg);
+            const spell = this._attackSpell();
+            if (spell) {
+              this.session?.cast?.(spell.id, []);
+              return { kind: 'cast', what: `close stuck: cast ${spell.name} at mob (${hpPct}%)` };
+            }
+            act.swing(this.targetId);
+            this._lastSwingAt = Date.now();
+            return { kind: 'swing', what: `close stuck: swing at mob (${hpPct}%)` };
+          }
+        }
+        return walkResult;
       }
 
       case 'fight': {
@@ -385,7 +501,26 @@ export class CombatController {
         // to closing the gap instead of swinging at air.
         if (pathDist > reach) {
           this.phase = 'close';
-          return this._walkToward(act, moveTarget, 'out of reach, closing', me);
+          const walkResult = this._walkToward(act, moveTarget, 'out of reach, closing', me);
+          const isStuck = walkResult.kind === 'idle' && /stuck|no-route/.test(walkResult.what);
+          if (isStuck) {
+            // Stuck but in reach: swing instead of idle.
+            const now = Date.now();
+            if (now - this.lastSwing >= SWING_MS) {
+              this.lastSwing = now;
+              const deg = Math.atan2(target.row - me.row, target.col - me.col) * 180 / Math.PI;
+              act.face(deg);
+              const spell = this._attackSpell();
+              if (spell) {
+                this.session?.cast?.(spell.id, []);
+                return { kind: 'cast', what: `fight stuck: cast ${spell.name} at mob (${hpPct}%)` };
+              }
+              act.swing(this.targetId);
+              this._lastSwingAt = Date.now();
+              return { kind: 'swing', what: `fight stuck: swing at mob (${hpPct}%)` };
+            }
+          }
+          return walkResult;
         }
         return this._doFight(frame, act, target, dist, isAggroed, pathDist);
       }
@@ -428,18 +563,83 @@ export class CombatController {
                   return { kind: 'cast', what: `retreat: cast ${spell.name} at closing mob (${hpPct}%)` };
                 }
                 act.swing(this.targetId);
+                this._lastSwingAt = Date.now();
                 return { kind: 'swing', what: `retreat: swing at closing mob (${hpPct}%)` };
               }
               return { kind: 'idle', what: `retreat: attack cooldown (${hpPct}%)` };
             }
             return { kind: 'idle', what: `retreat: at cover (${hpPct}%), mob ${dist.toFixed(1)} away` };
           }
-          return this._walkTo(act, this._retreatSpot, `retreat to cover (${spot.col},${spot.row})`, me);
+          const walkResult = this._walkTo(act, this._retreatSpot, `retreat to cover (${spot.col},${spot.row})`, me);
+          const isStuck = walkResult.kind === 'idle' && /stuck|no-route/.test(walkResult.what);
+          if (isStuck) {
+            // Stuck: fall back to adjacent-swing instead of idle.
+            if (dist <= reach) {
+              const now = Date.now();
+              if (now - this.lastSwing >= SWING_MS) {
+                this.lastSwing = now;
+                const deg = Math.atan2(tRow - me.row, tCol - me.col) * 180 / Math.PI;
+                act.face(deg);
+                const spell = this._attackSpell();
+                if (spell) {
+                  this.session?.cast?.(spell.id, []);
+                  return { kind: 'cast', what: `retreat stuck: cast ${spell.name} at mob (${hpPct}%)` };
+                }
+                act.swing(this.targetId);
+                this._lastSwingAt = Date.now();
+                return { kind: 'swing', what: `retreat stuck: swing at mob (${hpPct}%)` };
+              }
+            }
+            return { kind: 'idle', what: `retreat stuck: ${walkResult.what}, waiting` };
+          }
+          return walkResult;
         }
         // No safe spot: back away from the mob (one square opposite).
         const awayCol = me.col + Math.sign(me.col - tCol) || me.col;
         const awayRow = me.row + Math.sign(me.row - tRow) || me.row;
-        return this._walkTo(act, { col: awayCol, row: awayRow }, 'retreat: back away', me);
+        if (!isWalkable(awayRow, awayCol)) {
+          // Fallback square is a wall: swing at the mob instead.
+          if (dist <= reach) {
+            const now = Date.now();
+            if (now - this.lastSwing >= SWING_MS) {
+              this.lastSwing = now;
+              const deg = Math.atan2(tRow - me.row, tCol - me.col) * 180 / Math.PI;
+              act.face(deg);
+              const spell = this._attackSpell();
+              if (spell) {
+                this.session?.cast?.(spell.id, []);
+                return { kind: 'cast', what: `retreat: cast ${spell.name} at mob (${hpPct}%)` };
+              }
+              act.swing(this.targetId);
+              this._lastSwingAt = Date.now();
+              return { kind: 'swing', what: `retreat: swing at mob (${hpPct}%)` };
+            }
+          }
+          return { kind: 'idle', what: `retreat: wall, no cover, mob ${dist.toFixed(1)} away` };
+        }
+        const walkResult2 = this._walkTo(act, { col: awayCol, row: awayRow }, 'retreat: back away', me);
+        const isStuck2 = walkResult2.kind === 'idle' && /stuck|no-route/.test(walkResult2.what);
+        if (isStuck2) {
+          // Stuck: fall back to adjacent-swing instead of idle.
+          if (dist <= reach) {
+            const now = Date.now();
+            if (now - this.lastSwing >= SWING_MS) {
+              this.lastSwing = now;
+              const deg = Math.atan2(tRow - me.row, tCol - me.col) * 180 / Math.PI;
+              act.face(deg);
+              const spell = this._attackSpell();
+              if (spell) {
+                this.session?.cast?.(spell.id, []);
+                return { kind: 'cast', what: `retreat stuck: cast ${spell.name} at mob (${hpPct}%)` };
+              }
+              act.swing(this.targetId);
+              this._lastSwingAt = Date.now();
+              return { kind: 'swing', what: `retreat stuck: swing at mob (${hpPct}%)` };
+            }
+          }
+          return { kind: 'idle', what: `retreat stuck: ${walkResult2.what}, waiting` };
+        }
+        return walkResult2;
       }
 
       default:
@@ -459,7 +659,7 @@ export class CombatController {
    *   2. Melee swing: the default for an armed character.
    */
   _doFight(frame, act, target, dist, isAggroed, pathDist) {
-    const me = frame?.position ?? this.session?.client?.self;
+    const me = frame?.position ?? this.session?._pose?.current?.() ?? this.session?.client?.self;
     const client = this.session?.client;
     const reach = this._attackSpell() ? CAST_REACH : MELEE_REACH;
     // Use pathDist (A* tile count) if available, else fall back to Manhattan.
@@ -468,7 +668,26 @@ export class CombatController {
       // Out of reach (by path distance). Walk toward it.
       if (!isAggroed) {
         this.phase = 'close';
-        return this._walkToward(act, { col: target.col, row: target.row }, 'close gap', me);
+        const walkResult = this._walkToward(act, { col: target.col, row: target.row }, 'close gap', me);
+        const isStuck = walkResult.kind === 'idle' && /stuck|no-route/.test(walkResult.what);
+        if (isStuck && dist <= reach) {
+          // Stuck but in reach (by Manhattan): swing instead of idle.
+          const now = Date.now();
+          if (now - this.lastSwing >= SWING_MS) {
+            this.lastSwing = now;
+            const deg = Math.atan2(target.row - me.row, target.col - me.col) * 180 / Math.PI;
+            act.face(deg);
+            const spell = this._attackSpell();
+            if (spell) {
+              this.session?.cast?.(spell.id, []);
+              return { kind: 'cast', what: `doFight stuck: cast ${spell.name} at mob` };
+            }
+            act.swing(this.targetId);
+            this._lastSwingAt = Date.now();
+            return { kind: 'swing', what: `doFight stuck: swing at mob` };
+          }
+        }
+        return walkResult;
       }
       return { kind: 'idle', what: `waiting for ${this.targetName} to close (path ${effDist})` };
     }
@@ -504,13 +723,21 @@ export class CombatController {
         const deg = Math.atan2(target.row - me.row, target.col - me.col) * 180 / Math.PI;
         act.face(((deg % 360) + 360) % 360);
       }
-      act.swing(this.targetId);
+      const swingResult = act.swing(this.targetId);
+      this._lastSwingAt = Date.now();
       if (process.env.M59_DEBUG_SWING) {
         const sinceLast = Date.now() - (this._lastSwingLogAt ?? 0);
         this._lastSwingLogAt = Date.now();
-        console.error(`[swing-debug] t3 swing at ${Date.now()} sinceLast=${sinceLast}ms lastSwing=${this.lastSwing} now=${Date.now()} gap=${Date.now()-this.lastSwing}ms`);
+        console.error(`[swing-debug] ${this.session?.name ?? "?"} swing at ${Date.now()} sinceLast=${sinceLast}ms lastSwing=${this.lastSwing} now=${Date.now()} gap=${Date.now()-this.lastSwing}ms`);
       }
       const zapActive = zapStatus(client).active;
+      if (Date.now() - (this._lastSwingDiagAt ?? 0) > 10000) {
+        this._lastSwingDiagAt = Date.now();
+        const al = client?.attackLog;
+        const targetStill = frame?.objects?.get?.(this.targetId) != null;
+        const targetHp = frame?.objects?.get?.(this.targetId)?.hp ?? 'n/a';
+        console.error(`[swing-diag] ${this.session?.name ?? 'keeper'}: swingResult=${JSON.stringify(swingResult)} targetId=${this.targetId} targetStill=${targetStill} targetHp=${targetHp} attackLog_len=${al?.length ?? 0}`);
+      }
       return { kind: 'swing', what: `swing at ${this.targetName}${zapActive ? ' (zap active)' : ''}` };
     }
     // In reach but on cooldown. Check if the zap enchantment just lapsed and
@@ -528,6 +755,8 @@ export class CombatController {
    */
   _maybeReequip(client) {
     if (!client) return null;
+    if (Date.now() - (this._lastReequipAt ?? 0) < 30000) return null;
+    if (Date.now() - (client._lastZapCastAt ?? 0) < 30000) return null;
     // Only re-equip if the enchantment is DOWN (it lapsed) and a weapon is in
     // the pack but not equipped. We track the weapon we unequipped.
     if (zapStatus(client).active) return null;
@@ -539,8 +768,8 @@ export class CombatController {
     const equipped = equippedWeapon(client);
     if (equipped) return null; // already has a weapon out
     // Re-equip the weapon from the pack.
+    this._lastReequipAt = Date.now();
     client.use?.(inPack.id);
-    console.error(`[combat] ${this.session?.name} re-equipped ${client.rsc?.get?.(inPack.nameRsc) ?? inPack.name} after zap lapse`);
     return { kind: 'reequip', what: 're-equipped weapon after zap lapse' };
   }
 
@@ -553,7 +782,7 @@ export class CombatController {
    */
   _maybeCastZap(client) {
     if (!client) return null;
-    const { shouldCast, reason } = shouldCastZap(client);
+    const { shouldCast, reason } = shouldCastZap(client, this.session);
     if (!shouldCast) return null;
     const spell = findZapSpell(client);
     if (!spell) return null;
@@ -563,6 +792,7 @@ export class CombatController {
       client.unuse?.(weapon.id);
     }
     client.cast?.(spell.id, []);
+    client._lastZapCastAt = Date.now();
     // Log the cast for visibility. The ON message confirms it took.
     console.error(`[combat] ${this.session?.name} casting zap (${reason})`);
     return { kind: 'zap-cast', what: `cast zap (${reason})` };
@@ -626,9 +856,9 @@ export class CombatController {
       // replanning the A* path every tick).
       if (!this._walkDest || this._walkDest.col !== dest.col || this._walkDest.row !== dest.row) {
         this._walkDest = { col: dest.col, row: dest.row };
-        mover.to(dest.col, dest.row);
+        mover.to(dest.col, dest.row, { by: 'combat' });
       }
-      const r = mover.tick(me ? { col: me.col, row: me.row, x: me.x, y: me.y } : undefined);
+      const r = mover.tickLogged(me ? { col: me.col, row: me.row, x: me.x, y: me.y } : undefined);
       if (r.state === 'arrived') {
         this._walkDest = null;
         return { kind: 'walk', what: what + ' (arrived)' };
@@ -647,14 +877,20 @@ export class CombatController {
       }
       return { kind: 'walk', what };
     }
-    // Fallback: raw one-square step.
-    if (!me) me = this.session?.client?.self;
+    // Fallback: raw one-square step, production-gated to the 1/s send law
+    // (the Pacer spaces sends but never drops, so ungated per-tick submits
+    // back up the queue with stale positions).
+    if (!me) me = this.session?._pose?.current?.() ?? this.session?.client?.self;
     if (!me) return { kind: 'idle', why: 'no position' };
     const dc = Math.sign(dest.col - me.col);
     const dr = Math.sign(dest.row - me.row);
     const nextCol = me.col + dc;
     const nextRow = me.row + dr;
-    act.step(nextCol, nextRow);
+    const now4 = Date.now();
+    if (now4 - (this._lastStepAt ?? 0) >= 1000) {
+      this._lastStepAt = now4;
+      act.step(nextCol, nextRow, { minGapMs: 1000 });
+    }
     return { kind: 'walk', what };
   }
 

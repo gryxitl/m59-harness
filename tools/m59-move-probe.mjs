@@ -34,7 +34,7 @@ import { fleetName, stateFileFor } from './m59-fleetpath.mjs';
 import { loadMap } from './m59-map.mjs';
 import { attachStepMasks } from './m59-routes.mjs';
 import { sharedRoomGeometry, KOD_FINENESS, protocolToClient } from './m59-roo.mjs';
-import { resolveRoomNum } from './m59-route.mjs';
+import { resolveRoomNum } from './tick/m59-route.mjs';
 
 const argv = process.argv.slice(2);
 const arg = (n, d) => { const i = argv.indexOf('--' + n); return i >= 0 ? argv[i + 1] : d; };

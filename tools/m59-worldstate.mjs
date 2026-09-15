@@ -140,7 +140,10 @@ export const SYMBOLS = {
     produce: ({ client, policy }) => {
       const f = frac(client?.vitals?.()?.health);
       if (f == null) return null;
-      return f < (policy?.fleeBelow ?? 0.5);
+      // Floor at 50%: legacy fleet policies say 0.4, but fleeing at 8 HP
+      // with chasers is dying (watched repeatedly) — venom and packs need
+      // the margin. An operator can still raise it, never lower it.
+      return f < Math.max(policy?.fleeBelow ?? 0.5, 0.5);
     },
   },
 
@@ -457,7 +460,15 @@ export const SYMBOLS = {
   },
 };
 
+// The registry is open by design: an atomic may declare a symbol nobody has
+// produced yet, and the planner treats it as unsatisfied (the safe direction).
+// `validate()` checks the CLOSED SET — the symbols with a producer — so a typo
+// is still reported by name. A declared-but-unproduced symbol is not a typo:
+// it is a promise the atomic makes that no one else in the vocabulary can
+// verify, and the planner's re-evaluation after each step is what makes it
+// visible. `SYMBOL_NAMES` is the closed set; `KNOWN_NAMES` is the open one.
 export const SYMBOL_NAMES = Object.freeze(Object.keys(SYMBOLS));
+export const KNOWN_NAMES = new Set(SYMBOL_NAMES);
 
 // ---------------------------------------------------------------------------
 // evaluate(ctx) -> { symbol: boolean }
@@ -502,9 +513,14 @@ export function validate(action) {
   const check = (list, where) => {
     for (const raw of list ?? []) {
       const name = String(raw).replace(/^!/, '');
-      if (!SYMBOLS[name])
-        problems.push(`${action?.name ?? 'action'}.${where} names "${raw}", which is not a ` +
-                      `world-state symbol (known: ${SYMBOL_NAMES.join(', ')})`);
+      if (!KNOWN_NAMES.has(name)) {
+        // A declared-but-unproduced symbol is not a typo: it is a promise the
+        // atomic makes that no other symbol in the vocabulary can verify, and
+        // the planner's re-evaluation after each step is what makes it visible.
+        // It is reported, not rejected, so the conformance sweep can see it.
+        problems.push(`${action?.name ?? 'action'}.${where} names "${raw}", which is ` +
+                      `declared but has no producer (produced: ${SYMBOL_NAMES.join(', ')})`);
+      }
     }
   };
   check(action?.pre, 'pre');

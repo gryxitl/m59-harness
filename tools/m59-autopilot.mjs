@@ -8221,13 +8221,17 @@ export class Autopilot {
     // ------------------------------------------------------------------
     if (this.policy && this.policy.useGOAP === true) {
       const room = s.world?.room ?? c?.room;
-      // Underworld: check the CLIENT's room first. The broker's s.world.room
-      // can be stale (it lags behind room changes), so the client's wire
-      // object is the source of truth. The client reports id: 6 for the
-      // Underworld, and roomNameRsc resolves to "The Underworld".
+      // Underworld: check BOTH the client's and broker's room. The names are
+      // the reliable half (they agree across id spaces); the ids differ
+      // (client id 6 vs broker room 1). Print both to settle it empirically.
       const clientRoomName = c?.roomNameRsc ? (c.rsc?.get?.(c.roomNameRsc) ?? '') : '';
       const clientRoomId = c?.room?.id;
-      const isUnderworld = /underworld/i.test(clientRoomName) || clientRoomId === 6;
+      const brokerRoomName = s?.world?.room?.name ?? '';
+      const brokerRoomId = s?.world?.room?.num;
+      const isUnderworld = /underworld/i.test(clientRoomName) || clientRoomId === 6 || /underworld/i.test(brokerRoomName);
+      if (clientRoomId === 6 || /underworld/i.test(clientRoomName) || /underworld/i.test(brokerRoomName)) {
+        console.error(`[uw] client=${clientRoomId}/${clientRoomName} broker=${brokerRoomId}/${brokerRoomName}`);
+      }
 
       if (c && typeof c.armed === 'function' && !c.armed() && !isUnderworld) {
         const r = await this.passArm({ s, c, room, v: c.vitals?.() ?? {} });
@@ -8244,11 +8248,10 @@ export class Autopilot {
           note: (msg, data) => this.note(msg, data),
         });
       }
-      // Override in_underworld when the broker's room tracking says
-      // Underworld but the client's room is stale (e.g. right after
-      // a reconnect). The GOAP keeper's goal stack picks !in_underworld
-      // and plans the escape_underworld atomic.
-      const wsOverride = isUnderworld ? { in_underworld: true } : null;
+      // Override in_underworld when either the client's or broker's room name
+      // says Underworld. The names are the reliable half (they agree across
+      // id spaces); the ids differ (client id 6 vs broker room 1).
+      const wsOverride = { in_underworld: isUnderworld };
       let r;
       try {
         // Attach the autopilot to the broker session so atomics can

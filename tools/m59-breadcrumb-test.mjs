@@ -132,6 +132,13 @@ function fakeSession({ at = { col: 5, row: 5 }, roomId = 587, legal = () => true
     cancelledMovement(extra) { return { cancelled: true, ...extra }; },
     threatsHere() { return null; },
     async stepFine() { return { moved: true }; },
+    // `walkTo` (since the fine-grid fallback was added) calls `this.walkFine` when the
+    // coarse grid finds no route. This fixture has no BSP model, so a REFUSAL is the
+    // faithful stand-in: the retreat is the rescue under test here, and a stub that
+    // rescued the walk would mask the dead-end contract ("a genuine dead end reports
+    // itself") — the real walkFine may legitimately walk out of pockets the coarse
+    // grid cannot see, which is exactly what these fixtures are not about.
+    async walkFine() { return { arrived: false, steps: 0, reason: 'fine_refused' }; },
     world: { geometry: {
       walkable: () => true,
       // walkTo asks `standable` now — the BSP question rather than the server grid's.
