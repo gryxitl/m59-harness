@@ -2065,7 +2065,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       if (active?.goal === 'post_death_rest') {
         const hp = ws._hp, maxHp = ws._maxHp;
         const vigor = ws._vigor;
-        const fullyRested = (hp == null || maxHp == null || hp >= maxHp) && (vigor == null || vigor >= 80);
+        const fullyRested = hp != null && maxHp != null && hp >= maxHp && vigor != null && vigor >= 80;
         if (fullyRested) {
           try { delete session._lastUnderworldAt; } catch {}
           try { console.error(`[post_death_rest] disarmed — fully rested (hp=${hp}/${maxHp} vigor=${vigor})`); } catch {}
