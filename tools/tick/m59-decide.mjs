@@ -1308,6 +1308,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // STAMP DEATH: when the character is in the Underworld, record the time.
     // Used by the post_death_rest goal to gate hunting until full HP + vigor 80.
     if (ws.in_underworld === true) session._lastUnderworldAt = Date.now();
+    ws._lastUnderworldAt = session._lastUnderworldAt ?? null;
     // Log the room identity inputs whenever the symbol is true.
     if (ws.in_underworld === true && Date.now() - (_uwDbgAt ?? 0) > 30000) {
       _uwDbgAt = Date.now();
@@ -2041,7 +2042,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // 2a2. VIGOR LOW: rest to recover vigor. The character
     // can't fight effectively below vigor 20. Resting
     // recovers vigor over time (faster at an inn).
-    if (active?.goal === 'vigor_low') {
+    if (active?.goal === 'vigor_low' || active?.goal === 'post_death_rest') {
       // STAND UNDER FIRE (same rule as healthy above).
       if (ws._justDamaged && ws._mobNear) {
         act.stand?.();
