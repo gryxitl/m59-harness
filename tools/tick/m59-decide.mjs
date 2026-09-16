@@ -1590,6 +1590,27 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             }
           }
 
+          // THREAT CEILING: compute the same formula as the attacker-switch
+          // block. Mobs above the ceiling are too dangerous to target — the
+          // character will die. Skip them.
+          const maxHp = client.vitals?.()?.health?.max ?? 20;
+          const charLevel = maxHp;
+          const isArmed = ws.armed === true;
+          const fullBand = (session?.policy ?? policy)?.threatBand ?? Math.floor(charLevel / 2);
+          const ceiling = charLevel + (isArmed ? fullBand : Math.floor(fullBand / 2));
+          // Build a level map from the compendium (creature name -> level).
+          let creatureLevels = new Map();
+          try {
+            const spawns = loadSpawns(SPAWNS_FILE);
+            if (spawns?.byMonster) {
+              for (const [name, entries] of Object.entries(spawns.byMonster)) {
+                if (!Array.isArray(entries)) continue;
+                const lvl = entries[0]?.level;
+                if (lvl != null) creatureLevels.set(mobNameKey(name), lvl);
+              }
+            }
+          } catch { /* compendium unavailable */ }
+
           for (const o of objects.values()) {
             if (o.is_self) continue;
             if (o.col == null || o.row == null) continue;
@@ -1606,6 +1627,11 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             const isMob = ((session?.policy ?? policy)?.defendAgainstPlayers === true && o.is_player && o.can_attack)
               || (o.is_player === false && creatureNames.size > 0 && creatureNames.has(objName));
             if (!isMob) continue;
+            // THREAT CEILING FILTER: skip mobs above the character's ceiling.
+            // An ant (lv40) in a room with a level-25 character (ceiling 37)
+            // is too dangerous to target — the character will die.
+            const mobLvl = creatureLevels.get(objName);
+            if (mobLvl != null && mobLvl > ceiling) continue;
             const d2 = (o.col - me.col) ** 2 + (o.row - me.row) ** 2;
             candidates.push({ o, d2 });
           }
