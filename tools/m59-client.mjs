@@ -1360,6 +1360,7 @@ export class M59Client {
           o.is_self = (o.id != null && o.id === this.selfId);
           o.is_player = !!(o.flags & 0x0004);
           o.can_attack = !!(o.flags & 0x0008);
+          o.is_enemy = !!(o.flags & 0x02000000);
           return [o.id, o];
         }));
         // SELF-HEAL A STALE selfId. selfId is set only by the BP.PLAYER packet (one per
@@ -1390,9 +1391,9 @@ export class M59Client {
         const res = parseCreate(body);
         if (!this.check('CREATE', res)) break;
         res.object.appearanceRevision = ++this.appearanceRevision;
-        res.object.is_self = (res.object.id != null && res.object.id === this.selfId);
-        res.object.is_player = !!(res.object.flags & 0x0004);
-        res.object.can_attack = !!(res.object.flags & 0x0008);
+          res.object.is_player = !!(res.object.flags & 0x0004);
+          res.object.can_attack = !!(res.object.flags & 0x0008);
+          res.object.is_enemy = !!(res.object.flags & 0x02000000);
         this.room.objects.set(res.object.id, res.object);
         this.emit('appeared', { id: res.object.id, what: describeObject(res.object, this.lookup) });
         break;
