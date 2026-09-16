@@ -70,6 +70,9 @@ const DANGEROUS_SPIDER_ROOMS = new Set([
   4, 6, 26, 27, 28,  // spider lv50 (underworld/early rooms)
   // Sewer rooms: giant rats (lv30) co-spawn with lupoggs (lv105)
   377, 378, 379, 108, 111, 112, 380,
+  // Sweet Grass Prairies: groundworm larvae (lv35, karma-aggr) + navigation
+  // issues — characters get stuck and die. Temporarily excluded.
+  557, 556, 555,
 ]);
 
 export function huntRoomsAtOrBelow(level, ceiling, minLevel) {
