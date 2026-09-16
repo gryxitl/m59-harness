@@ -3032,7 +3032,7 @@ export const DEFAULT_GOALS = [
   // _fight goal handles it. Parked in travel mode (motion-only: a
   { goal: 'healthy',  when: ws => {
       const hp = ws._hp, maxHp = ws._maxHp;
-      const criticallyLow = hp != null && maxHp != null && (hp / maxHp) < 0.3;
+      const criticallyLow = hp != null && maxHp != null && (hp / maxHp) < 0.4;
       if (ws._travelMode === true && !criticallyLow) return false;
       return ws.hurt === true && ws.has_target !== true && (ws._pokeFailCount ?? 0) < 5;
     } },
