@@ -2111,6 +2111,38 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           sent: true, what: 'taking damage with a hostile near — standing, not sitting' });
         return;
       }
+      // INN CHECK: if post_death_rest and not in an inn, travel to the
+      // nearest inn first. Resting in a wilderness room recovers vigor
+      // much slower than at an inn.
+      if (active?.goal === 'post_death_rest') {
+        const roomCls = client?.room?.cls ?? '';
+        const inInn = /Inn/i.test(roomCls);
+        if (!inInn) {
+          // Find the nearest inn from the map.
+          const map = loadMap();
+          const me = session._pose?.current?.() ?? client?.self;
+          const meNum = client?.room?.num ?? session?.world?.room?.num;
+          if (map && meNum != null) {
+            let bestInn = null, bestD = Infinity;
+            for (const [num, r] of Object.entries(map)) {
+              if (!/Inn/i.test(r.cls ?? '')) continue;
+              const d = Math.abs(Number(num) - Number(meNum));
+              if (d < bestD) { bestD = d; bestInn = Number(num); }
+            }
+            if (bestInn != null) {
+              const router = session._router;
+              if (router) {
+                const ok = router.to(bestInn);
+                if (ok) {
+                  onDecision?.({ ticks, goal: 'post_death_rest', action: 'travel',
+                    sent: true, what: `travel to inn ${bestInn} (not in an inn — resting there is faster)` });
+                  return;
+                }
+              }
+            }
+          }
+        }
+      }
       const r = intend('rest', frame, act, { client, session, ws });
       note(active.goal, r.sent);
       if (r.sent === true) { try { session._restHold = true; } catch {} }
