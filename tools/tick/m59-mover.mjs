@@ -1589,8 +1589,8 @@ export class Mover {
               const w0Row = Math.floor(w0.y / KOD_FINENESS);
               const planCol = Math.floor(myProtoX / KOD_FINENESS);
               const planRow = Math.floor(myProtoY / KOD_FINENESS);
-              const d = Math.abs(w0Col - planCol) + Math.abs(w0Row - planRow);
-              if (d > 1 && process.env.M59_MOVE_DEBUG !== '0') {
+              const d = Math.hypot(w0Col - planCol, w0Row - planRow);
+              if (d > 1.5 && process.env.M59_MOVE_DEBUG !== '0') {
                 try { console.error(`[wp-origin] ${this.logName} wpIdx=${this.pathIdx} wp0=(${w0Col},${w0Row}) plan=(${planCol},${planRow}) dist=${d} — planner contract violated`); } catch {}
               }
             }
