@@ -1966,7 +1966,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       // STAND UNDER FIRE: never sit down while taking damage with a hostile
       // near — sitting through a mauling is how characters rest to death.
       // Stand (fight/flee engage on following ticks); sit only when safe.
-      if (ws._justDamaged && ws._mobNear) {
+      if (ws._justDamaged && ws._mobNear && !ws._moving) {
         act.stand?.();
         onDecision?.({ ticks, goal: 'healthy', action: 'stand',
           sent: true, what: 'taking damage with a hostile near — standing, not sitting' });
@@ -2104,8 +2104,10 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // can't fight effectively below vigor 20. Resting
     // recovers vigor over time (faster at an inn).
     if (active?.goal === 'vigor_low' || active?.goal === 'post_death_rest') {
-      // STAND UNDER FIRE (same rule as healthy above).
-      if (ws._justDamaged && ws._mobNear) {
+      // STAND UNDER FIRE (same rule as healthy above). Only stand if
+      // NOT moving — a traveling character that stops moving stands
+      // still and gets hit repeatedly. Continue moving if in motion.
+      if (ws._justDamaged && ws._mobNear && !ws._moving) {
         act.stand?.();
         onDecision?.({ ticks, goal: active.goal, action: 'stand',
           sent: true, what: 'taking damage with a hostile near — standing, not sitting' });
