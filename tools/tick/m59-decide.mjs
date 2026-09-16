@@ -1506,6 +1506,33 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             }
           }
         }
+        // AGGRO-SWITCH: if a DIFFERENT mob has is_enemy set (targeted us) and
+        // we haven't yet reached the current target, switch to it. This is
+        // safer than the attacker-switch (which requires damage) because the
+        // aggro flag is set before the first hit lands.
+        if (target && now() - retargetCheckAt > 2000) {
+          const tD2 = (target.col - me.col) ** 2 + (target.row - me.row) ** 2;
+          // Only switch if we're still traveling (not in melee range of current target).
+          if (tD2 > 4) {
+            for (const o of objects.values()) {
+              if (o.is_self) continue;
+              if (!o.is_enemy) continue;
+              const oId = o.id ?? o.obj_id;
+              if (oId === _lastTargetId) continue;  // same target, no switch
+              if (oId != null && _blacklist.has(oId)) continue;
+              // Switch to the aggro'd mob.
+              retargetCheckAt = now();
+              target = o;
+              if (oId != null) {
+                _lastTargetId = oId;
+                ws._targetId = oId;
+                _currentTargetId = oId;
+              }
+              try { console.error(`[aggro-switch] switched to aggro'd mob ${oId}`); } catch {}
+              break;
+            }
+          }
+        }
         // DEBUG (temporary): trace the sticky target + has_target
         if (!target) {
           // Pick the nearest non-player, non-self object that looks like a mob.
@@ -1582,15 +1609,16 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             const d2 = (o.col - me.col) ** 2 + (o.row - me.row) ** 2;
             candidates.push({ o, d2 });
           }
-          // Sort by 2D distance FIRST (cheap) to bound the candidate set, then rank by
-          // TRVERSAL DISTANCE (path length), not Euclidean. A mummy 6 squares away in a
-          // straight line but behind a wall has a much longer path than a mummy 10 squares
-          // away in the open. The user's point: pick the closest by traversal distance.
-          //
-          // We compute the path for the NEAREST ~5 by Euclidean (bounding the A* cost),
-          // and rank those by path length. The A* is bounded (maxNodes 20000) and throttled
-          // by _reachCheckAt, so it does not run on every 10Hz tick.
-          candidates.sort((a, b) => a.d2 - b.d2);
+          // AGGRO PRIORITY: if any candidate has is_enemy set (the server set
+          // PLAYER_IS_ENEMY on our object — a mob has targeted us), prioritize
+          // it over the nearest mob. This prevents the character from fighting
+          // a passive mob while the aggro'd one attacks from the side.
+          candidates.sort((a, b) => {
+            const aAggro = a.o.is_enemy ? 0 : 1;
+            const bAggro = b.o.is_enemy ? 0 : 1;
+            if (aAggro !== bAggro) return aAggro - bAggro;
+            return a.d2 - b.d2;
+          });
           const geo = session?.world?.geometry;
           const pathLen = (o) => {
             if (!geo?.finePathProtocol || me.col == null) return null; // no geometry
