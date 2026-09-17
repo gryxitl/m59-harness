@@ -311,6 +311,26 @@ export const SYMBOLS = {
     produce: ({ ws }) => (ws?._targetLevel == null || ws?._threatCeiling == null
       ? null : ws._targetLevel <= ws._threatCeiling),
   },
+  mob_near: {
+    describe: 'an aggroed hostile is within 20 squares',
+    whenUnknown: false,
+    why_unknown: 'no evidence of a nearby hostile is not a nearby hostile',
+    produce: ({ client }) => {
+      const me = client?.self;
+      if (!me || me.col == null) return false;
+      const objects = client?.room?.objects;
+      if (!(objects instanceof Map)) return false;
+      const { OF } = require('../m59-parse.mjs');
+      for (const o of objects.values()) {
+        if (!(o.flags & OF.ENEMY)) continue;
+        if (o.flags & OF.PLAYER) continue;
+        if (o.col == null) continue;
+        const d2 = (o.col - me.col) ** 2 + (o.row - me.row) ** 2;
+        if (d2 <= 400) return true; // 20 squares
+      }
+      return false;
+    },
+  },
 
   // ── party ─────────────────────────────────────────────────────────────────
   mate_present: {
