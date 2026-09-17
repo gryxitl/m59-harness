@@ -1749,18 +1749,12 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             const isArmed = ws.armed === true;
             const fullBand = policy?.threatBand ?? Math.floor(charLevel / 4);
             const band = isArmed ? fullBand : Math.floor(fullBand / 2);
-            ws._threatCeiling = charLevel + band;
             const targetLevel = targetLevelOf(best, (o) => client.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
             ws._targetLevel = targetLevel;
             // Re-derive the target-dependent symbols.
             ws.has_target = true;
             ws._targetD2 = bestD2;
             ws.in_reach = bestD2 <= 4; // MELEE_REACH = 2, squared = 4
-            // If the level is unknown, treat as in-band (the
-            // GOAP keeper's default: a ceiling that defaults
-            // open is the one that kills somebody, but a
-            // target with unknown level is probably a common
-            ws.target_in_band = targetLevel == null ? true : (targetLevel <= ws._threatCeiling && targetLevel >= charLevel - 2);
           }
         } else {
           // this sticky path previously set has_target=true but NOT ws._targetId —
@@ -1777,12 +1771,6 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           ws._targetD2 = d2;
           ws.has_target = true;
           const tLevel = targetLevelOf(target, (o) => client.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
-          const _lvl = client.vitals?.()?.health?.max ?? 20;
-          const _isArmed = ws.armed === true;
-          const _fullBand = policy?.threatBand ?? Math.floor(_lvl / 2);
-          const _band = _isArmed ? _fullBand : Math.floor(_fullBand / 2);
-          ws._threatCeiling = _lvl + _band;
-          ws.target_in_band = tLevel == null ? true : (tLevel <= ws._threatCeiling && tLevel >= _lvl - 2);
         }
       }
     }

@@ -1808,7 +1808,7 @@ export class GOAPKeeper {
     // character walks toward a mob it should be running from.
     const charLevel2 = c.vitals?.()?.health?.max ?? 20;
     const mapRoomNum = resolveMapRoom(c.room?.num ?? c.room?.id ?? null, this._roomName());
-    const execArgs = { threatCeiling: ws._threatCeiling ?? null, targetInBand: ws.target_in_band ?? null, charLevel: charLevel2, threatBand: this.policy.threatBand ?? Math.floor(charLevel2 / 2), mapRoomNum };
+    const execArgs = { threatCeiling: ws._threatCeiling ?? null, targetInBand: ws.target_in_band ?? null, charLevel: charLevel2, threatBand: this.policy.threatBand ?? Math.floor(charLevel2 / 4), mapRoomNum };
     // MAX PASS GUARD: if this step takes longer than 8s, the broker's
     // event loop has been monopolised for too long. We cannot abort the
     // atomic mid-flight (it's awaiting socket I/O), but we log the
