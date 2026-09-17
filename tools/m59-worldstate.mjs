@@ -44,7 +44,7 @@
 import * as skills from './m59-skills.mjs';
 import * as party  from './m59-party.mjs';
 import { REST_VIGOR_CAP, MIN_FIGHT_VIGOR } from './m59-localpolicy.mjs';
-import { affordances } from './m59-parse.mjs';
+import { affordances, OF } from './m59-parse.mjs';
 
 // Melee reach is a disc on SQUARE coordinates -- both sides run
 // `SquaredDistanceTo <= GetAttackRange^2` where range is Bound(2 + difficulty/6, 2, 3)
@@ -312,7 +312,7 @@ export const SYMBOLS = {
       ? null : ws._targetLevel <= ws._threatCeiling),
   },
   mob_near: {
-    describe: 'a hostile that has aggroed us is within 20 squares',
+    describe: 'a hostile mob (attackable, not a player, not decoration) is within 20 squares',
     whenUnknown: false,
     why_unknown: 'no evidence of a nearby hostile is not a nearby hostile',
     produce: ({ client }) => {
@@ -321,7 +321,12 @@ export const SYMBOLS = {
       const objects = client?.room?.objects;
       if (!(objects instanceof Map)) return false;
       for (const o of objects.values()) {
-        if (!o.is_enemy) continue;
+        if (o.flags & OF.PLAYER) continue;
+        const can = affordances(o.flags ?? 0);
+        if (!can.includes('attack')) continue;
+        const name = client.rsc?.get?.(o.nameRsc) ?? '';
+        if (/^(tree|living tree|flagpole|fence|wall|door|window|rock|boulder|bush|grass|flower|mushroom|log|stump)/i.test(name)) continue;
+        if (/friendly|pet|tame/i.test(name)) continue;
         if (o.col == null) continue;
         const d2 = (o.col - me.col) ** 2 + (o.row - me.row) ** 2;
         if (d2 <= 400) return true; // 20 squares
