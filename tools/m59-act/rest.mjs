@@ -69,8 +69,8 @@ export async function rest(client, session, { waitMs = 400 } = {}) {
   return { sent: true, posture_confirmed: false };
 }
 
-rest.pre     = [];
-rest.effects = ['healthy', 'can_rest_higher', 'vigor_rested'];  // resting heals and restores vigor to the rest cap
+rest.pre     = ['can_rest_higher'];
+rest.effects = ['healthy', 'can_rest_higher'];
 rest.atomic  = 'rest';
 
 export async function stand(client, session, { waitMs = 400 } = {}) {
