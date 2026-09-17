@@ -1142,7 +1142,7 @@ export class GOAPKeeper {
         priority: () => 900 },
       { goal: '_fight', when: ws.has_target === true && ws.target_in_band === true && ws.critical !== true && (ws.hurt === true || (ws.has_food === true ? ws.vigor_comfortable !== false : ws.vigor_floor !== false)),
         priority: (w) => w.hurt ? 850 : 500 },
-      { goal: 'flee_danger', when: ws.has_target === true && ws.target_in_band === false && !this._shopDest,
+      { goal: 'flee_danger', when: (ws.has_target === true && ws.target_in_band === false) || ws.mob_near === true,
         priority: () => 950 },
       { goal: 'healthy', when: ws.hurt === true,
         priority: (w) => w.critical ? 990 : 800 },
