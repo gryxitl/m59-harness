@@ -669,7 +669,7 @@ export class GOAPKeeper {
             // its threat ceiling (level + band) rather than 999 (which caps
             // nothing and can route a wounded character to a too-tough mob —
             // the "death spiral" AGENTS.md calls out).
-            const charLevel = c.vitals?.()?.health?.max ?? 20;
+            const charLevel = Math.max(c.vitals?.()?.health?.max ?? 20, 20);
             const fullBand = this.policy?.threatBand ?? Math.floor(charLevel / 4);
             const levelCeiling = charLevel + fullBand;
             const allRooms = await import('./m59-hunt-room.mjs').then(m => m.huntRoomsAtOrBelow(charLevel, levelCeiling, charLevel - 2));
@@ -873,7 +873,21 @@ export class GOAPKeeper {
       if (this._persistedTargetId != null) {
         ws._targetId = this._persistedTargetId;
         ws._targetLevel = this._persistedTargetLevel;
-        ws._threatCeiling = this._persistedThreatCeiling;
+        // RECOMPUTE the ceiling from current charLevel (not persisted) so a
+        // tightened band takes effect immediately without a restart.
+        {
+          const _cl = Math.max(c.vitals?.()?.health?.max ?? 20, 20);
+          const _eq = c?.equipment?.();
+          const _isArmed = !_eq || _eq.known === false
+            ? true
+            : (_eq.equipped || []).some(o => {
+                const nm = o.name ?? c.rsc?.get?.(o.nameRsc) ?? '';
+                return /sword|mace|hammer|staff|club|axe|dagger|spear|bow|crossbow|weapon/i.test(nm);
+              });
+          const _fullBand = this.policy?.threatBand ?? Math.floor(_cl / 4);
+          const _band = _isArmed ? _fullBand : Math.floor(_fullBand / 2);
+          ws._threatCeiling = _cl + _band;
+        }
         ws._targetIsPlayer = this._persistedTargetIsPlayer;
         // Re-derive has_target and in_reach from the restored target.
         // evaluate() ran without _targetId, so has_target is stale (false).
@@ -926,7 +940,7 @@ export class GOAPKeeper {
         // The huntLevel from the loadout can override this (for
         // specific farming targets), but the default is the character's
         // own level — fight mobs at or near your level.
-        const charLevel = c.vitals?.()?.health?.max ?? 20;
+        const charLevel = Math.max(c.vitals?.()?.health?.max ?? 20, 20);
         const fullBand = this.policy?.threatBand ?? Math.floor(charLevel / 4);
         // Unarmed characters deal less damage, so halve the band.
         const eq = c?.equipment?.();
@@ -1201,7 +1215,7 @@ export class GOAPKeeper {
           try {
             const { nearestHuntRoom } = await import('./m59-hunt-room.mjs');
             const resolvedHere = resolveMapRoom(here, this._roomName());
-            const charLevel = c.vitals?.()?.health?.max ?? 20;
+            const charLevel = Math.max(c.vitals?.()?.health?.max ?? 20, 20);
             const eqH = c?.equipment?.();
             const isArmedH = !eqH || eqH.known === false
               ? true
@@ -1358,7 +1372,7 @@ export class GOAPKeeper {
       // travel_to because it directly achieves has_money — trapping the character in a
       // mobless room. The travel_to injection below is the right action in that case.
       const here = c.room?.num ?? c.room?.id;
-      const charLevel = c.vitals?.()?.health?.max ?? 20;
+      const charLevel = Math.max(c.vitals?.()?.health?.max ?? 20, 20);
       const eq2 = c?.equipment?.();
       const isArmed2 = !eq2 || eq2.known === false
         ? true
@@ -1563,7 +1577,7 @@ export class GOAPKeeper {
             try {
               const { nearestHuntRoom } = await import('./m59-hunt-room.mjs');
               const resolvedHere = resolveMapRoom(here, this._roomName());
-              const charLevel = c.vitals?.()?.health?.max ?? 20;
+              const charLevel = Math.max(c.vitals?.()?.health?.max ?? 20, 20);
               const eqH = c?.equipment?.();
               const isArmedH = !eqH || eqH.known === false
                 ? true
@@ -1635,7 +1649,7 @@ export class GOAPKeeper {
       // fight something to earn money for a weapon.
       if (ws.has_target === false || ws.target_in_band === false) {
         const here = c.room?.num ?? c.room?.id;
-        const charLevel = c.vitals?.()?.health?.max ?? 20;
+        const charLevel = Math.max(c.vitals?.()?.health?.max ?? 20, 20);
         // Use the same reduced band for unarmed characters as the
         // target detection, so the hunt room matches what he can fight.
         const eq3 = c?.equipment?.();
@@ -1806,7 +1820,7 @@ export class GOAPKeeper {
     // for its band check). Without this, the scavenge uses myLevel*2
     // which is looser than the GOAP's myLevel+threatBand, and the
     // character walks toward a mob it should be running from.
-    const charLevel2 = c.vitals?.()?.health?.max ?? 20;
+    const charLevel2 = Math.max(c.vitals?.()?.health?.max ?? 20, 20);
     const mapRoomNum = resolveMapRoom(c.room?.num ?? c.room?.id ?? null, this._roomName());
     const execArgs = { threatCeiling: ws._threatCeiling ?? null, targetInBand: ws.target_in_band ?? null, charLevel: charLevel2, threatBand: this.policy.threatBand ?? Math.floor(charLevel2 / 4), mapRoomNum };
     // MAX PASS GUARD: if this step takes longer than 8s, the broker's
