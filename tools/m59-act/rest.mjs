@@ -70,7 +70,7 @@ export async function rest(client, session, { waitMs = 400 } = {}) {
 }
 
 rest.pre     = ['can_rest_higher'];
-rest.effects = ['healthy', 'can_rest_higher'];
+rest.effects = ['can_rest_higher'];
 rest.atomic  = 'rest';
 
 export async function stand(client, session, { waitMs = 400 } = {}) {
