@@ -670,7 +670,7 @@ export class GOAPKeeper {
             // nothing and can route a wounded character to a too-tough mob —
             // the "death spiral" AGENTS.md calls out).
             const charLevel = c.vitals?.()?.health?.max ?? 20;
-            const fullBand = this.policy?.threatBand ?? Math.floor(charLevel / 2);
+            const fullBand = this.policy?.threatBand ?? Math.floor(charLevel / 4);
             const levelCeiling = charLevel + fullBand;
             const allRooms = await import('./m59-hunt-room.mjs').then(m => m.huntRoomsAtOrBelow(charLevel, levelCeiling, charLevel - 2));
             // Exclude the current room (by live num AND resolved map num) so the
@@ -927,7 +927,7 @@ export class GOAPKeeper {
         // specific farming targets), but the default is the character's
         // own level — fight mobs at or near your level.
         const charLevel = c.vitals?.()?.health?.max ?? 20;
-        const fullBand = this.policy?.threatBand ?? Math.floor(charLevel / 2);
+        const fullBand = this.policy?.threatBand ?? Math.floor(charLevel / 4);
         // Unarmed characters deal less damage, so halve the band.
         const eq = c?.equipment?.();
         const isArmedNow = !eq || eq.known === false
@@ -1209,7 +1209,7 @@ export class GOAPKeeper {
                   const nm = o.name ?? c.rsc?.get?.(o.nameRsc) ?? '';
                   return /sword|mace|hammer|staff|club|axe|dagger|spear|bow|crossbow|weapon/i.test(nm);
                 });
-            const fullBandH = this.policy?.threatBand ?? Math.floor(charLevel / 2);
+            const fullBandH = this.policy?.threatBand ?? Math.floor(charLevel / 4);
             const bandH = isArmedH ? fullBandH : Math.floor(fullBandH / 2);
             const ceilingH = charLevel + bandH;
             const hunt = nearestHuntRoom(resolvedHere, charLevel, ceilingH, charLevel - 2);
@@ -1366,7 +1366,7 @@ export class GOAPKeeper {
             const nm = o.name ?? c.rsc?.get?.(o.nameRsc) ?? '';
             return /sword|mace|hammer|staff|club|axe|dagger|spear|bow|crossbow|weapon/i.test(nm);
           });
-      const fullBand2 = this.policy?.threatBand ?? Math.floor(charLevel / 2);
+      const fullBand2 = this.policy?.threatBand ?? Math.floor(charLevel / 4);
       const band2 = isArmed2 ? fullBand2 : Math.floor(fullBand2 / 2);
       const levelCeiling2 = charLevel + band2;
 
@@ -1571,7 +1571,7 @@ export class GOAPKeeper {
                     const nm = o.name ?? c.rsc?.get?.(o.nameRsc) ?? '';
                     return /sword|mace|hammer|staff|club|axe|dagger|spear|bow|crossbow|weapon/i.test(nm);
                   });
-              const fullBandH = this.policy?.threatBand ?? Math.floor(charLevel / 2);
+              const fullBandH = this.policy?.threatBand ?? Math.floor(charLevel / 4);
               const bandH = isArmedH ? fullBandH : Math.floor(fullBandH / 2);
               const ceilingH = charLevel + bandH;
               const hunt = nearestHuntRoom(resolvedHere, charLevel, ceilingH, charLevel - 2);
@@ -1645,7 +1645,7 @@ export class GOAPKeeper {
               const nm = o.name ?? c.rsc?.get?.(o.nameRsc) ?? '';
               return /sword|mace|hammer|staff|club|axe|dagger|spear|bow|crossbow|weapon/i.test(nm);
             });
-        const fullBand3 = this.policy?.threatBand ?? Math.floor(charLevel / 2);
+        const fullBand3 = this.policy?.threatBand ?? Math.floor(charLevel / 4);
         const band3 = isArmed3 ? fullBand3 : Math.floor(fullBand3 / 2);
         const levelCeiling3 = charLevel + band3;
         if (here != null) {
