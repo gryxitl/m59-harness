@@ -611,14 +611,14 @@ export class GOAPKeeper {
         const posKey = `${Math.floor(me.col / 2)},${Math.floor(me.row / 2)}`;
         if (this._lastPosKey === posKey && !this._inCombatLastPass && !this._lastActionWasRest) {
           this._stuckCount = (this._stuckCount ?? 0) + 1;
-          if (this._stuckCount === 10) {
+          if (this._stuckCount === 30) {
             console.error(`[goap] ${this._agentName()} STUCK at (${me.col},${me.row}) for ${this._stuckCount} passes`);
           }
         } else if (!this._inCombatLastPass) {
           this._stuckCount = 0;
           this._lastPosKey = posKey;
         }
-        if (this._stuckCount >= 10) {
+        if (this._stuckCount >= 30) {
           console.error(`[goap] ${this._agentName()} forcing room change to unstick`);
           this._stuckCount = 0;
           this._lastPosKey = null;
