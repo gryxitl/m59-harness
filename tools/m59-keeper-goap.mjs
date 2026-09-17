@@ -1266,10 +1266,8 @@ export class GOAPKeeper {
               ? allExits.filter(e => e.kind === 'edge')
               : allExits;
             if (exits.length > 0) {
-              // Pick a deterministic exit, seeded from the room so
-              // different rooms pick different exits (prevents 2-exit
-              // ping-pong: passCount % 2 alternates A,B,A,B).
-              const idx = (resolvedHere + this._passCount) % exits.length;
+              // Pick a deterministic exit by pass count.
+              const idx = this._passCount % exits.length;
               const dest = exits[idx].to;
               console.error(`[goap] ${who} idle→wander: no hunt room, wandering to room ${dest} (exit ${exits[idx].direction ?? exits[idx].kind ?? '?'})`);
               // WHAT THE POSITION PULSE READS. This branch returns before the plan
