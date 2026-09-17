@@ -609,7 +609,7 @@ export class GOAPKeeper {
         // don't reset the counter. The character is stuck if it's been
         // in the same 2x2 block for 10 passes.
         const posKey = `${Math.floor(me.col / 2)},${Math.floor(me.row / 2)}`;
-        if (this._lastPosKey === posKey && !this._inCombatLastPass) {
+        if (this._lastPosKey === posKey && !this._inCombatLastPass && !this._lastActionWasRest) {
           this._stuckCount = (this._stuckCount ?? 0) + 1;
           if (this._stuckCount === 10) {
             console.error(`[goap] ${this._agentName()} STUCK at (${me.col},${me.row}) for ${this._stuckCount} passes`);
@@ -1828,6 +1828,7 @@ export class GOAPKeeper {
       console.error(`[goap] ${who} pass ${this._passCount} SLOW: step=${p.steps[0]?.atomic} took ${passMs}ms (>8000ms) — broker was unresponsive during this time`);
     }
     console.error(`[goap] ${who} pass ${this._passCount} EXEC done acted=${result.acted} reason=${result.reason ?? 'none'} (${passMs}ms)`);
+    this._lastActionWasRest = (p.names?.[0] === 'rest' || p.steps?.[0]?.atomic === 'rest');
 
     const stepName = p.names?.[0] ?? result.action ?? '';
 
