@@ -622,6 +622,15 @@ export class GOAPKeeper {
           console.error(`[goap] ${this._agentName()} forcing room change to unstick`);
           this._stuckCount = 0;
           this._lastPosKey = null;
+          // STAND UP FIRST: a resting character (sitting/lying) cannot move.
+          // The `rest` action puts the character in a resting posture; the
+          // "STUCK" detection fires after 10 passes of no movement, which is
+          // often just the character sitting down. Stand up before trying
+          // to travel or blink.
+          try {
+            const { stand } = await import('./m59-act/rest.mjs');
+            await stand(c, this.session, {});
+          } catch { /* stand failed; continue to travel */ }
           // First: try to travel to a nearby room. The travel is wrapped in a
           // timeout: a stuck character's travel never completes (the mover can't
           // move from the stuck position), so an unbounded await here hangs the
