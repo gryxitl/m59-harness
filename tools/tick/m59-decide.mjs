@@ -1476,7 +1476,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           const maxHp = client.vitals?.()?.health?.max ?? 20;
           const charLevel = maxHp;
           const isArmed = ws.armed === true;
-          const fullBand = policy?.threatBand ?? Math.floor(charLevel / 2);
+          const fullBand = policy?.threatBand ?? Math.floor(charLevel / 4);
           const ceiling = charLevel + (isArmed ? fullBand : Math.floor(fullBand / 2));
           // Creature names (same as the if(!target) block below).
           let cNames = new Set();
@@ -1596,7 +1596,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           const maxHp = client.vitals?.()?.health?.max ?? 20;
           const charLevel = maxHp;
           const isArmed = ws.armed === true;
-          const fullBand = (session?.policy ?? policy)?.threatBand ?? Math.floor(charLevel / 2);
+          const fullBand = (session?.policy ?? policy)?.threatBand ?? Math.floor(charLevel / 4);
           const ceiling = charLevel + (isArmed ? fullBand : Math.floor(fullBand / 2));
           // Build a level map from the compendium (creature name -> level).
           let creatureLevels = new Map();
@@ -1747,7 +1747,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             const maxHp = client.vitals?.()?.health?.max ?? 20;
             const charLevel = maxHp;
             const isArmed = ws.armed === true;
-            const fullBand = policy?.threatBand ?? Math.floor(charLevel / 2);
+            const fullBand = policy?.threatBand ?? Math.floor(charLevel / 4);
             const band = isArmed ? fullBand : Math.floor(fullBand / 2);
             ws._threatCeiling = charLevel + band;
             const targetLevel = targetLevelOf(best, (o) => client.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
@@ -2460,7 +2460,7 @@ function fleeExits(session, ws) {
           // Same formula as the GOAP keeper: policy.threatBand ?? floor(charLevel/2),
           // halved when unarmed. The ceiling is charLevel + band.
           const isArmed = ws.armed === true;
-          const fullBand = policy?.threatBand ?? Math.floor(charLevel / 2);
+          const fullBand = policy?.threatBand ?? Math.floor(charLevel / 4);
           const band = isArmed ? fullBand : Math.floor(fullBand / 2);
           const ceiling = charLevel + band;
           // ASSIGNED ROOM (session.policy.assignedRoom — makeDecider's

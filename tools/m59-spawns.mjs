@@ -924,7 +924,7 @@ export function characterBand(client, policy = {}, isArmed = true) {
   if (maxHp == null) return null; // vitals not ready — route nowhere
   const charLevel = maxHp;
   const stamina = client.stat?.('stamina') ?? null;
-  const fullBand = policy?.threatBand ?? Math.floor(charLevel / 2);
+  const fullBand = policy?.threatBand ?? Math.floor(charLevel / 4);
   const band = isArmed ? fullBand : Math.floor(fullBand / 2);
   const ceiling = charLevel + band;
   const floor = charLevel + 5;
