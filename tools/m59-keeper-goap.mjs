@@ -1165,7 +1165,7 @@ export class GOAPKeeper {
         priority: () => 900 },
       { goal: '_fight', when: ws.has_target === true && ws.target_in_band === true && ws.critical !== true && (ws.hurt === true || (ws.has_food === true ? ws.vigor_comfortable !== false : ws.vigor_floor !== false)),
         priority: (w) => w.hurt ? 850 : 500 },
-      { goal: 'flee_danger', when: (ws.has_target === true && ws.target_in_band === false && !this._shopDest) || (ws.mob_near === true && !ws.at_shop && !ws.at_inn && !this._shopDest),
+      { goal: 'flee_room', when: (ws.has_target === true && ws.target_in_band === false && !this._shopDest) || (ws.mob_near === true && ws.target_aggro === true && !ws.at_shop && !ws.at_inn && !this._shopDest),
         priority: () => 950 },
       { goal: 'healthy', when: ws.hurt === true,
         priority: (w) => w.critical ? 990 : 800 },
@@ -1401,18 +1401,55 @@ export class GOAPKeeper {
       const targetEngageable = ws.has_target === true && (ws.target_in_band === true || ws.hurt === true);
       // Unarmed characters can still scavenge (punch) to earn money
       // for a weapon, so don't gate the inHuntRoom case on armed.
-      // Also include flee_danger: an out-of-band hostile is present,
-      // the character needs flee (but not scavenge/attack).
-      const needsFlee = effectiveGoal === 'flee_danger' || effectiveGoal === 'healthy' || (this._shopDest && ws.has_target === true && ws.target_in_band === false);
+      // Also include flee_room: an out-of-band hostile is present,
+      // the character needs to leave the room (but not scavenge/attack).
+      const needsFlee = effectiveGoal === 'flee_room' || effectiveGoal === 'healthy' || (this._shopDest && ws.has_target === true && ws.target_in_band === false);
       if (targetEngageable || ws.hurt === true || (combatGoal && inHuntRoom) || needsFlee) {
         const { attackOf } = await import('./m59-act/attack.mjs');
         const { scavenge } = await import('./m59-act/scavenge.mjs');
         const { takeSafeSpot } = await import('./m59-act/take-safe-spot.mjs');
         const { flee } = await import('./m59-act/flee.mjs');
-        // For flee_danger: only inject flee, not attack/scavenge.
+        // For flee_room: only inject flee, not attack/scavenge.
         // The character should run, not fight.
-        if (effectiveGoal === 'flee_danger') {
-          extra.push(flee);
+        if (effectiveGoal === 'flee_room') {
+          if (ws.has_target === true) {
+            extra.push(flee);
+          } else {
+            // No target: the flee action can't fire (pre: has_target).
+            // Inject a travel_to action that moves the character out of
+            // the hostile room. Named 'travel_to' (not 'flee_room') so the
+            // _blockTravel / _travelInFlight guards key off it correctly.
+            // The goal key is 'flee_room' (not 'flee_danger') because
+            // ws.flee_danger is true by default (worldstate.mjs:447,
+            // "true=safe") — using it as the goal key makes planFor see
+            // the goal already satisfied and return steps=0.
+            const fleeRoom = async (client, session) => {
+              const { loadMap, findPath } = await import('./m59-map.mjs');
+              const map = loadMap();
+              const roomNum = client.room?.num ?? client.room?.id;
+              const resolved = resolveMapRoom(roomNum, this._roomName());
+              if (resolved == null) return { sent: false, reason: 'no resolved room' };
+              // Find the nearest room that isn't this one (same as
+              // forceTravel at :1650-1672).
+              let best = null;
+              let bestHops = Infinity;
+              for (const [num, r] of Object.entries(map.rooms ?? {})) {
+                if (Number(num) === resolved) continue;
+                const p = findPath(map, resolved, Number(num));
+                if (p.found && p.hops.length > 0 && p.hops.length < bestHops) {
+                  best = { to: p.hops[0]?.to ?? Number(num), hops: p.hops.length };
+                  bestHops = p.hops.length;
+                }
+              }
+              if (!best) return { sent: false, reason: 'no exit found' };
+              return this._travelOneHop(best.to);
+            };
+            fleeRoom.atomic = 'travel_to';
+            fleeRoom.pre = [];
+            fleeRoom.effects = ['flee_room'];
+            fleeRoom.cost = 1;
+            extra.push(fleeRoom);
+          }
           // Block scavenge and attack so the planner can't pick them.
           this._fleeDangerFilter = new Set(['scavenge', 'attack', 'take_safe_spot']);
         } else {
@@ -1637,7 +1674,7 @@ export class GOAPKeeper {
             };
             forceTravel.atomic = 'travel_to';
             forceTravel.pre = [];
-            forceTravel.effects = ['!has_target', 'flee_danger', 'has_money', 'has_loot'];
+            forceTravel.effects = ['!has_target', 'flee_room', 'has_money', 'has_loot'];
             forceTravel.cost = 1;
             extra.push(forceTravel);
             console.error(`[goap] ${who} force room change: ${mapNum} -> ${best.hops[0]?.to ?? best.num} (nearest reachable)`);
@@ -1747,7 +1784,7 @@ export class GOAPKeeper {
     // a mob is in reach is how characters die.
     const planFilter = new Set();
     if (effectiveGoal === 'healthy' && ws.has_target === true) planFilter.add('rest');
-    if (effectiveGoal === 'flee_danger') {
+    if (effectiveGoal === 'flee_room') {
       // When fleeing a dangerous mob, block everything except flee.
       // The character should run, not fight, rest, or scavenge.
       planFilter.add('scavenge');

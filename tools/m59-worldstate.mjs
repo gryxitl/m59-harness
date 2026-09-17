@@ -446,6 +446,12 @@ export const SYMBOLS = {
     why_unknown: 'a wrong true means the character stays in a room with a deadly mob',
     produce: () => true, // default: safe; keeper sets flee_danger=false when out-of-band target present
   },
+  flee_room: {
+    describe: 'the character has fled the hostile room (goal-direction name, not a worldstate symbol)',
+    whenUnknown: false,
+    why_unknown: 'a wrong true means the planner thinks the character already fled; a wrong false is the default (not fled yet)',
+    produce: () => false, // always false: the character has not fled until the action fires
+  },
 
   has_loot: {
     describe: 'the pack has items that are not food, money, or reagents (sellable loot)',
