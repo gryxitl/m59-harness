@@ -1125,60 +1125,55 @@ export class GOAPKeeper {
     //
     //    Priority: survival (underworld) > safety (armed) > sustenance
     //    (has_food) > primary goal (vigor_ok or configured).
+    // DYNAMIC PRIORITY (FEAR 1 approach): each goal has a priority function
+    // of world state. The highest-priority unsatisfied goal wins. This
+    // replaces the fixed array order with a function that shifts with
+    // the situation — an unarmed character with 50 gold has "buy
+    // equipment" outrank "fight"; a hurt character has "healthy"
+    // outrank everything.
+    //
+    // Look-ahead goals: "has_equipment" is proactive (do I have the best
+    // I can afford?), not reactive (do I have a weapon?). It drives the
+    // sell → earn → buy → survive chain.
     const goalStack = [
-      { goal: '!in_underworld', when: ws.in_underworld === true },
-      // EAT_TO_COMFORTABLE: if the character has food and vigor < 180,
-      // eat before fighting. This uses the vigor_comfortable symbol (>=180)
-      // as the planning target, so the planner chains eat actions until
-      // vigor reaches the ideal fight threshold.
-      { goal: 'vigor_comfortable', when: ws.has_food === true && ws.vigor_comfortable === false },
-      // FIGHT: if there's a target in band, fight it.
-      // Vigor requirements:
-      //   - Hurt + in-band target: fight regardless of vigor (defend)
-      //   - Not hurt + has food + vigor < 180: eat first
-      //   - Not hurt + has food + vigor >= 180: fight freely
-      //   - Not hurt + no food: fight (need money for food)
-      // CRITICAL (< 30% HP): run from everything.
-      { goal: '_fight',        when: ws.has_target === true && ws.target_in_band === true && ws.critical !== true && (ws.hurt === true || (ws.has_food === true ? ws.vigor_comfortable !== false : ws.vigor_floor !== false)) },
-      // FLEE_DANGER: an out-of-band hostile is in the room. Do not
-      // fight it — run. But if the character is already traveling for
-      // a task (sell, bank, buy), the task takes priority: flee the
-      // spider AND keep going to the destination. The flee action
-      // produces !has_target, which clears the danger, and the travel
-      // action continues on the next pass.
-      { goal: 'flee_danger',   when: ws.has_target === true && ws.target_in_band === false && !this._shopDest },
-      // HEALTHY: if the character is hurt, stop what it's doing,
-      // flee from combat if there's a target, and rest to recover.
-      { goal: 'healthy',       when: ws.hurt === true },
-      // ARMED: try to get a weapon, but don't block combat or food.
-      // An unarmed character can still punch, scavenge for money,
-      // and buy a weapon later. This is a convenience goal, not a
-      // hard prerequisite.
-      { goal: 'armed',         when: ws.armed === false },
-      // has_food: only try when the character CAN get food (has
-      // reagents to cast create food, or has money to buy).
-      // Higher priority when vigor is low — a tired character with
-      // no food should provision before fighting.
-      { goal: 'has_food',      when: ws.has_food === false && (ws.has_reagents === true || ws.has_money === true) && !(this.goal === 'has_loot' && ws.has_loot === false && ws.has_target === false) },
-      // pack_room: if the pack is full (or nearly), go to a town to sell.
-      // This is higher priority than has_money because a full pack means
-      // the character can't loot, pick up, or buy anything.
-      { goal: 'pack_room',     when: ws.pack_room === false && ws.has_loot === true && ws.has_target === false },
-      // has_money: earn or sell. The character needs money whether
-      // it has loot to sell or not. But only trigger when the
-      // character CAN make money: it has loot to sell and a shop
-      // is reachable, or it's armed (can scavenge for gold).
-      // When the shop is unreachable (blocked by a hazard), selling
-      // is impossible, so the goal falls through to the next one.
-      { goal: 'vigor_rested',   when: ws.vigor_rested === false },
-      { goal: 'vigor_ok',       when: ws.vigor_ok === false && ws.has_food === true },
-      { goal: 'has_money',     when: ws.has_money === false && (ws.has_loot === true && this._shopReachable() || ws.has_target === true) },
-      { goal: this.goal,       when: ws[this.goal] !== true && (this.goal !== 'vigor_ok' || ws.has_food === true) },
+      { goal: '!in_underworld', when: ws.in_underworld === true,
+        priority: () => 1000 },
+      { goal: 'vigor_comfortable', when: ws.has_food === true && ws.vigor_comfortable === false,
+        priority: () => 900 },
+      { goal: '_fight', when: ws.has_target === true && ws.target_in_band === true && ws.critical !== true && (ws.hurt === true || (ws.has_food === true ? ws.vigor_comfortable !== false : ws.vigor_floor !== false)),
+        priority: (w) => w.hurt ? 850 : 500 },
+      { goal: 'flee_danger', when: ws.has_target === true && ws.target_in_band === false && !this._shopDest,
+        priority: () => 950 },
+      { goal: 'healthy', when: ws.hurt === true,
+        priority: (w) => w.critical ? 990 : 800 },
+      // LOOK-AHEAD: do I have the best equipment I can afford?
+      // Priority rises when unarmed + has money (should buy), or when
+      // has loot + shop reachable (should sell to earn money to buy).
+      { goal: 'armed', when: ws.armed === false && (ws.has_money === true || (ws.has_loot === true && this._shopReachable())),
+        priority: (w) => w.has_money === true ? 750 : (ws.has_loot === true && this._shopReachable() ? 700 : 100) },
+      { goal: 'has_food', when: ws.has_food === false && (ws.has_reagents === true || ws.has_money === true) && !(this.goal === 'has_loot' && ws.has_loot === false && ws.has_target === false),
+        priority: (w) => w.vigor_ok === false ? 650 : 400 },
+      { goal: 'vigor_rested', when: ws.vigor_rested === false,
+        priority: () => 350 },
+      { goal: 'vigor_ok', when: ws.vigor_ok === false && ws.has_food === true,
+        priority: () => 300 },
+      // LOOK-AHEAD: earn money when I have loot and a shop is reachable.
+      // Priority rises when I'm unarmed (need money for equipment) or
+      // when I have no food (need money for food).
+      { goal: 'has_money', when: ws.has_money === false && (ws.has_loot === true && this._shopReachable() || ws.has_target === true),
+        priority: (w) => w.armed === false ? 680 : (w.has_food === false ? 620 : 200) },
+      { goal: this.goal, when: ws[this.goal] !== true && (this.goal !== 'vigor_ok' || ws.has_food === true),
+        priority: () => 100 },
     ];
     // Goal-skip: if a goal's action has failed 5+ times in a row,
     // skip it for 30 passes. This prevents infinite loops when the
     // shop is empty or the action is otherwise impossible.
-    const active = goalStack.find(g => g.when && (this._goalFailCount?.[g.goal] ?? 0) < 5);
+    // DYNAMIC SELECTION: highest-priority unsatisfied goal wins, not
+    // first-in-array.
+    const candidates = goalStack.filter(g => g.when && (this._goalFailCount?.[g.goal] ?? 0) < 5);
+    const active = candidates.length
+      ? candidates.reduce((best, g) => g.priority(ws) > best.priority(ws) ? g : best)
+      : null;
 
     if (!active) {
       // All goals satisfied. But if there's no target in the room,
