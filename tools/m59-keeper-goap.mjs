@@ -1266,9 +1266,10 @@ export class GOAPKeeper {
               ? allExits.filter(e => e.kind === 'edge')
               : allExits;
             if (exits.length > 0) {
-              // Pick a random exit (deterministic by pass count to avoid
-              // the character bouncing back and forth)
-              const idx = this._passCount % exits.length;
+              // Pick a deterministic exit, seeded from the room so
+              // different rooms pick different exits (prevents 2-exit
+              // ping-pong: passCount % 2 alternates A,B,A,B).
+              const idx = (resolvedHere + this._passCount) % exits.length;
               const dest = exits[idx].to;
               console.error(`[goap] ${who} idle→wander: no hunt room, wandering to room ${dest} (exit ${exits[idx].direction ?? exits[idx].kind ?? '?'})`);
               // WHAT THE POSITION PULSE READS. This branch returns before the plan
@@ -1296,7 +1297,6 @@ export class GOAPKeeper {
       console.error(`[goap] ${who} pass ${this._passCount} goal=${this.goal} ${wsSummary} [idle: all goals satisfied]`);
       return { acted: false, action: null, reason: 'all goals satisfied' };
     }
-
     const effectiveGoal = active.goal;
     const _roomName = c?.roomNameRsc ? (c.rsc?.get?.(c.roomNameRsc) ?? '?') : (c.room?.name ?? '?');
     console.error(`[goap] ${who} pass ${this._passCount} room=${_roomName}(${c.room?.id ?? '?'}) goal=${effectiveGoal} ${wsSummary}`);
