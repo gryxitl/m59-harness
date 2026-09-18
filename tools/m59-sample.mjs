@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Sample swing/loot/death/kill counts from keeper logs in a time window.
+// Sample swing/kill/death counts from keeper logs in a time window.
 // Usage: node tools/m59-sample.mjs [--since <ISO>] [--minutes N]
 //
-// kills: `-> loot` dispatch (fires only after a kill, m59-decide.mjs:2391)
+// kills: `You killed the <mob>` (second-person kill record in combat-log)
 // our_deaths: `### <our_name> was just killed by` broadcast (authoritative)
 // uw_entries: [death-stamp] (entered Underworld, NOT a death)
 // swings: `-> swing` (attack-packet offers, not kills)
@@ -36,7 +36,7 @@ for (const f of files) {
   const key = f.replace('keeper-', '').replace('.log', '');
   const charName = roster[key] ?? key;
   const deathRe = new RegExp(`### ${charName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} was just killed`);
-  let swings = 0, loots = 0, deaths = 0, uwEntries = 0, first = null, last = null;
+  let swings = 0, kills = 0, deaths = 0, uwEntries = 0, first = null, last = null;
   const rl = createInterface({ input: createReadStream(p, { encoding: 'utf8' }), crlfDelay: Infinity });
   for await (const line of rl) {
     const m = line.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
@@ -46,10 +46,10 @@ for (const f of files) {
     last = ts;
     if (ts < since) continue;
     if (line.includes('-> swing')) swings++;
-    if (line.includes('-> loot')) loots++;
+    if (line.includes('You killed the')) kills++;
     if (line.includes('[death-stamp]')) uwEntries++;
     if (deathRe.test(line)) deaths++;
   }
   rl.close();
-  console.log(`  ${key} (${charName}): swings=${swings} kills=${loots} our_deaths=${deaths} uw_entries=${uwEntries} first=${first} last=${last}`);
+  console.log(`  ${key} (${charName}): swings=${swings} kills=${kills} our_deaths=${deaths} uw_entries=${uwEntries} first=${first} last=${last}`);
 }
