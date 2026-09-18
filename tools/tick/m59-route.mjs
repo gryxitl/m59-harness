@@ -780,7 +780,16 @@ export class Router {
         }
       } catch {}
       const r = this._planLeg(here);
-      if (!r.leg) return this._say('no-route', { why: r.why });
+      if (!r.leg) {
+        // RELEASE THE DOOMED CLAIM. A no-route that holds the dest and skips the
+        // mover pump starves the executor for the life of the destination — the
+        // :835-839 oscillation breaker already does this correctly (stamp, clear,
+        // return). Reuse that shape: stamp _routeDrop so the decider holds off
+        // re-marching the same pair, clear() to release the dest, return.
+        try { this.session._routeDrop = { rooms: [Number(here), Number(this.dest)], at: Date.now() }; } catch {}
+        this.clear();
+        return this._say('no-route', { why: r.why });
+      }
       this.leg = r.leg;
       this.mark = { col: srvCol, row: srvRow, at: t };
       // MULTI-LEG: if the standOn is not directly fine-reachable from where we are,
