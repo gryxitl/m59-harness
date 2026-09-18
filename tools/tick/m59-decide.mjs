@@ -900,8 +900,9 @@ export function intend(actionName, frame, act, ctx) {
 // ticks coalesce when the loop is under load, so a goal "skipped for 30 ticks" is three
 // seconds on a healthy loop and half a minute on a struggling one. The pause would grow
 // exactly when things were going worst. A tick is a sampling cadence, not a clock.
-export function makeDecider({ session, policy = {}, goals = [], onDecision = null,
+export function makeDecider({ session, policy = {}, goals = null, onDecision = null,
                               skipAfter = 5, skipForMs = 3000, now = () => Date.now() } = {}) {
+  if (!goals) goals = DEFAULT_GOALS;
   if (!session) throw new Error('makeDecider: no session');
   // GOAP REPORTING (B4): tick mode has no _goapKeeper, so /state's goap.goal/
   // action/plan are structurally null. Stamp the last decision on the session so
