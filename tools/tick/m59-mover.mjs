@@ -335,7 +335,7 @@ const HALF = KOD_FINENESS / 2; // 32 protocol units = half a square
 // the server tolerates a counter of 2 and decays it by elapsed time. `cadence_report()` now records
 // the real gap distribution so this is a measured risk rather than the unmeasured one it was: our
 // log lines have never carried a timestamp, and the gap has never once been recorded.
-export const MOVE_CAP_MS = 1050;
+export const MOVE_CAP_MS = 1050; // >= USER_MOVE_MIN_INTERVAL_MS (m59-client.mjs:108) — cadence legality
 
 // High-volume mover diagnostics (coarse-tier, movestuck, path-null, path-install,
 // movedbg fan-released), off by default. Set M59_MOVER_TRACE=1 to restore the full
