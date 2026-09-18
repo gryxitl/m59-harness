@@ -281,7 +281,7 @@ function state() {
       const now = Date.now();
       const lastRx = c?.lastRxAt ?? 0;
       const rxStale = lastRx > 0 && now - lastRx > 45000;
-      const mvStuck = (session._mover?.stuckTicks ?? 0) >= 8;
+      const mvStuck = (session._mover?.stuckTicks ?? 0) >= 8 && !session._inMelee;
       const inert = !!(session._tickLoop?._inert || session._inert);
       if (inert) return false;
       if (!rxStale && !mvStuck) return false;
