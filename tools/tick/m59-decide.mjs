@@ -3013,7 +3013,11 @@ function fleeExits(session, ws) {
     if (ok) { fails.set(goal, 0); return; }
     const n = (fails.get(goal) ?? 0) + 1;
     fails.set(goal, n);
-    if (n >= skipAfter) { skipped.set(goal, now() + skipForMs); fails.set(goal, 0); }
+    // CRITICAL GOALS NEVER SKIP: !in_underworld is the highest-priority goal
+    // and a character in the Underworld must keep trying to escape, even if
+    // the portal isn't in the room. Skipping it for 3s lets a lower-priority
+    // goal (post_death_rest, healthy) commit and blocks escape for the window.
+    if (goal !== '!in_underworld' && n >= skipAfter) { skipped.set(goal, now() + skipForMs); fails.set(goal, 0); }
   }
 
   decide.state = () => ({ ticks, fails: Object.fromEntries(fails),
