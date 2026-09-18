@@ -792,6 +792,14 @@ export const INTENTS = {
       }
       return { sent: false, why: 'no portal in room' };
     }
+    // ONE-TIME DUMP on first escape tick: show all portal matches with their
+    // positions so we can see if (2,21) is a real portal or a stale object.
+    if (!ctx.session?._portalDumped) {
+      ctx.session._portalDumped = true;
+      try {
+        console.error(`[portal-dump] me=(${me.col},${me.row}) portal=(${portal.col},${portal.row},id=${portal.id ?? '?'}) matches=${matches.length} ${matches.map(o => `${c.rsc?.get?.(o.nameRsc) ?? o.name ?? '?'}(${o.col},${o.row},id=${o.id ?? '?'})`).join(' ')}`);
+      } catch {}
+    }
     const dead = (ctx.session?._deadPortals ?? []).filter(d => now3 - (d.at ?? 0) < 600000);
     if (ctx.session) ctx.session._deadPortals = dead;
     const isDead = (o) => dead.some(d => d.col === o.col && d.row === o.row);
