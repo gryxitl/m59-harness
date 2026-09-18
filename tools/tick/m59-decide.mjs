@@ -393,9 +393,14 @@ export const INTENTS = {
     }
     if (!item) {
       // No wieldable weapon in the pack (the only one is broken, or there is none).
-      // The `armed` goal should now plan `buy` instead of retrying the broken weapon.
-      // "no weapon" in the message is what the refusal contract expects (the test
-      // matches /no weapon/) — a refusal, not a success.
+      // Fall through to conjure if the character can.
+      if (ctx.ws?._canConjureWeapon === true && ctx.ws?.has_mana !== false) {
+        const spellId = ctx.client?.spells?.find(sp => sp.name.toLowerCase() === 'create weapon')?.id;
+        if (spellId != null) {
+          const sent = !!ctx.act.cast?.(spellId);
+          return { sent, what: 'cast create weapon', why: sent ? null : 'cast refused' };
+        }
+      }
       return { sent: false, why: 'no weapon to equip (broken or absent)' };
     }
     // SILENT-REFUSAL CONDEMN: the server sometimes refuses `use` with no prose
