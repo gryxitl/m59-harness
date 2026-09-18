@@ -85,7 +85,7 @@ function scanBrokenFromEvents(client, session = null) {
     // ring buffer — old "it's broken" events from previous sessions keep
     // condemning the mace forever. A mace that broke 5 minutes ago is not
     // the same mace the character is trying to equip now.
-    if (ev.at && Date.now() - ev.at > 60000) continue;
+    if (ev.at && Date.now() - ev.at > 300000) continue;
     const t = String(ev.text ?? '');
     if (!BROKEN_TEXT.test(t)) continue;
     // "You can't use the mace--it's broken" — extract the weapon name (after "use the").
