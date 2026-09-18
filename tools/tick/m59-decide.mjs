@@ -902,7 +902,7 @@ export function intend(actionName, frame, act, ctx) {
 // exactly when things were going worst. A tick is a sampling cadence, not a clock.
 export function makeDecider({ session, policy = {}, goals = null, onDecision = null,
                               skipAfter = 5, skipForMs = 3000, now = () => Date.now() } = {}) {
-  if (!goals) goals = DEFAULT_GOALS;
+  if (!goals || goals.length === 0) goals = DEFAULT_GOALS;
   if (!session) throw new Error('makeDecider: no session');
   // GOAP REPORTING (B4): tick mode has no _goapKeeper, so /state's goap.goal/
   // action/plan are structurally null. Stamp the last decision on the session so
