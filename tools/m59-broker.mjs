@@ -854,7 +854,6 @@ class KeeperProxy {
     this._stateAt = 0;
     this._stateTtl = 2000;
     this._world = null;
-    this.world = null;
     // THERE IS NO FLIGHT RECORDER HERE, AND THAT MUST READ AS ABSENT, NOT AS A STUB.
     //
     // `makeKeeperProxy` wraps this object in a Proxy whose get-trap answers every unknown
