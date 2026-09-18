@@ -277,6 +277,20 @@ function state() {
     agent,
     character: me?.name ?? character,
     in_game: inGame,
+    stalled: (() => {
+      const now = Date.now();
+      const lastRx = c?.lastRxAt ?? 0;
+      const rxStale = lastRx > 0 && now - lastRx > 45000;
+      const mvStuck = (session._mover?.stuckTicks ?? 0) >= 8;
+      const inert = !!(session._tickLoop?._inert || session._inert);
+      if (inert) return false;
+      if (!rxStale && !mvStuck) return false;
+      return {
+        since_seconds: lastRx ? Math.round((now - lastRx) / 1000) : null,
+        idle_passes: session._mover?.stuckTicks ?? 0,
+        why: rxStale ? `no server data for ${Math.round((now - lastRx) / 1000)}s` : `mover stuck for ${session._mover?.stuckTicks} ticks`,
+      };
+    })(),
     inert: !!(session._tickLoop?._inert || session._inert),
     room: room ? { name: c?.rsc?.get?.(room.nameRsc) ?? room.name, num: room.num } : null,
     hp: v.health ? { value: v.health.value, max: v.health.max } : null,
