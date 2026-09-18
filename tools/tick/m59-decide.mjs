@@ -1904,7 +1904,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // Only supersede when a HIGHER-priority goal (earlier in the array) fires.
     // This prevents the armed<->hunt oscillation: once armed is selected, it
     // stays selected until the character is armed (ws.armed === true) or a
-    // higher-priority goal (in_underworld, flee_danger) fires.
+    // higher-priority goal (!in_underworld, flee_danger) fires.
     const committedIdx = session?._committedGoalIdx ?? 0;
     const committedGoal = goals[committedIdx];
     const committedValid = committedGoal?.when?.(ws) === true
@@ -1946,7 +1946,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // 10Hz spam helps nothing and can break other flows).
     const stuckStale = (session?._mover?.stuckTicks ?? 0) > 5
       && Date.now() - (session?._lastStuckStandAt ?? 0) > 5000;
-    if ((_wasResting && !_resting && active && (active.goal === 'hunt' || active.goal === 'flee_danger' || active.goal === 'flee_hurt' || active.goal === 'travel' || active.goal === '_fight' || active.goal === 'armed' || active.goal === 'in_underworld' || active.goal === 'unstuck' || active.goal === 'leave_raza'))
+    if ((_wasResting && !_resting && active && (active.goal === 'hunt' || active.goal === 'flee_danger' || active.goal === 'flee_hurt' || active.goal === 'travel' || active.goal === '_fight' || active.goal === 'armed' || active.goal === '!in_underworld' || active.goal === 'unstuck' || active.goal === 'leave_raza'))
         || (stuckStale && active && (active.goal === 'hunt' || active.goal === 'travel' || active.goal === 'flee_danger' || active.goal === 'flee_hurt' || active.goal === '_fight'))) {
       if (stuckStale && !(_wasResting && !_resting)) { try { session._lastStuckStandAt = Date.now(); } catch {} }
       try { act.stand?.(); } catch { /* best effort */ }
@@ -2139,10 +2139,10 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // 2a. UNDERWORLD: escape is a special case. Walk toward the
     // nearest portal. This is not a world-state transition the
     // planner handles; it's a directional decision.
-    if (active?.goal === 'in_underworld') {
+    if (active?.goal === '!in_underworld') {
       const r = intend('escape_underworld', frame, act, { client, session, ws });
       note(active.goal, r.sent);
-      onDecision?.({ ticks, goal: 'in_underworld', action: 'escape_underworld',
+      onDecision?.({ ticks, goal: '!in_underworld', action: 'escape_underworld',
         sent: r.sent, what: r.what ?? null, why: r.why ?? null });
       return;
     }
@@ -3047,7 +3047,7 @@ function fleeExits(session, ws) {
 // a REFUSAL-shaped condition rather than a weight: a cost can be outbid and a
 // precondition cannot, which is the one rule docs/HANDOFF.md says must not be broken.
 export const DEFAULT_GOALS = [
-  { goal: 'in_underworld', when: ws => ws.in_underworld === true },
+  { goal: '!in_underworld', when: ws => ws.in_underworld === true },
   { goal: 'armed',    when: ws => ws.armed === false
                                  && (ws.has_wieldable_weapon === true || ws._gold > 0 || ws._canConjureWeapon === true) && ws._equipCooldown !== true },
   // FLEE first: if an out-of-band mob is IN REACH (actually threatening us), run before
