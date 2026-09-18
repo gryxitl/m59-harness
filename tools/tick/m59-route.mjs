@@ -787,6 +787,7 @@ export class Router {
         // return). Reuse that shape: stamp _routeDrop so the decider holds off
         // re-marching the same pair, clear() to release the dest, return.
         try { this.session._routeDrop = { rooms: [Number(here), Number(this.dest)], at: Date.now() }; } catch {}
+        try { this.session._routeUnroutable = { from: Number(here), to: Number(this.dest), at: Date.now() }; } catch {}
         this.clear();
         return this._say('no-route', { why: r.why });
       }

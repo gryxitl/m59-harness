@@ -2607,12 +2607,15 @@ function fleeExits(session, ws) {
           // room that avoids the pair; if none, hold in place (fight stays
           // enabled, B3).
           const rd = session?._routeDrop;
+          const ru = session?._routeUnroutable;
+          const ruFresh = ru && Date.now() - (ru.at ?? 0) < 120000 && hunt && Number(hunt.room) === Number(ru.to);
           if (rd && Date.now() - (rd.at ?? 0) < 120000 && Array.isArray(rd.rooms) && rd.rooms.length >= 2) {
             const rdRooms = rd.rooms.map(Number);
-            const inPair = rdRooms.includes(Number(resolved)) || (hunt && rdRooms.includes(Number(hunt.room)));
+            const blocked = new Set([...rdRooms, ...(ruFresh ? [Number(ru.to)] : [])]);
+            const inPair = rdRooms.includes(Number(resolved)) || (hunt && rdRooms.includes(Number(hunt.room))) || ruFresh;
             if (inPair) {
               const cands = huntRoomsAtOrBelow(charLevel, ceiling, charLevel - 2);
-              const avoid = cands.find(c => !rdRooms.includes(Number(c.room)));
+              const avoid = cands.find(c => !blocked.has(Number(c.room)));
               if (!avoid) {
                 onDecision?.({ ticks, goal: 'hunt', action: null,
                   what: `route dropped by oscillation breaker (${rdRooms.join('/')}); holding`, sent: false });
