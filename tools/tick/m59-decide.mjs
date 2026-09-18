@@ -105,8 +105,8 @@ function scanBrokenFromEvents(client, session = null) {
     if (id != null && !set.has(id)) {
       set.add(id);
       console.error(`[broken] ${session?.name ?? client.me?.name ?? 'keeper'}: ${name} is broken (id ${id}) — condemned, will not retry`);
-    }
   }
+}
 }
 
 // A weapon in the pack that is NOT known-broken. Returns null when there is no
@@ -1918,7 +1918,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     if (Date.now() - (_goalSelDbgAt ?? 0) > 30000) {
       _goalSelDbgAt = Date.now();
       try {
-        console.error(`[goalsel] active=${active?.goal ?? 'null'} committedIdx=${committedIdx} skipped=${JSON.stringify(Object.fromEntries(skipped))} ws.armed=${ws.armed} ws._packWeapon=${ws._packWeapon}`);
+        console.error(`[goalsel] active=${active?.goal ?? 'null'} committedIdx=${committedIdx} skipped=${JSON.stringify(Object.fromEntries(skipped))} ws.armed=${ws.armed} ws._packWeapon=${ws._packWeapon} goals=${goals.map(g=>g.goal).join(',')} armedIdx=${goals.findIndex(g=>g.goal==='armed')} huntIdx=${goals.findIndex(g=>g.goal==='hunt')}`);
       } catch {}
     }
     // Throttled broken-set debug: print the broken set and selection result.
