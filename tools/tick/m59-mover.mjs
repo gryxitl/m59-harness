@@ -3717,7 +3717,11 @@ export class Mover {
       if (_srv.source !== 'none' && _geo) {
         try {
           const ng = nearestGrounded(_geo, _srv.col, _srv.row, { maxRadius: 40 });
-          if (ng && (ng.col !== _srv.col || ng.row !== _srv.row)) {
+          if (!ng) {
+            console.error(`[mover] ${this.logName} recovery: no grounded square within 40 of ${_srv.col},${_srv.row}`);
+            return;
+          }
+          if (ng.col !== _srv.col || ng.row !== _srv.row) {
             if (this.to(ng.col, ng.row, { by: 'recovery' })) {
               this._recoveryAt = Date.now();
               this._fanIndex = null;
