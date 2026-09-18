@@ -1882,8 +1882,10 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     const committedGoal = goals[committedIdx];
     const committedValid = committedGoal?.when?.(ws) === true
       && (skipped.get(committedGoal.goal) ?? 0) <= now();
-    const startIdx = committedValid ? committedIdx : 0;
-    const active = goals.slice(startIdx).find(g => {
+    // Always check from the top (highest priority). Skip only LOWER-priority
+    // goals (higher index) when the committed goal is still valid.
+    const active = goals.find((g, idx) => {
+      if (committedValid && idx > committedIdx) return false;
       if (!g?.goal || !g.when?.(ws)) return false;
       const until = skipped.get(g.goal) ?? 0;
       return now() >= until;
