@@ -788,9 +788,6 @@ export const INTENTS = {
     // hits in the pre-change logs, but the "no portal in room" thrash still needs
     // a live sample. Print me.col/row beside the matched object's col/row + objId
     // and matches.length so the restart yields evidence instead of a guess.
-    try {
-      console.error(`[portal-dbg] me=(${me.col},${me.row}) portal=(${portal.col},${portal.row}) objId=${portal.id ?? '?'} matches=${matches.length} dead=${dead.length}`);
-    } catch {}
     // Per-candidate attempt counter: N escape ticks aimed at a candidate with
     // no room change in M seconds ⇒ mark it dead. The old exact-square test
     // (me.col === portal.col) never fired for a character 8 squares from the
@@ -838,9 +835,6 @@ export const INTENTS = {
       dead.push({ col: portal.col, row: portal.row, at: now3 });
       ctx.session._deadPortals = dead;
       delete _attempts[_pid];
-      try {
-        console.error(`[portal-dbg] candidate ${_pid} marked dead after ${_att.count} attempts (${_att.near} near, no room change)`);
-      } catch {}
     }
     // Walk toward the portal (one step per SEND LAW via the actuator —
     // act.step defaults to 250ms gaps (4/s) which trips speedhack detection
@@ -1340,13 +1334,6 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       }
       // Stamp every tick so the 5-min window opens at the last Underworld tick.
       session._lastUnderworldAt = Date.now();
-    }
-    ws._lastUnderworldAt = session._lastUnderworldAt ?? null;
-    if (ws.armed === false && Date.now() - (_armedDbgAt ?? 0) > 30000) {
-      _armedDbgAt = Date.now();
-      try {
-        console.error(`[armeddbg] armed=${ws.armed} is_caster=${ws.is_caster} _canConjureWeapon=${ws._canConjureWeapon} has_mana=${ws.has_mana} _packWeapon=${ws._packWeapon} _gold=${ws._gold} _equipCooldown=${ws._equipCooldown} equipCooldownUntil=${session?._equipCooldownUntil ?? 0} fails=${skipped.get('armed') ?? 0}`);
-      } catch {}
     }
     if (ws.in_underworld === true && Date.now() - (_uwDbgAt ?? 0) > 30000) {
       _uwDbgAt = Date.now();
@@ -1913,21 +1900,6 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     });
     if (active) {
       session._committedGoalIdx = goals.indexOf(active);
-    }
-    // Throttled goal selection debug: print active goal, committed index, skipped map.
-    if (Date.now() - (_goalSelDbgAt ?? 0) > 30000) {
-      _goalSelDbgAt = Date.now();
-      try {
-        console.error(`[goalsel] active=${active?.goal ?? 'null'} committedIdx=${committedIdx} skipped=${JSON.stringify(Object.fromEntries(skipped))} ws.armed=${ws.armed} ws._packWeapon=${ws._packWeapon} goals=${goals.map(g=>g.goal).join(',')} armedIdx=${goals.findIndex(g=>g.goal==='armed')} huntIdx=${goals.findIndex(g=>g.goal==='hunt')}`);
-      } catch {}
-    }
-    // Throttled broken-set debug: print the broken set and selection result.
-    if (Date.now() - (_brokenDbgAt ?? 0) > 30000) {
-      _brokenDbgAt = Date.now();
-      try {
-        const bs = brokenSetFor(session, client);
-        console.error(`[brogel] brokenSet=[${[...bs].join(',')}] active=${active?.goal ?? 'null'} committedIdx=${session?._committedGoalIdx ?? 0} ws.armed=${ws.armed}`);
-      } catch {}
     }
 
     // Track whether we're resting or fighting (suppress
@@ -2935,7 +2907,6 @@ function fleeExits(session, ws) {
     }
 
     if (!active) {
-      try { console.error(`[goaldebug] idle: has_target=${ws.has_target} tib=${targetInBand(ws)} in_reach=${ws.in_reach} armed=${ws.armed} below_flee=${ws.below_flee} critical=${ws.critical} vigor_floor=${ws.vigor_floor} _travelMode=${ws._travelMode} _targetElevated=${ws._targetElevated} _traveling=${ws._traveling} _roomNum=${ws._roomNum} _maxHp=${ws._maxHp}`); } catch {}
       onDecision?.({ ticks, goal: null, why: 'nothing to do' }); return;
     }
 
