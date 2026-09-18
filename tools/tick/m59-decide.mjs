@@ -394,7 +394,9 @@ export const INTENTS = {
     if (!item) {
       // No wieldable weapon in the pack (the only one is broken, or there is none).
       // Fall through to conjure if the character can.
-      if (ctx.ws?._canConjureWeapon === true && ctx.ws?.has_mana !== false) {
+      const canConjure = knownSpells(ctx.client).some(sp => sp.name.toLowerCase() === 'create weapon');
+      const mana = ctx.client?.vitals?.()?.mana?.value ?? 0;
+      if (canConjure && mana >= 15) {
         const spellId = ctx.client?.spells?.find(sp => sp.name.toLowerCase() === 'create weapon')?.id;
         if (spellId != null) {
           const sent = !!ctx.act.cast?.(spellId);
