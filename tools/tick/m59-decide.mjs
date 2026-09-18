@@ -3144,7 +3144,10 @@ export const DEFAULT_GOALS = [
         const maxHp = ws._maxHp;
         if (maxHp != null && maxHp >= 25) return false;
       }
-      return ws.has_target === false || targetInBand(ws) === false;
+      // Fire when: no target (find one), target over-level (find better),
+      // OR target in-band but not in reach (approach it).
+      return ws.has_target === false || targetInBand(ws) === false
+        || (ws.has_target === true && targetInBand(ws) === true && ws.in_reach === false);
     } },
   { goal: 'vigor_ok', when: ws => ws.vigor_ok === false && ws.has_food === true
                                  && ws.has_target !== true },
