@@ -281,14 +281,16 @@ function state() {
       const now = Date.now();
       const lastRx = c?.lastRxAt ?? 0;
       const rxStale = lastRx > 0 && now - lastRx > 45000;
-      const mvStuck = (session._mover?.stuckTicks ?? 0) >= 8 && !session._inMelee && session._resting !== true;
+      const mv = session._mover;
+      const mvFresh = mv?._lastTickStateAt && now - mv._lastTickStateAt < 20000;
+      const mvStuck = mv?._lastTickState === 'stuck' && mvFresh && !session._inMelee && session._resting !== true;
       const inert = !!(session._tickLoop?._inert || session._inert);
       if (inert) return false;
       if (!rxStale && !mvStuck) return false;
       return {
         since_seconds: lastRx ? Math.round((now - lastRx) / 1000) : null,
-        idle_passes: session._mover?.stuckTicks ?? 0,
-        why: rxStale ? `no server data for ${Math.round((now - lastRx) / 1000)}s` : `mover stuck for ${session._mover?.stuckTicks} ticks`,
+        idle_passes: mv?.stuckTicks ?? 0,
+        why: rxStale ? `no server data for ${Math.round((now - lastRx) / 1000)}s` : `mover stuck (lastTickState=stuck, ${mv?.stuckTicks} ticks)`,
       };
     })(),
     inert: !!(session._tickLoop?._inert || session._inert),
