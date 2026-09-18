@@ -3054,7 +3054,7 @@ function fleeExits(session, ws) {
 // precondition cannot, which is the one rule docs/HANDOFF.md says must not be broken.
 export const DEFAULT_GOALS = [
   { goal: '!in_underworld', when: ws => ws.in_underworld === true },
-  { goal: 'armed',    when: ws => ws.armed === false && ws.is_caster !== true
+  { goal: 'armed',    when: ws => ws.armed === false
                                  && (ws.has_wieldable_weapon === true || ws._gold > 0 || ws._canConjureWeapon === true) && ws._equipCooldown !== true },
   // FLEE first: if an out-of-band mob is IN REACH (actually threatening us), run before
   // anything else. The old condition fired on ANY out-of-band target (has_target &&
