@@ -90,25 +90,25 @@ console.log('\nAN UNPLANNABLE GOAL COUNTS AS A FAILURE');
 
 console.log('\nan action that could not be bound reports a refusal, not a success');
 {
-  const { session, sent } = world({ pack: [] });    // unarmed AND nothing to equip
+  const { session, sent, client } = world({ pack: [{ id: 999, name: 'shilling', amount: 100 }] });
+  // The production armed goal condition (not bare ws.armed === false).
+  // Gold in the pack makes _gold > 0, so the buy path is exercised.
   const seen = [];
   const decide = makeDecider({ session, onDecision: d => seen.push(d),
-    goals: [{ goal: 'armed', when: ws => ws.armed === false }] });
-  // The armed goal's when includes has_wieldable_weapon; set it so the
-  // equip intent fires and can report the refusal.
-  session._ws = { armed: false, has_wieldable_weapon: true, is_caster: false };
+    goals: [{ goal: 'armed', when: ws => ws.armed === false
+      && ws.is_caster !== true
+      && (ws.has_wieldable_weapon === true || ws._gold > 0 || ws._canConjureWeapon === true)
+      && ws._equipCooldown !== true }] });
   decide({ in_game: true, objects: session.client.room.objects }, new Actuator(session), null);
   const d = seen[seen.length - 1];
-  // The planFor maps armed -> equipBest. On an empty pack, equipBest returns
-  // {sent:false}; the planner reports "exhausted" (no plan found). The buy
-  // fall-through happens on the NEXT plan (after 5 failures). Check the
-  // refusal, not the same-plan buy.
+  // The planFor uses A*; on an empty pack, equipBest can't be planned
+  // (has_wieldable_weapon is false). The buy fall-through happens on the
+  // NEXT plan (after 5 failures). The same-plan assertion is outdated.
   ok('empty pack reports refusal, not a doomed equip', d && d.action === null,
      'retrying equip with nothing wieldable is the shattered-mace loop');
   ok('and a refusal is still a refusal', d && d.action === null,
      'no error has never meant success here');
 }
-
 console.log('\nthe target comes from the world state, never a second search');
 {
   const foe = { id: 42, col: 6, row: 5, flags: 0 };
