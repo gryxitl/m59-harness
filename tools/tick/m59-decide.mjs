@@ -105,8 +105,8 @@ function scanBrokenFromEvents(client, session = null) {
     if (id != null && !set.has(id)) {
       set.add(id);
       console.error(`[broken] ${session?.name ?? client.me?.name ?? 'keeper'}: ${name} is broken (id ${id}) — condemned, will not retry`);
+    }
   }
-}
 }
 
 // A weapon in the pack that is NOT known-broken. Returns null when there is no
@@ -920,15 +920,12 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
   let _fighting = false;         // suppress stuck detection while fighting
   let _blacklist = new Set();    // unreachable target IDs
   let _blacklistRoom = null;     // room the blacklist applies to
-  let _goalSelDbgAt = 0;           // wall-clock ms of last goal-selection diagnostic
-  let _brokenDbgAt = 0;            // wall-clock ms of last broken-set diagnostic
   let _blacklistAt = 0;          // wall-clock ms of last blacklist update
   let _reachCheckAt = 0;         // wall-clock ms of last reachability A* (throttle)
   let _lastTargetId = null;      // previous tick's target (for stuck-detection, which runs before evaluate)
   let _ws = null;               // last tick's world state (for state() access)
   let retargetCheckAt = 0;       // wall-clock ms of last re-target check (throttle)
   let _uwDbgAt = 0;               // wall-clock ms of last underworld-identity diagnostic
-  let _armedDbgAt = 0;             // wall-clock ms of last armed-goal diagnostic
   let _stuckDbgAt = 0;            // wall-clock ms of last stuck-gate diagnostic
   let lastSeenHp = null;         // last HP value (to detect "we just took damage")
   let lastDamagedAt = 0;         // wall-clock ms when we last dropped HP
@@ -1335,6 +1332,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       // Stamp every tick so the 5-min window opens at the last Underworld tick.
       session._lastUnderworldAt = Date.now();
     }
+    ws._lastUnderworldAt = session._lastUnderworldAt ?? null;
     if (ws.in_underworld === true && Date.now() - (_uwDbgAt ?? 0) > 30000) {
       _uwDbgAt = Date.now();
       try {

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// Sample swing/death/level counts from keeper logs in a time window.
+// Sample swing/loot/death counts from keeper logs in a time window.
 // Usage: node tools/m59-sample.mjs [--since <ISO>] [--minutes N]
-import { createReadStream } from 'fs';
+import { createReadStream, readdirSync } from 'fs';
 import { join, dirname } from 'path';
-import { readdirSync } from 'fs';
+import { createInterface } from 'readline';
 
 const args = process.argv.slice(2);
 let minutes = 5;
@@ -20,13 +20,19 @@ console.log(`Window: since=${since} (last ${minutes} min)`);
 const dir = join(dirname(new URL(import.meta.url).pathname), '..', 'substrate');
 const files = readdirSync(dir).filter(f => f.startsWith('keeper-') && f.endsWith('.log'));
 for (const f of files) {
-  let swings = 0, deaths = 0, levels = 0;
-  const stream = createReadStream(join(dir, f), 'utf8');
-  for await (const line of stream) {
-    if (line < since) continue;
+  const p = join(dir, f);
+  let swings = 0, loots = 0, deaths = 0, first = null, last = null;
+  const rl = createInterface({ input: createReadStream(p, 'utf8'), crlfDelay: Infinity });
+  for await (const line of rl) {
+    const ts = line.slice(0, 19);
+    if (!first) first = ts;
+    last = ts;
+    if (ts < since) continue;
     if (line.includes('-> swing')) swings++;
+    if (line.includes('-> loot')) loots++;
     if (line.includes('[death-stamp]')) deaths++;
-    if (line.includes('level up') || line.includes('Level up')) levels++;
   }
-  console.log(`  ${f.replace('keeper-','').replace('.log','')}: swings=${swings} deaths=${deaths} levels=${levels}`);
+  rl.close();
+  const name = f.replace('keeper-', '').replace('.log', '');
+  console.log(`  ${name}: swings=${swings} loots=${loots} deaths=${deaths} first=${first} last=${last}`);
 }
