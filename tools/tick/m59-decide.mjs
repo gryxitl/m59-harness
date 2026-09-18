@@ -941,6 +941,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
   let _fighting = false;         // suppress stuck detection while fighting
   let _blacklist = new Set();    // unreachable target IDs
   let _blacklistRoom = null;     // room the blacklist applies to
+  let _noPlanLogged = new Set(); // goals that have reported no-plan once
   let _blacklistAt = 0;          // wall-clock ms of last blacklist update
   let _reachCheckAt = 0;         // wall-clock ms of last reachability A* (throttle)
   let _lastTargetId = null;      // previous tick's target (for stuck-detection, which runs before evaluate)
@@ -2985,6 +2986,9 @@ function fleeExits(session, ws) {
     // and a character re-selected it for ever. Watched live: JayB, goal has_food,
     // "exhausted 13 nodes", every pass, not moving.
     if (!first) { note(active.goal, false); 
+      if (!_noPlanLogged.has(active.goal)) { _noPlanLogged.add(active.goal);
+        console.error(`[no-plan] goal=${active.goal} problems=${JSON.stringify(p.problems ?? [])}`);
+      }
       onDecision?.({ ticks, goal: active.goal, action: null, why: p.reason ?? 'no plan' });
       return; }
 
