@@ -3016,8 +3016,6 @@ function fleeExits(session, ws) {
       const canConjure = spellNamed(client, 'create weapon') != null;
       if (canConjure && now5 - (session?._lastCreateWeaponAt ?? 0) > 30000) {
         if (session) session._lastCreateWeaponAt = now5;
-        // Stamp the casting hold HERE (before any mover driving this tick),
-        // not in castIntent after the move already broke concentration.
         try { if (session) session._castingUntil = now5 + 5000; } catch {}
         actionName = 'cast create weapon';
       } else {
@@ -3034,11 +3032,7 @@ function fleeExits(session, ws) {
     if (ok) { fails.set(goal, 0); return; }
     const n = (fails.get(goal) ?? 0) + 1;
     fails.set(goal, n);
-    // CRITICAL GOALS NEVER SKIP: !in_underworld is the highest-priority goal
-    // and a character in the Underworld must keep trying to escape, even if
-    // the portal isn't in the room. Skipping it for 3s lets a lower-priority
-    // goal (post_death_rest, healthy) commit and blocks escape for the window.
-    if (goal !== '!in_underworld' && n >= skipAfter) { skipped.set(goal, now() + skipForMs); fails.set(goal, 0); }
+    if (n >= skipAfter) { skipped.set(goal, now() + skipForMs); fails.set(goal, 0); }
   }
 
   decide.state = () => ({ ticks, fails: Object.fromEntries(fails),
