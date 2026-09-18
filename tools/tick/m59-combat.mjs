@@ -288,7 +288,7 @@ export class CombatController {
       const f = geo?.fineWalkable ? geo.fineWalkable(r, col) : undefined;
       const s = geo?.standable ? geo.standable(r, col) : undefined;
       // Same policy as m59-decide.mjs:1130-1134: valid if either says true,
-      // or no data. A square the BSP says has no floor is never valid.
+      // or no data. When both grids say false the square is blocked.
       if (f === false && s === false) return false;
       if (f === undefined && s === undefined) return true;
       return f === true || s === true;
