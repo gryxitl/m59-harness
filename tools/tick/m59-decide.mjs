@@ -778,7 +778,20 @@ export const INTENTS = {
         if (/portal|rip/i.test(name) && o.col != null && o.row != null) matches.push(o);
       }
     }
-    if (!matches.length) return { sent: false, why: 'no portal in room' };
+    if (!matches.length) {
+      // ONE-TIME DUMP: the "no portal in room" thrash needs a live sample of
+      // what the room object list actually contains. Dump each object as
+      // {name, col, row, id} so we can see whether the true exit squares are
+      // present at all and where the (2,21) object sits relative to them.
+      if (!ctx.session?._portalDumped) {
+        ctx.session._portalDumped = true;
+        try {
+          const objs = objects instanceof Map ? [...objects.values()] : [];
+          console.error(`[portal-dump] room=${c.room?.num} objects=${objs.length} ${objs.map(o => `${c.rsc?.get?.(o.nameRsc) ?? o.name ?? '?'}(${o.col},${o.row},id=${o.id ?? '?'})`).join(' ')}`);
+        } catch {}
+      }
+      return { sent: false, why: 'no portal in room' };
+    }
     const dead = (ctx.session?._deadPortals ?? []).filter(d => now3 - (d.at ?? 0) < 600000);
     if (ctx.session) ctx.session._deadPortals = dead;
     const isDead = (o) => dead.some(d => d.col === o.col && d.row === o.row);
