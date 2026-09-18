@@ -3156,7 +3156,7 @@ export const DEFAULT_GOALS = [
       // target unknown (find one), OR target in-band but not in reach (approach).
       // An unarmed character must NOT hunt — the armed goal handles
       // arming; if it can't arm, hunting is a death sentence.
-      if (ws.armed === false) return false;
+      if (ws.armed !== true) return false;
       return ws.has_target === false || targetInBand(ws) === false
         || targetInBand(ws) === null
         || (ws.has_target === true && targetInBand(ws) === true && ws.in_reach === false);
