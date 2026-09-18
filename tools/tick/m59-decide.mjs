@@ -3114,7 +3114,6 @@ export const DEFAULT_GOALS = [
                                 && ws.below_flee !== true
                                  // different elevation (unreachable).
                                  && ws._targetElevated !== true
-                                 && fightEnvelopeOk({ traveling: ws._traveling, targetD2: ws._targetD2 })
                                  && (ws._traveling !== true || ws.in_reach === true) },
   { goal: 'sell',     when: ws => {
       // gold. Gated on the observation (evidence), not on holdings (inference).
