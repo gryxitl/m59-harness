@@ -250,6 +250,7 @@ export class CombatController {
             e.ledgered = 'skip'; continue;
           }
           e.ledgered = 'killed';
+          console.error(`[kill-credited] ${charName} killed ${creature} in ${c.room?.name ?? frame?.room?.name ?? this.session?.world?.room?.name ?? '?'}`);
           try {
             recordLedgerEvent(charName, 'killed', {
               creature,
