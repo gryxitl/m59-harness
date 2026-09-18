@@ -2898,7 +2898,10 @@ function fleeExits(session, ws) {
       return;
     }
 
-    if (!active) { onDecision?.({ ticks, goal: null, why: 'nothing to do' }); return; }
+    if (!active) {
+      try { console.error(`[goaldebug] idle: has_target=${ws.has_target} tib=${targetInBand(ws)} in_reach=${ws.in_reach} armed=${ws.armed} below_flee=${ws.below_flee} critical=${ws.critical} vigor_floor=${ws.vigor_floor} _travelMode=${ws._travelMode} _targetElevated=${ws._targetElevated} _traveling=${ws._traveling} _roomNum=${ws._roomNum} _maxHp=${ws._maxHp}`); } catch {}
+      onDecision?.({ ticks, goal: null, why: 'nothing to do' }); return;
+    }
 
     // 3. PLAN. Synchronous A* over an action set built from what this character has.
     // SELL BYPASS: the `sell` goal is not in the GOAP action set (the planner
