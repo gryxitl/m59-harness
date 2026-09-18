@@ -85,7 +85,7 @@ function scanBrokenFromEvents(client, session = null) {
     // ring buffer — old "it's broken" events from previous sessions keep
     // condemning the mace forever. A mace that broke 5 minutes ago is not
     // the same mace the character is trying to equip now.
-    if (ev.at && Date.now() - ev.at > 300000) continue;
+    if (ev.at && Date.now() - ev.at > 60000) continue;
     const t = String(ev.text ?? '');
     if (!BROKEN_TEXT.test(t)) continue;
     // "You can't use the mace--it's broken" — extract the weapon name (after "use the").
@@ -394,7 +394,7 @@ export const INTENTS = {
     if (!item) {
       // No wieldable weapon in the pack (the only one is broken, or there is none).
       // Fall through to conjure if the character can.
-      const canConjure = knownSpells(ctx.client).some(sp => sp.name.toLowerCase() === 'create weapon');
+      const canConjure = (ctx.client?.spells ?? []).some(sp => sp.name?.toLowerCase() === 'create weapon');
       const mana = ctx.client?.vitals?.()?.mana?.value ?? 0;
       if (canConjure && mana >= 15) {
         const spellId = ctx.client?.spells?.find(sp => sp.name.toLowerCase() === 'create weapon')?.id;
@@ -926,6 +926,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
   let _fighting = false;         // suppress stuck detection while fighting
   let _blacklist = new Set();    // unreachable target IDs
   let _blacklistRoom = null;     // room the blacklist applies to
+  let _goalSelDbgAt = 0;           // wall-clock ms of last goal-selection diagnostic
   let _blacklistAt = 0;          // wall-clock ms of last blacklist update
   let _reachCheckAt = 0;         // wall-clock ms of last reachability A* (throttle)
   let _lastTargetId = null;      // previous tick's target (for stuck-detection, which runs before evaluate)
@@ -1913,6 +1914,13 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     });
     if (active) {
       session._committedGoalIdx = goals.indexOf(active);
+    }
+    // Throttled goal selection debug: print active goal, committed index, skipped map.
+    if (Date.now() - (_goalSelDbgAt ?? 0) > 30000) {
+      _goalSelDbgAt = Date.now();
+      try {
+        console.error(`[goalsel] active=${active?.goal ?? 'null'} committedIdx=${committedIdx} skipped=${JSON.stringify(Object.fromEntries(skipped))} ws.armed=${ws.armed} ws._packWeapon=${ws._packWeapon}`);
+      } catch {}
     }
 
     // Track whether we're resting or fighting (suppress
