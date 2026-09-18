@@ -107,7 +107,13 @@ export function huntRoomsAtOrBelow(level, ceiling, minLevel) {
 export function nearestHuntRoom(fromRoom, level, ceiling, minLevel, excludeRoom = null) {
   // Convert objId to map num if needed.
   const mapNum = objIdToNum(fromRoom) ?? fromRoom;
-  const candidates = huntRoomsAtOrBelow(level, ceiling, minLevel);
+  let candidates = huntRoomsAtOrBelow(level, ceiling, minLevel);
+  if (!candidates.length) {
+    // Fallback: if no in-band room, go to the nearest room with any mob.
+    // The band is a guideline, not a hard constraint — standing still
+    // forever is worse than fighting an out-of-band mob.
+    candidates = huntRoomsAtOrBelow(level, 999, 1);
+  }
   if (!candidates.length) return null;
 
   const map = loadMap();

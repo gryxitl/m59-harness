@@ -81,6 +81,11 @@ function scanBrokenFromEvents(client, session = null) {
   }
   for (const ev of client.events) {
     if (ev.kind !== 'message') continue;
+    // Only condemn on RECENT broken events (within 60s). The event ring is a
+    // ring buffer — old "it's broken" events from previous sessions keep
+    // condemning the mace forever. A mace that broke 5 minutes ago is not
+    // the same mace the character is trying to equip now.
+    if (ev.at && Date.now() - ev.at > 60000) continue;
     const t = String(ev.text ?? '');
     if (!BROKEN_TEXT.test(t)) continue;
     // "You can't use the mace--it's broken" — extract the weapon name (after "use the").
@@ -395,40 +400,40 @@ export const INTENTS = {
     // process a legitimate equip, and it caps the use-packet rate as a bonus.
     const s = ctx.session;
     const atts = (s ? (s._equipAttempts ??= {}) : {});
+    // CONFIRMATION: if a previous use() was sent and the 2s confirm window
+    // has passed, check if the server put the item in the using list. If
+    // not, the equip failed silently — increment the per-id counter.
+    // Do NOT mark the item broken on silent refusal: the server may be slow,
+    // or the item id may not match the server's inventory (stale cache).
+    // Only explicit "it's broken" events (scanBrokenFromEvents) condemn an item.
+    if (s?._equipConfirmAt && Date.now() >= s._equipConfirmAt) {
+      const confirmId = s._equipConfirmId;
+      s._equipConfirmAt = null;
+      s._equipConfirmId = null;
+      const equipped = ctx.client.equipment?.()?.equipped ?? [];
+      const confirmed = equipped.some(o => o.id === confirmId);
+      if (confirmed && confirmId != null) {
+        const rec = atts[confirmId];
+        if (rec) rec.n = 0;
+      } else if (!confirmed && confirmId != null) {
+        const rec = atts[confirmId] ?? { n: 0, at: Date.now() };
+        rec.n++;
+        rec.at = Date.now();
+        atts[confirmId] = rec;
+      }
+    }
     const rec = atts[item.id] ?? { n: 0 };
     const now8 = Date.now();
     if (now8 - (rec.at ?? 0) < 1000) {
       return { sent: false, why: 'equip coalesced (1/s)' };
     }
-    // Only count equip attempts while the character is standing — resting
-    // blocks equip on the server side, so a slow equip while resting is
-    // not a refusal.
     if (!(ctx.session?._resting ?? false)) {
       if (rec.n === 0) rec.firstAt = now8;
       rec.n++;
     }
     rec.at = now8;
     atts[item.id] = rec;
-    // Per-character equip cooldown: after 10 total failed attempts (across all
-    // ids), skip the armed goal for 60s so hunt can proceed.
-    const totalAttempts = Object.values(atts).reduce((sum, r) => sum + (r.n ?? 0), 0);
-    if (totalAttempts >= 10 && Date.now() > (s?._equipCooldownUntil ?? 0)) {
-      s._equipCooldownUntil = Date.now() + 60000;
-      console.error(`[equip] ${s?.name ?? 'keeper'}: ${totalAttempts} total attempts; cooldown 60s`);
-    }
     const useResult = act.use(item.id);
-    if (Date.now() - (s?._lastUsingLogAt ?? 0) > 30000) {
-      s._lastUsingLogAt = Date.now();
-      console.error(`[equip-diag] ${s?.name ?? 'keeper'}: using=${JSON.stringify(ctx.client?.using)} equipped=${JSON.stringify(ctx.client?.equipment?.())} inv_len=${(ctx.client?.inventory ?? []).length}`);
-    }
-    console.error(`[equip] ${ctx.session?.name ?? 'keeper'}: use(${item.id}) -> ${JSON.stringify(useResult)}`);
-    ctx.session._lastEquipId = item.id;
-    // Confirmation: on the following tick, check if the server put the item
-    // in the using list. If not, the equip failed and we should back off.
-    if (s) {
-      s._equipConfirmAt = Date.now() + 2000; // check in 2s
-      s._equipConfirmId = item.id;
-    }
     return { sent: true, what: `equip ${item.name ?? item.id}` };
   },
 
@@ -3076,8 +3081,8 @@ export const DEFAULT_GOALS = [
   { goal: '_fight',   when: ws => ws._travelMode !== true
                                  && ws.has_target === true && ws.target_in_band === true
                                  && ws.critical !== true
-                                 && (ws.hurt === true || ws.vigor_floor !== false)
-                                 // Don't fight if the target is on a
+                                && (ws.hurt === true || ws.vigor_floor !== false)
+                                && ws.below_flee !== true
                                  // different elevation (unreachable).
                                  && ws._targetElevated !== true
                                  && fightEnvelopeOk({ traveling: ws._traveling, targetD2: ws._targetD2 })
@@ -3090,12 +3095,12 @@ export const DEFAULT_GOALS = [
       if (roomNum != null && roomNum === 202
           && ws._brokeUntil === true
           && ws._hasReagents === true) {
-        return true;
+      return false;
       }
       return false;
     } },
   { goal: 'armed',    when: ws => ws.armed === false && ws.is_caster !== true
-                                 && (ws._gold > 0 || ws._canConjureWeapon === true) && ws._equipCooldown !== true },
+                                 && (ws.has_wieldable_weapon === true || ws._gold > 0 || ws._canConjureWeapon === true) && ws._equipCooldown !== true },
   // HUNT before eating: the character should go find work (a mob to fight)
   // rather than sitting in town eating. Vigor management matters during
   // combat, not while idle. If vigor is truly too low to fight, the
@@ -3115,4 +3120,6 @@ export const DEFAULT_GOALS = [
   { goal: 'vigor_ok', when: ws => ws.vigor_ok === false && ws.has_food === true
                                  && ws.has_target !== true },
   { goal: 'has_food', when: ws => ws.has_food === false && ws.has_reagents === true },
+  { goal: 'armed',    when: ws => ws.armed === false && ws.is_caster !== true
+                                 && (ws._gold > 0 || ws._canConjureWeapon === true) && ws._equipCooldown !== true },
 ];

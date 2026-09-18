@@ -7960,7 +7960,8 @@ const TOOLS = [
       if (!vitals.vigor)
         notes.push('no vigor reading arrived — vigor gates running and some skill costs');
 
-      return { ...await s.snapshot('status'), where: s.world.room
+      return { ...await s.snapshot('status'),
+                 where: s.world.room
                  ? { num: s.world.room.num, name: s.world.room.name } : null,
                level_note: vitals.health
                  ? `max_health ${vitals.health.max} is what the game treats as your level`

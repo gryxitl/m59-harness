@@ -453,6 +453,25 @@ export const SYMBOLS = {
     produce: () => false, // always false: the character has not fled until the action fires
   },
 
+  has_wieldable_weapon: {
+    describe: 'the pack has a weapon that is not broken and not already equipped',
+    whenUnknown: false,
+    why_unknown: 'a wrong true means the planner plans equip on a broken/absent weapon; a wrong false just delays arming',
+    produce: ({ client }) => {
+      const inv = client?.inventory ?? [];
+      if (!inv.length) return false;
+      const eq = client.equipment?.();
+      const held = new Set((eq && eq.known !== false ? eq.equipped || [] : []).map(o => o.id));
+      const broken = client._brokenWeapons ?? new Set();
+      const WEAPON = /mace|sword|axe|club|hammer|dagger|staff|spear|blade|knife/i;
+      return inv.some(o => {
+        if (o?.id == null || held.has(o.id) || broken.has(o.id)) return false;
+        const nm = String(client.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
+        return WEAPON.test(nm);
+      });
+    },
+  },
+
   has_loot: {
     describe: 'the pack has items that are not food, money, or reagents (sellable loot)',
     whenUnknown: false,
@@ -498,14 +517,6 @@ export const SYMBOLS = {
 // visible. `SYMBOL_NAMES` is the closed set; `KNOWN_NAMES` is the open one.
 export const SYMBOL_NAMES = Object.freeze(Object.keys(SYMBOLS));
 export const KNOWN_NAMES = new Set(SYMBOL_NAMES);
-
-// ---------------------------------------------------------------------------
-// evaluate(ctx) -> { symbol: boolean }
-//
-// Every symbol, resolved. A producer that throws is treated exactly as "cannot
-// tell" -- a broken producer must not be able to take a keeper down, and it must
-// not be able to quietly flip a symbol to the convenient answer either.
-// ---------------------------------------------------------------------------
 export function evaluate(ctx = {}) {
   const out = {};
   for (const [name, sym] of Object.entries(SYMBOLS)) {

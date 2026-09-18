@@ -283,17 +283,22 @@ function state() {
     vigor: v.vigor ? { value: v.vigor.value, max: v.vigor.max } : null,
     mana: v.mana ? { value: v.mana.value, max: v.mana.max } : null,
     gold: me?.gold ?? null,
-    equipment: c?.inventory ? c.inventory
-      .filter(o => o.flags & 0x04)
-      .map(o => c.rsc?.get?.(o.nameRsc) ?? '')
-      .filter(Boolean) : [],
-    pack: c?.inventory ? c.inventory
-      .filter(o => !(o.flags & 0x04))
-      .map(o => {
-        const name = c.rsc?.get?.(o.nameRsc) ?? '';
-        return o.amount > 1 ? `${name} (x${o.amount})` : name;
-      })
-      .filter(Boolean) : [],
+    equipment: (() => {
+      try { const e = c?.equipment?.(); return e ? e.equipped.map(o => o.name ?? o.id) : []; } catch { return []; }
+    })(),
+    pack: (() => {
+      try {
+        const eq = c?.equipment?.();
+        const usingIds = new Set((eq?.equipped ?? []).map(o => o.id));
+        return (c?.inventory ?? [])
+          .filter(o => !usingIds.has(o.id))
+          .map(o => {
+            const name = c.rsc?.get?.(o.nameRsc) ?? '';
+            return o.amount > 1 ? `${name} (x${o.amount})` : name;
+          })
+          .filter(Boolean);
+      } catch { return []; }
+    })(),
     skills: (c?.skills ?? []).map(s => ({
       name: c.rsc?.get?.(s.nameRsc) ?? '',
     })).filter(s => s.name),

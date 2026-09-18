@@ -256,7 +256,7 @@ export const MOVEUNITS_PROTO = 16;
 // door pushes, boundary walk-past, step model), which hardcode speed 18.
 export const WALK_STRIDE_PROTO = 160;
 export const RUN_STRIDE_PROTO = 320;
-export const RUN_VIGOR_FLOOR = 25;
+export const RUN_VIGOR_FLOOR = 10;
 export const RUNUNITS_PROTO = 32;
 
 // LAZY POSITION REPORTING — modeled directly on the real client (clientd3d/move.c).

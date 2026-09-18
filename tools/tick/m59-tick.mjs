@@ -515,6 +515,15 @@ export class TickLoop {
           } catch { /* best effort */ }
         }
       }
+      // INVENTORY + EQUIPMENT REFRESH: the client's in-memory state can go stale
+      // after death (equipment changes, server push missed). Refresh every 10 ticks
+      // (1s at 10Hz) so the `armed` goal sees a fresh pack AND a fresh using list.
+      if (this.stats.ticks % 10 === 0) {
+        try {
+          this.session.client?.requestInventory?.();
+          this.session.client?.requestUsing?.();
+        } catch { /* best effort */ }
+      }
       const out = this.decide(frame, this.actuator, this);
       // RULE 1, ENFORCED RATHER THAN TRUSTED. A decide that returns a promise is doing
       // something asynchronous, which is the exact habit this model exists to remove.

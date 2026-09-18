@@ -338,7 +338,8 @@ export class GOAPKeeper {
    */
   async _travelOneHop(to) {
     const c = this.client;
-    const hereRaw = c?.room?.num ?? c?.room?.id;
+    const hereId = c?.room?.id;
+    const hereRaw = c?.room?.num ?? hereId;
     if (hereRaw == null)
       return { sent: false, arrived: false, reason: 'unknown room' };
 
@@ -369,6 +370,15 @@ export class GOAPKeeper {
     } catch (e) {
       travelResult = { arrived: false, reason: e.message };
     }
+
+    // ROOM-DELTA FALLBACK: travel() can report "gave up after N hops" (or throw
+    // cancelledMovement) while the character actually moved one room (the final
+    // hop of a 1-hop journey leaves the loop standing in the right room,
+    // m59-game.mjs:7216-7223). Check the room objId: if it changed, the hop
+    // worked even though the API said no. Covers both resolve and throw paths.
+    const afterId = c?.room?.id;
+    if (afterId != null && hereId != null && afterId !== hereId)
+      return { sent: true, arrived: false, reason: 'room changed' };
 
     // Broker travel failed. Try a brute force exit: send raw
     // moveToSquare commands toward and PAST the room boundary.
@@ -1242,6 +1252,7 @@ export class GOAPKeeper {
               if (r?.arrived || r?.sent) {
                 return { acted: true, action: 'travel_to', reason: `idle→hunt: travelling to ${hunt.creature ?? 'prey'} in room ${dest}` };
               }
+              console.error(`[goap] ${who} idle→hunt: hop to ${dest} refused — ${r?.reason ?? '?'}`);
             }
           } catch (e) {
             console.error(`[goap] ${who} idle→hunt failed: ${e.message}`);
@@ -1319,27 +1330,38 @@ export class GOAPKeeper {
     // cancelling the "get back to safe spot" movement, so the character crawled. The
     // character should finish the fight (which is often how it earns the money) before
     // travelling to the bank.
-    if (ws.has_money === false && ws.at_bank === false && ws.at_shop === false && ws.has_target !== true) {
+    if (ws.has_money === false && ws.at_bank === false && ws.at_shop === false && ws.has_target !== true && (ws.has_loot === true || (ws.has_money === true && ws.armed === false))) {
       const here = c.room?.num ?? c.room?.id;
       if (here != null) {
         const { objIdToNum } = await import('./m59-hunt-room.mjs');
         const mapNum = objIdToNum(here) ?? here;
-        const { loadMap, findPath } = await import('./m59-map.mjs');
-        const map = loadMap();
-        const resolved = resolveMapRoom(here, this._roomName());
-        // Find the nearest room with a bank
-        let bestBank = null;
-        for (const [num, r] of Object.entries(map.rooms ?? {})) {
-          if (Number(num) === mapNum) continue;
-          if (!/bank/i.test(r.name ?? '')) continue;
-          const p = findPath(map, resolved, Number(num));
-          if (!p.found || p.hops.length === 0) continue;
-          if (!bestBank || p.hops.length < bestBank.hops.length) {
-            bestBank = { num: Number(num), hops: p.hops };
+        // Cache the bank destination per room — don't re-run findPath over
+        // every bank room on every pass. The character takes one hop per pass;
+        // the dest only changes when the room changes.
+        if (!this._bankDest || this._bankDestRoom !== mapNum) {
+          const { loadMap, findPath } = await import('./m59-map.mjs');
+          const map = loadMap();
+          const resolved = resolveMapRoom(here, this._roomName());
+          let bestBank = null;
+          for (const [num, r] of Object.entries(map.rooms ?? {})) {
+            if (Number(num) === mapNum) continue;
+            if (!/bank/i.test(r.name ?? '')) continue;
+            const p = findPath(map, resolved, Number(num));
+            if (!p.found || p.hops.length === 0) continue;
+            if (!bestBank || p.hops.length < bestBank.hops.length) {
+              bestBank = { num: Number(num), hops: p.hops };
+            }
+          }
+          if (bestBank) {
+            this._bankDest = bestBank.hops[0]?.to ?? bestBank.num;
+            this._bankDestRoom = mapNum;
+          } else {
+            this._bankDest = null;
+            this._bankDestRoom = mapNum;
           }
         }
-        if (bestBank) {
-          const dest = bestBank.hops[0]?.to ?? bestBank.num;
+        if (this._bankDest) {
+          const dest = this._bankDest;
           const travelToBank = (client, session) => {
             return this._travelOneHop(dest);
           };
@@ -1348,7 +1370,7 @@ export class GOAPKeeper {
           travelToBank.effects = ['at_bank'];
           travelToBank.cost = 1;
           extra.push(travelToBank);
-          console.error(`[goap] ${who} bank travel injected: ${mapNum} -> ${dest} (nearest bank: ${bestBank.num})`);
+          console.error(`[goap] ${who} bank travel injected: ${mapNum} -> ${dest}`);
         }
       }
     }
@@ -1846,7 +1868,11 @@ export class GOAPKeeper {
 
     // 4. Execute one step.
     if (!p.steps?.length) {
-      console.error(`[goap] ${who} pass ${this._passCount} PLAN EMPTY: found=${p.found} names=[${(p.names ?? []).join(', ')}]`);
+      this._goalFailCount = this._goalFailCount ?? {};
+      this._goalFailCount[active.goal] = (this._goalFailCount[active.goal] ?? 0) + 1;
+      if (this._goalFailCount[active.goal] === 5)
+        console.error(`[goap] ${who} goal ${active.goal} plan empty 5 times, skipping for 30 passes`);
+      console.error(`[goap] ${who} pass ${this._passCount} PLAN EMPTY: found=${p.found} names=[${(p.names ?? []).join(', ')}] goal=${active.goal} ws.${active.goal}=${ws[active.goal]}`);
       return { acted: false, action: null, reason: 'plan is empty' };
     }
 

@@ -2264,7 +2264,7 @@ export class M59Client {
   // this client can read the wire at all. So the heartbeat is BP_REQ_INVENTORY:
   // no parameters (sprocket.c:34), no side effects, and its reply is a free
   // refresh of the inventory we keep anyway.
-  startKeepalive(everyMs = 20000) {
+  startKeepalive(everyMs = 5000) {
     this.stopKeepalive();
     this.keepalivePending = 0;
     this.keepaliveTimer = setInterval(() => {

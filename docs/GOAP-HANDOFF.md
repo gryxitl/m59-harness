@@ -51,8 +51,8 @@ The GOAP `buy_next_skill` action handles purchases automatically when funds are 
 
 ### Scaled hunt bands (as of 2026-08-19)
 
-The fleet is currently at **lv20–27**. The threat band is `floor(level/2)` when armed,
-`floor(level/4)` when unarmed. The engagement ceiling is `level + band`. A character
+The fleet is currently at **lv20–27**. The threat band is `floor(level/4)` when armed,
+`floor(level/8)` when unarmed. The engagement ceiling is `level + band`. A character
 may fight any mob at or below the ceiling, but *may* is not *will survive*.
 
 ### Safe-wall fight strategy

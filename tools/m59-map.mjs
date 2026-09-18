@@ -1069,7 +1069,7 @@ function bfsPath(map, fromNum, toNum, avoid, transitOk = null, blockedHops = nul
                 _bfsPathCache.set(_key, _hit); }
     return _hit;
   }
-  const _miss = { found: false, hops: [], reason: `no route from ${fromNum} to ${toNum} in the graph` };
+  const _miss = { found: false, kind: 'no_route', hops: [], reason: `no route from ${fromNum} to ${toNum} in the graph` };
   if (_key) { if (_bfsPathCache.size >= _bfsPathCacheCap) _bfsPathCache.clear();
               _bfsPathCache.set(_key, _miss); }
   return _miss;
@@ -1247,7 +1247,7 @@ function safestPath(map, fromNum, toNum, avoid, danger, budget, transitOk = null
   }
   return answer
     ? { found: true, hops: answer.path, worst_rating: answer.worst }
-    : { found: false, hops: [], reason: `no route from ${fromNum} to ${toNum} in the graph` };
+    : { found: false, kind: 'no_route', hops: [], reason: `no route from ${fromNum} to ${toNum} in the graph` };
 }
 
 // TRY THE SAFER WAY FIRST, THEN THE ONLY WAY.
@@ -1329,7 +1329,7 @@ function _findPathImpl(map, fromNum, toNum,
   // permissive fallback at the bottom of this function is what makes `avoid` a preference,
   // and a preference is not what a room that kills by arithmetic needs.
   if (!allowHazardDestination && hazardReason(toNum))
-    return { found: false, hops: [], hazard: Number(toNum),
+    return { found: false, kind: 'hazard', hops: [], hazard: Number(toNum),
              reason: `refusing to route to ${toNum}: ${hazardReason(toNum)}` };
   const forbidden = new Set([...NEVER_ENTER.keys()].filter(r => r !== Number(fromNum) &&
                                                                 r !== Number(toNum)));

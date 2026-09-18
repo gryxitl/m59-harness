@@ -922,16 +922,15 @@ export const healthCeiling = (stamina) => 101 + (stamina ?? 0);
 export function characterBand(client, policy = {}, isArmed = true) {
   const maxHp = client.vitals?.()?.health?.max;
   if (maxHp == null) return null; // vitals not ready — route nowhere
-  const charLevel = maxHp;
+  const charLevel = Math.max(maxHp, 20);
   const stamina = client.stat?.('stamina') ?? null;
   const fullBand = policy?.threatBand ?? Math.floor(charLevel / 4);
   const band = isArmed ? fullBand : Math.floor(fullBand / 2);
   const ceiling = charLevel + band;
   const floor = charLevel + 5;
-  const atCap = stamina == null ? false : charLevel >= healthCeiling(stamina);
+  const atCap = stamina == null ? false : maxHp >= healthCeiling(stamina);
   return { charLevel, band, ceiling, floor, stamina, atCap };
 }
-
 // One goal's opinion of one creature, normalised to 0..1 so goals can be added up.
 // `pays: false` means this creature does nothing for this goal — for `advance` that
 // disqualifies it, for `money` it merely scores no bonus.

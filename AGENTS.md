@@ -199,8 +199,8 @@ and most of the time was spent on measurement bugs of our own. The short version
 - **`[Channel] Flush` defaults to `No`**, and with it off every server log stays
   at 0 bytes for ever — which looks exactly like a hook not firing. The container
   turns it on; a native build may not have.
-- **Hunt bands are scaled by level.** `floor(level/2)` when armed, `floor(level/4)`
-  when unarmed. Ceiling = level + band. A lv21 character has ceiling 31, so lv30
+- **Hunt bands are scaled by level.** `floor(level/4)` when armed, `floor(level/8)`
+  when unarmed. Ceiling = level + band. A lv25 character has ceiling 31 (armed), so lv30
   giant rats are "in band" — but they are still too tough, and each death drops
   max HP by exactly 1, starting a death spiral. Baby spiders (lv25) in the Deep Woods
   (rooms 534, 535, 545, 554, 568, 574, 575, 593, 603) are the safe target for
