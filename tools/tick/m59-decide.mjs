@@ -3166,8 +3166,6 @@ export const DEFAULT_GOALS = [
       }
       return false;
     } },
-  { goal: 'armed',    when: ws => ws.armed === false && ws.is_caster !== true
-                                 && (ws.has_wieldable_weapon === true || ws._gold > 0 || ws._canConjureWeapon === true) && ws._equipCooldown !== true },
   // HUNT before eating: the character should go find work (a mob to fight)
   // rather than sitting in town eating. Vigor management matters during
   // combat, not while idle. If vigor is truly too low to fight, the
