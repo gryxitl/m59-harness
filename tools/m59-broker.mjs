@@ -34,7 +34,7 @@ import http from 'node:http';
 import os from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, unlinkSync, realpathSync, openSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, unlinkSync, realpathSync, openSync, writeSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { M59Client, KOD_FINENESS, BPNAME } from './m59-client.mjs';
@@ -777,6 +777,7 @@ async function spawnKeeper(agent, index, credentials) {
     { stdio: ['ignore', logFd, logFd], cwd: process.cwd(), env: { ...(process.env ?? {}), M59_MOVER_TRACE: process.env?.M59_MOVER_TRACE ?? '0' } });
   // NOT detached: keepers die when the broker exits.
   keeperProcesses.set(agent, { pid: child.pid, port, startedAt: Date.now() });
+  try { writeSync(logFd, Buffer.from(`${new Date().toISOString().slice(0,24)} [session-marker] spawn pid=${child.pid} fleet=${FLEET ?? 'default'}\n`)); } catch {}
   console.error(`[keeper] spawned ${agent} pid=${child.pid} port=${port}`);
   // Wait for the keeper to be ready
   for (let i = 0; i < 30; i++) {
