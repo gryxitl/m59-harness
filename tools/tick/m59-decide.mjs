@@ -900,9 +900,8 @@ export function intend(actionName, frame, act, ctx) {
 // ticks coalesce when the loop is under load, so a goal "skipped for 30 ticks" is three
 // seconds on a healthy loop and half a minute on a struggling one. The pause would grow
 // exactly when things were going worst. A tick is a sampling cadence, not a clock.
-export function makeDecider({ session, policy = {}, goals = null, onDecision = null,
+export function makeDecider({ session, policy = {}, goals = [], onDecision = null,
                               skipAfter = 5, skipForMs = 3000, now = () => Date.now() } = {}) {
-  if (!goals || goals.length === 0) goals = DEFAULT_GOALS;
   if (!session) throw new Error('makeDecider: no session');
   // GOAP REPORTING (B4): tick mode has no _goapKeeper, so /state's goap.goal/
   // action/plan are structurally null. Stamp the last decision on the session so
@@ -928,6 +927,7 @@ export function makeDecider({ session, policy = {}, goals = null, onDecision = n
   let _blacklist = new Set();    // unreachable target IDs
   let _blacklistRoom = null;     // room the blacklist applies to
   let _goalSelDbgAt = 0;           // wall-clock ms of last goal-selection diagnostic
+  let _brokenDbgAt = 0;            // wall-clock ms of last broken-set diagnostic
   let _blacklistAt = 0;          // wall-clock ms of last blacklist update
   let _reachCheckAt = 0;         // wall-clock ms of last reachability A* (throttle)
   let _lastTargetId = null;      // previous tick's target (for stuck-detection, which runs before evaluate)
@@ -1342,18 +1342,16 @@ export function makeDecider({ session, policy = {}, goals = null, onDecision = n
       session._lastUnderworldAt = Date.now();
     }
     ws._lastUnderworldAt = session._lastUnderworldAt ?? null;
-    // Log the room identity inputs whenever the symbol is true.
+    if (ws.armed === false && Date.now() - (_armedDbgAt ?? 0) > 30000) {
+      _armedDbgAt = Date.now();
+      try {
+        console.error(`[armeddbg] armed=${ws.armed} is_caster=${ws.is_caster} _canConjureWeapon=${ws._canConjureWeapon} has_mana=${ws.has_mana} _packWeapon=${ws._packWeapon} _gold=${ws._gold} _equipCooldown=${ws._equipCooldown} equipCooldownUntil=${session?._equipCooldownUntil ?? 0} fails=${skipped.get('armed') ?? 0}`);
+      } catch {}
+    }
     if (ws.in_underworld === true && Date.now() - (_uwDbgAt ?? 0) > 30000) {
       _uwDbgAt = Date.now();
       try {
         console.error(`[uwdbg] in_underworld=true roomNum=${ws._roomNum} worldRoom=${session?.world?.room?.num ?? 'null'} clientRoomNum=${client?.room?.num ?? 'null'} clientRoomId=${client?.room?.id ?? 'null'} nameRsc=${client?.roomNameRsc ?? 'null'}`);
-      } catch {}
-    }
-    // One-time armed debug: print the armed goal's inputs.
-    if (ws.armed === false && Date.now() - (_armedDbgAt ?? 0) > 30000) {
-      _armedDbgAt = Date.now();
-      try {
-        console.error(`[armeddbg] armed=${ws.armed} _canConjureWeapon=${ws._canConjureWeapon} has_mana=${ws.has_mana} _packWeapon=${ws._packWeapon} _gold=${ws._gold} _equipCooldown=${ws._equipCooldown} fails=${skipped.get('armed') ?? 0}`);
       } catch {}
     }
     ws._maxHp = client?.vitals?.()?.health?.max ?? null;
@@ -1921,6 +1919,14 @@ export function makeDecider({ session, policy = {}, goals = null, onDecision = n
       _goalSelDbgAt = Date.now();
       try {
         console.error(`[goalsel] active=${active?.goal ?? 'null'} committedIdx=${committedIdx} skipped=${JSON.stringify(Object.fromEntries(skipped))} ws.armed=${ws.armed} ws._packWeapon=${ws._packWeapon}`);
+      } catch {}
+    }
+    // Throttled broken-set debug: print the broken set and selection result.
+    if (Date.now() - (_brokenDbgAt ?? 0) > 30000) {
+      _brokenDbgAt = Date.now();
+      try {
+        const bs = brokenSetFor(session, client);
+        console.error(`[brogel] brokenSet=[${[...bs].join(',')}] active=${active?.goal ?? 'null'} committedIdx=${session?._committedGoalIdx ?? 0} ws.armed=${ws.armed}`);
       } catch {}
     }
 
