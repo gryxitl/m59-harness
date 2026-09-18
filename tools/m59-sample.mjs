@@ -26,7 +26,9 @@ const dir = join(dirname(new URL(import.meta.url).pathname), '..', 'substrate');
 let roster = {};
 try {
   const d = JSON.parse(readFileSync(join(dir, 'fleet-state.json'), 'utf8'));
-  for (const [k, v] of Object.entries(d.characters ?? {})) roster[k] = v.name ?? k;
+  for (const [k, v] of Object.entries(d)) {
+    if (typeof v === 'object' && v?.credentials?.character) roster[k] = v.credentials.character;
+  }
 } catch {}
 const files = readdirSync(dir).filter(f => f.startsWith('keeper-') && f.endsWith('.log'));
 for (const f of files) {
@@ -35,7 +37,7 @@ for (const f of files) {
   const charName = roster[key] ?? key;
   const deathRe = new RegExp(`### ${charName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} was just killed`);
   let swings = 0, loots = 0, deaths = 0, uwEntries = 0, first = null, last = null;
-  const rl = createInterface({ input: createReadStream(p, 'utf8'), crlfDelay: Infinity });
+  const rl = createInterface({ input: createReadStream(p, { encoding: 'utf8' }), crlfDelay: Infinity });
   for await (const line of rl) {
     const m = line.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
     if (!m) continue;
