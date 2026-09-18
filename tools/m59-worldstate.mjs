@@ -86,9 +86,9 @@ export const SYMBOLS = {
   // ── body ──────────────────────────────────────────────────────────────────
   armed: {
     describe: 'a weapon is in the server\'s use list',
-    whenUnknown: true,
-    why_unknown: 'a failed read must not idle the fleet; the guard catches the empty ' +
-                 'hand, it is not a new way to stop',
+    whenUnknown: false,
+    why_unknown: 'an unarmed character that hunts is a death sentence; ' +
+                 'fail-closed so the armed goal fires and the character arms first',
     produce: ({ client }) => (client ? skills.isArmed(client) : null),
   },
 

@@ -396,7 +396,7 @@ export const equippedNow = (c) => (c?.using instanceof Set ? c.using : null);
 // Behaviour is byte-for-byte what Autopilot.armed() did — this is a move, not a fix.
 export const isArmed = (c) => {
   const eq = c?.equipment?.();
-  if (!eq || eq.known === false) return true;
+  if (!eq || eq.known === false) return false;
   return (eq.equipped || []).some(o =>
     weaponScore(o.name ?? c.rsc?.get?.(o.nameRsc) ?? '') > 0);
 };
