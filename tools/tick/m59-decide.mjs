@@ -925,6 +925,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
   let _ws = null;               // last tick's world state (for state() access)
   let retargetCheckAt = 0;       // wall-clock ms of last re-target check (throttle)
   let _uwDbgAt = 0;               // wall-clock ms of last underworld-identity diagnostic
+  let _armedDbgAt = 0;             // wall-clock ms of last armed-goal diagnostic
   let _stuckDbgAt = 0;            // wall-clock ms of last stuck-gate diagnostic
   let lastSeenHp = null;         // last HP value (to detect "we just took damage")
   let lastDamagedAt = 0;         // wall-clock ms when we last dropped HP
@@ -1337,6 +1338,13 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       _uwDbgAt = Date.now();
       try {
         console.error(`[uwdbg] in_underworld=true roomNum=${ws._roomNum} worldRoom=${session?.world?.room?.num ?? 'null'} clientRoomNum=${client?.room?.num ?? 'null'} clientRoomId=${client?.room?.id ?? 'null'} nameRsc=${client?.roomNameRsc ?? 'null'}`);
+      } catch {}
+    }
+    // One-time armed debug: print the armed goal's inputs.
+    if (ws.armed === false && Date.now() - (_armedDbgAt ?? 0) > 30000) {
+      _armedDbgAt = Date.now();
+      try {
+        console.error(`[armeddbg] armed=${ws.armed} _canConjureWeapon=${ws._canConjureWeapon} has_mana=${ws.has_mana} _packWeapon=${ws._packWeapon} _gold=${ws._gold} _equipCooldown=${ws._equipCooldown} fails=${skipped.get('armed') ?? 0}`);
       } catch {}
     }
     ws._maxHp = client?.vitals?.()?.health?.max ?? null;
