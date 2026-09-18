@@ -30,7 +30,8 @@ other tools. A change here is a **two-system** change — coordinate it.
 | `m59-navgeom.mjs` | the height model + lenient fine path (installed onto `RoomGeometry`) | `m59-mover`, `m59-combat`, `m59-decide` |
 | `m59-map.mjs` | `loadMap`, `findPath`, `buildReverseEdges` | `m59-route`, `m59-decide` |
 | `m59-parse.mjs` | `affordances`, `KOD_FINENESS`, object parsing | `m59-decide`, `m59-worldstate`, `m59-skills` |
-| `m59-session.mjs` | the `Session` + `Pacer` | `m59-keeper-process` |
+| `m59-session.mjs` | the `Session` + `Pacer` (re-exported from `m59-game.mjs`) | `m59-keeper-process` |
+| `m59-game.mjs` | the 7,300-line legacy `Session` — **shared**: the tick driver's `Pacer` is this class (via `m59-session.mjs:10`) | `m59-session` |
 | `m59-routes.mjs` | `attachStepMasks` | `m59-keeper-process` |
 | `m59-skills.mjs` | skill/item/weapon logic (shared with the legacy keeper) | `m59-worldstate`, `m59-decide` |
 | `m59-worldstate.mjs` | `evaluate` — the world-state snapshot (shared with the GOAP keeper) | `m59-decide` |
@@ -45,7 +46,7 @@ import these.
 |---|---|
 | `m59-autopilot.mjs` | the 16K-line legacy keeper (the "old brain") |
 | `m59-keeper-goap.mjs` | the GOAP keeper (the experimental/blocking variant) |
-| `m59-game.mjs` | the 7,300-line legacy `Session` (the "old body") |
+| `m59-bt-*.mjs` | the legacy behaviour-tree atomics |
 | `m59-bt-*.mjs` | the legacy behaviour-tree atomics |
 | `m59-goap-run.mjs` | the GOAP runner |
 
