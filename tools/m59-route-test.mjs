@@ -634,5 +634,18 @@ console.log('\na cross-room ping-pong drops the route and stamps the drop memory
      session._routeDrop != null && Array.isArray(session._routeDrop.rooms) && session._routeDrop.rooms.length >= 2,
      JSON.stringify(session._routeDrop));
 }
+
+// NO-ROUTE MUST NOT STARVE THE MOVER: an unreachable destination must release
+// the dest and stamp _routeDrop rather than hold it and skip the mover pump.
+{
+  const { router, session, act, frame } = rig({ pathFound: false });
+  router.to(20);
+  const r = router.tick(frame(5, 5), act);
+  ok('no-route releases the dest (router.dest is null)', router.dest == null,
+     JSON.stringify({ state: r.state, dest: router.dest }));
+  ok('no-route stamps _routeDrop',
+     session._routeDrop != null && Array.isArray(session._routeDrop.rooms) && session._routeDrop.rooms.length >= 2,
+     JSON.stringify(session._routeDrop));
+}
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
