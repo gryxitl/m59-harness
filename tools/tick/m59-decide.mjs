@@ -1860,12 +1860,25 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
     // until the confirm resolves and syncs the mover.
     if (session._mover?.maybeConfirm) session._mover.maybeConfirm();
 
-    // 2. GOAL. The first that applies and is not serving a skip.
-    const active = goals.find(g => {
+    // 2. GOAL. Committed-goal hysteresis: if the previous tick's goal is
+    // still valid (its `when` is true), keep it — skip lower-priority goals.
+    // Only supersede when a HIGHER-priority goal (earlier in the array) fires.
+    // This prevents the armed<->hunt oscillation: once armed is selected, it
+    // stays selected until the character is armed (ws.armed === true) or a
+    // higher-priority goal (!in_underworld, flee_danger) fires.
+    const committedIdx = session?._committedGoalIdx ?? 0;
+    const committedGoal = goals[committedIdx];
+    const committedValid = committedGoal?.when?.(ws) === true
+      && (skipped.get(committedGoal.goal) ?? 0) <= now();
+    const startIdx = committedValid ? committedIdx : 0;
+    const active = goals.slice(startIdx).find(g => {
       if (!g?.goal || !g.when?.(ws)) return false;
       const until = skipped.get(g.goal) ?? 0;
       return now() >= until;
     });
+    if (active) {
+      session._committedGoalIdx = goals.indexOf(active);
+    }
 
     // Track whether we're resting or fighting (suppress
     // stuck detection). A character that's swinging at a
@@ -2994,6 +3007,8 @@ function fleeExits(session, ws) {
 // precondition cannot, which is the one rule docs/HANDOFF.md says must not be broken.
 export const DEFAULT_GOALS = [
   { goal: '!in_underworld', when: ws => ws.in_underworld === true },
+  { goal: 'armed',    when: ws => ws.armed === false && ws.is_caster !== true
+                                 && (ws.has_wieldable_weapon === true || ws._gold > 0 || ws._canConjureWeapon === true) && ws._equipCooldown !== true },
   // FLEE first: if an out-of-band mob is IN REACH (actually threatening us), run before
   // anything else. The old condition fired on ANY out-of-band target (has_target &&
   // !target_in_band), which made the character FLEE from a passive mummy just because it
@@ -3120,6 +3135,4 @@ export const DEFAULT_GOALS = [
   { goal: 'vigor_ok', when: ws => ws.vigor_ok === false && ws.has_food === true
                                  && ws.has_target !== true },
   { goal: 'has_food', when: ws => ws.has_food === false && ws.has_reagents === true },
-  { goal: 'armed',    when: ws => ws.armed === false && ws.is_caster !== true
-                                 && (ws._gold > 0 || ws._canConjureWeapon === true) && ws._equipCooldown !== true },
 ];
