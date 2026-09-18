@@ -274,6 +274,12 @@ export function fightEnvelopeOk({ traveling, targetD2, rangeSq = 64 }) {
 // null: nearest hostile in melee range that is EITHER a prohibited spider
 // (never fightable, but very much able to eat us) or known over the threat
 // ceiling. Unknown non-spiders default open (consistent with target_in_band).
+// Computed from _targetLevel and _threatCeiling (not ws.target_in_band, which
+// the GOAP keeper overwrites). Returns null when either is unknown.
+function targetInBand(ws) {
+  if (ws?._targetLevel == null || ws?._threatCeiling == null) return null;
+  return ws._targetLevel <= ws._threatCeiling;
+}
 export function findDangerClose({ meCol, meRow, objects, ceiling, allowSpiders, allowCentipedes, mobNames, nameOf }) {
   const meleeD2 = 5;
   let best = null, bestD2 = Infinity;
@@ -1761,6 +1767,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
             const band = isArmed ? fullBand : Math.floor(fullBand / 2);
             const targetLevel = targetLevelOf(best, (o) => client.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
             ws._targetLevel = targetLevel;
+            ws._threatCeiling = charLevel + band;
             // Re-derive the target-dependent symbols.
             ws.has_target = true;
             ws._targetD2 = bestD2;
@@ -3023,7 +3030,7 @@ export const DEFAULT_GOALS = [
   // only flee when the out-of-band threat is in reach (actually a danger). An out-of-band
   // target that is NOT in reach is handled by the hunt goal (route to a better target or
   // approach it), not by fleeing.
-  { goal: 'flee_danger', when: ws => ((ws.has_target === true && ws.target_in_band === false && ws.in_reach === true) || ws._dangerClose != null || (ws._traveling === true && (ws._mobCount ?? 0) >= 3)) && ws._inHuntRoom !== true },
+  { goal: 'flee_danger', when: ws => ((ws.has_target === true && targetInBand(ws) === false && ws.in_reach === true) || ws._dangerClose != null || (ws._traveling === true && (ws._mobCount ?? 0) >= 3)) && ws._inHuntRoom !== true },
   // FLEE when hurt AND mobs are present — whether the target is in
   // reach (attacking you) or out of reach (chasing you). The old
   // `in_reach === true` requirement left a gap: low HP + chasing mob
@@ -3099,7 +3106,7 @@ export const DEFAULT_GOALS = [
       return maxHp != null && maxHp >= 25;
     } },
   { goal: '_fight',   when: ws => ws._travelMode !== true
-                                 && ws.has_target === true && ws.target_in_band === true
+                                 && ws.has_target === true && targetInBand(ws) === true
                                  && ws.critical !== true
                                 && (ws.hurt === true || ws.vigor_floor !== false)
                                 && ws.below_flee !== true
@@ -3135,7 +3142,7 @@ export const DEFAULT_GOALS = [
         const maxHp = ws._maxHp;
         if (maxHp != null && maxHp >= 25) return false;
       }
-      return ws.has_target === false || ws.target_in_band === false;
+      return ws.has_target === false || targetInBand(ws) === false;
     } },
   { goal: 'vigor_ok', when: ws => ws.vigor_ok === false && ws.has_food === true
                                  && ws.has_target !== true },
