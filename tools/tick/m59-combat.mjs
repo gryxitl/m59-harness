@@ -287,11 +287,10 @@ export class CombatController {
     const isWalkable = (r, col) => {
       const f = geo?.fineWalkable ? geo.fineWalkable(r, col) : undefined;
       const s = geo?.standable ? geo.standable(r, col) : undefined;
-      // Explicitly blocked by either grid: invalid.
-      if (f === false || s === false) return false;
-      // No data at all: assume valid.
+      // Same policy as m59-decide.mjs:1130-1134: valid if either says true,
+      // or no data. A square the BSP says has no floor is never valid.
+      if (f === false && s === false) return false;
       if (f === undefined && s === undefined) return true;
-      // At least one grid says true: valid.
       return f === true || s === true;
     };
 
