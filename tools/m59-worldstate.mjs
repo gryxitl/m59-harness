@@ -429,7 +429,7 @@ export const SYMBOLS = {
         ? (client.rsc?.get?.(client.roomNameRsc) ?? '')
         : '';
       const id = client?.room?.id;
-      return /underworld/i.test(name) || id === 6;
+      return /underworld/i.test(name) || client?.room?.num === 6;
     },
   },
 
