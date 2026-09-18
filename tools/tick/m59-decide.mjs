@@ -1788,6 +1788,12 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           ws._targetD2 = d2;
           ws.has_target = true;
           const tLevel = targetLevelOf(target, (o) => client.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
+          ws._targetLevel = tLevel;
+          const maxHp = client.vitals?.()?.health?.max ?? 20;
+          const isArmed = ws.armed === true;
+          const fullBand = policy?.threatBand ?? Math.floor(maxHp / 4);
+          const band = isArmed ? fullBand : Math.floor(fullBand / 2);
+          ws._threatCeiling = maxHp + band;
         }
       }
     }
@@ -3147,8 +3153,9 @@ export const DEFAULT_GOALS = [
         if (maxHp != null && maxHp >= 25) return false;
       }
       // Fire when: no target (find one), target over-level (find better),
-      // OR target in-band but not in reach (approach it).
+      // target unknown (find one), OR target in-band but not in reach (approach).
       return ws.has_target === false || targetInBand(ws) === false
+        || targetInBand(ws) === null
         || (ws.has_target === true && targetInBand(ws) === true && ws.in_reach === false);
     } },
   { goal: 'vigor_ok', when: ws => ws.vigor_ok === false && ws.has_food === true
