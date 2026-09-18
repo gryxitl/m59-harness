@@ -422,6 +422,11 @@ export const INTENTS = {
         atts[confirmId] = rec;
       }
     }
+    // INFLIGHT GUARD: if a confirm is outstanding for this id, don't send
+    // another use — one send per round trip. The confirm resolves in 2s.
+    if (s?._equipConfirmId === item.id && s?._equipConfirmAt && Date.now() < s._equipConfirmAt) {
+      return { sent: false, why: 'equip inflight (confirm outstanding)' };
+    }
     const rec = atts[item.id] ?? { n: 0 };
     const now8 = Date.now();
     if (now8 - (rec.at ?? 0) < 1000) {
