@@ -84,12 +84,13 @@ export function huntRoomsAtOrBelow(level, ceiling, minLevel) {
   for (const [num, entries] of Object.entries(spawns.rooms ?? {})) {
     const roomNum = parseInt(num);
     if (DANGEROUS_SPIDER_ROOMS.has(roomNum)) continue;
-    // Collect all qualifying entries and take the highest level ≤ ceiling
-    // (a room can have multiple huntable entries at different levels).
+    // Collect all qualifying entries and take the one closest to the
+    // character's level (a room can have multiple huntable entries at
+    // different levels; the closest is the safest target).
     let best = null;
     for (const e of entries) {
       if (e.huntable && e.level != null && e.level <= maxLevel && e.level >= min) {
-        if (!best || e.level > best.level) best = e;
+        if (!best || Math.abs(e.level - level) < Math.abs(best.level - level)) best = e;
       }
     }
     if (best) out.push({ room: roomNum, creature: best.creature, level: best.level });
