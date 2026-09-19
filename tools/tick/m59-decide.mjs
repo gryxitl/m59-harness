@@ -2822,17 +2822,27 @@ function fleeExits(session, ws) {
               session._huntWaitStart = now; // reset the timer
               const roomNum = resolveRoomNum(frame?.room ?? {}, session?.world?.map ?? null) ?? frame?.room?.num ?? frame?.room?.id ?? null;
               if (roomNum != null) {
-                const _cb = characterBand(client, session?.policy ?? policy, ws.armed === true);
-                if (_cb == null) return; // vitals not ready
-                const { charLevel, band: _band, ceiling: _ceiling } = _cb;
-                const alt = nearestHuntRoom(roomNum, charLevel, _ceiling, charLevel + 1, roomNum);
-                if (alt && alt.room !== roomNum) {
-                  session._huntWaitStart = now;
-                  if (router && router.dest == null) {
-                    router.to(alt.room);
-                    onDecision?.({ ticks, goal: 'hunt', action: 'travel',
-                      what: `no target 30s in room ${roomNum}; moving to ${alt.room} (${alt.creature} lv${alt.level})`, sent: true });
-                    return;
+                // HUNT ROOM STICKY: if the current room is the _huntPickedAt room
+                // and the 10-minute floor hasn't elapsed, do not re-target. The
+                // room may hold nothing in band right now, but re-routing to a
+                // strictly farther room (hops=2 vs hops=1) is a policy loop, not
+                // a movement failure. Hold the room and let the spawn table reset.
+                const _picked = session?._huntPickedAt;
+                if (_picked && _picked.room === roomNum && Date.now() - _picked.at < 600000) {
+                  // Sticky: do not re-target. The 30s timer is already reset.
+                } else {
+                  const _cb = characterBand(client, session?.policy ?? policy, ws.armed === true);
+                  if (_cb == null) return; // vitals not ready
+                  const { charLevel, band: _band, ceiling: _ceiling } = _cb;
+                  const alt = nearestHuntRoom(roomNum, charLevel, _ceiling, charLevel + 1, roomNum);
+                  if (alt && alt.room !== roomNum) {
+                    session._huntWaitStart = now;
+                    if (router && router.dest == null) {
+                      router.to(alt.room);
+                      onDecision?.({ ticks, goal: 'hunt', action: 'travel',
+                        what: `no target 30s in room ${roomNum}; moving to ${alt.room} (${alt.creature} lv${alt.level})`, sent: true });
+                      return;
+                    }
                   }
                 }
               }
