@@ -2834,40 +2834,18 @@ export class Mover {
     // moveToSquare cannot.
     // LAZY GATE: only send if the interval + threshold allow it (see the other fallback).
     const enrProtoX = stepCol * KOD_FINENESS + HALF, enrProtoY = stepRow * KOD_FINENESS + HALF;
-    // EXTEND THE STEP TO THE TRACE-VALIDATED STRIDE (parity with the stride path at :2733).
-    // The bare waypoint centre is 64 units (1 square); the server accepts 320 (5 squares) per
-    // packet. Without this, the step engine burns a 1000ms packet on 64 units while the stride
-    // path spends the same packet on 320. The extension is integrated (sub-stepped, collision-
-    // checked) so a thin wall cannot be stepped over.
-    const _geoStep = this.session?.world?.geometry;
-    const _vStep = s?.client?.vitals?.()?.vigor?.value ?? 0;
-    const _runStep = s?.policy?.allowRun !== false && _vStep >= RUN_VIGOR_FLOOR;
-    const _strideStep = _runStep ? RUN_STRIDE_PROTO : WALK_STRIDE_PROTO;
-    let _sendX = enrProtoX, _sendY = enrProtoY, _speedStep = 18, _integMoved = 0;
-    if (_geoStep?.traceFineMoveClient) {
-      const _integ = this._integrateToward(_geoStep, myProtoX, myProtoY, enrProtoX, enrProtoY, _strideStep, {
-        dt: Math.min(MOVE_INTERVAL_MS, Math.max(100, Date.now() - this._lastReportAt)),
-        numSteps: STEPS_PER_MOVE,
-        playerRadius: PLAYER_WALL_CLEARANCE_CLIENT_UNITS,
-      });
-      _integMoved = _integ.moved;
-      if (_integ.moved >= MOVE_THRESHOLD_PROTO) {
-        _sendX = _integ.x; _sendY = _integ.y;
-        _speedStep = _runStep ? 36 : 18;
-      }
-    }
     const serverPX2 = curCol * KOD_FINENESS + HALF;
     const serverPY2 = curRow * KOD_FINENESS + HALF;
-    if (this._movementGateOk(_sendX, _sendY, myProtoX, myProtoY, serverPX2, serverPY2)) {
+    if (this._movementGateOk(enrProtoX, enrProtoY, myProtoX, myProtoY, serverPX2, serverPY2)) {
       // PHASE 1: un-gate from session.walkTo. Same rationale as the waypoint
       // branch — the step is fine-model-validated, send it raw.
-      if (this._claimMoveSlot()) Promise.resolve(s.client.moveTo(_sendX, _sendY, _speedStep, s.client.room?.id ?? 0))
+      if (this._claimMoveSlot()) Promise.resolve(s.client.moveTo(enrProtoX, enrProtoY, 18, s.client.room?.id ?? 0))
         .then(() => { if (process.env.M59_MOVE_DEBUG !== '0')
-          console.error(`[movedbg] ${this.logName} gateOK step=(${stepCol},${stepRow}) me=(${me.col},${me.row}) wp=(${wpCol},${wpRow}) idx=${this.pathIdx}/${this.path ? this.path.length : 'null'} stuck=${this.stuckTicks} srv=(${curCol},${curRow}) moveTo sent stride=${_integMoved.toFixed(0)}`); })
+          console.error(`[movedbg] ${this.logName} gateOK step=(${stepCol},${stepRow}) me=(${me.col},${me.row}) wp=(${wpCol},${wpRow}) idx=${this.pathIdx}/${this.path ? this.path.length : 'null'} stuck=${this.stuckTicks} srv=(${curCol},${curRow}) moveTo sent`); })
         .catch(e => { if (process.env.M59_MOVE_DEBUG !== '0')
           console.error(`[movedbg] ${this.logName} gateOK step=(${stepCol},${stepRow}) ERR ${e.message}`); });
-      this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY, _sendX, _sendY, 'waypoint-step');
-      this._recordReport(_sendX, _sendY);
+      this._recordSend(this.destProto.x, this.destProto.y, myProtoX, myProtoY, enrProtoX, enrProtoY, 'waypoint-step');
+      this._recordReport(enrProtoX, enrProtoY);
 
       // DID THE SERVER ACTUALLY REFUSE THIS STEP? Decided from the server's own position,
       // not from our model of the room.
