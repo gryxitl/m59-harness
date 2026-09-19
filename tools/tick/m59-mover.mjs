@@ -1605,6 +1605,11 @@ export class Mover {
       if (pc != null) {
         pw.push({ t: Date.now(), col: pc, row: pr, sends: sendsNow });
         while (pw.length && Date.now() - pw[0].t > winMs) pw.shift();
+        if (process.env.M59_DITHER_DEBUG === '1' && pw.length > 0) {
+          const _first = pw[0], _last = pw[pw.length - 1];
+          const _net = Math.max(Math.abs(_last.col - _first.col), Math.abs(_last.row - _first.row));
+          console.error(`[dither] pw=${pw.length} age=${Date.now() - _first.t}ms net=${_net} sends=${_last.sends}-${_first.sends} verdict=${dithered(pw, Date.now(), winMs)}`);
+        }
         if (dithered(pw, Date.now(), winMs)) {
           this._fanIndex = 0;
           this._fanFrom = { x: protocolToClient(myProtoX), y: protocolToClient(myProtoY) };
