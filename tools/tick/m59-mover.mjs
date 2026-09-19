@@ -3510,6 +3510,7 @@ export class Mover {
     return true;
   }
   _noteRefusedStep(toCol, toRow, fromCol, fromRow) {
+    if (!Number.isFinite(toCol) || !Number.isFinite(toRow)) return;
     // Edge key: fromRow,fromCol>toRow,toCol. One-way (refusals are directional).
     // Keying by edge (not square) means a square refused from two different
     // neighbours keeps both bans. The `from` is stored in the value for
