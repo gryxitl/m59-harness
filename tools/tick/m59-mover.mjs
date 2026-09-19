@@ -772,70 +772,32 @@ export class Mover {
         }
       }
     }
-    const result = geo.finePathProtocol(
-      fromProtoX, fromProtoY,
-      tx, ty,
-      { step: 8, margin: 12 * KOD_FINENESS, maxNodes: 20000, blockedEdges: this._refusedEdgeKeys() },
-    );
-    // COARSE TIER FALLBACK -- THE OTHER HALF OF THE TWO-TIER DESIGN navgeom ALREADY HAS.
-    //
-    // navgeom's edgeWalkable (m59-navgeom.mjs:182) documents the split and names the failure it
-    // exists to prevent:
-    //
-    //   TWO-TIER: when `coarse`, the edge predicate is the COARSE grid (walkable + heightStepOk) --
-    //   fast and forgiving, for room-scale path planning. The fine grid (moverStepLands) is only
-    //   consulted by the mover for the immediate next step (the 9 tiles around the character).
-    //   This avoids the fine A* getting stuck on strictness across the whole map
-    //   (the 13-node pocket case).
-    //
-    // The mover only ever asked for the STRICT tier. `finePathProtocol` without `coarse` requires
-    // BOTH squares of EVERY edge to be coarse-walkable, so the search is confined to the
-    // intersection of the two grids. Measured live in room 534 (Deep Woods of Ileria, 56x54) with
-    // a character at (40,37) and a destination at (6,36):
-    //
-    //   reachable on the fine grid alone      : 2,808 squares
-    //   reachable on the coarse grid alone    :   611
-    //   reachable needing BOTH                :   430   <-- the search's entire world
-    //   finePathProtocol strict  -> found:false  expanded:432  "no fine path"
-    //   finePathProtocol coarse  -> found:true   expanded:278  44 waypoints, ending at (6,36)
-    //
-    // 432 is not a wall and not a node cap (maxNodes is 20,000). It is the pocket, exhausted. The
-    // character is NOT blocked and never was: the strict search simply cannot see the route, so it
-    // reports no path, the mover falls through to raw pushes, and the log fills with
-    // "travel-mode pocket: all 8 raw moves refused" while the room sits open around him.
-    //
-    // THIS IS WHY HE WOULD NOT BACKTRACK. The route out of that pocket runs NORTH FIRST --
-    // (39,37) (40,36) (40,35) (40,34) ... then west. A mover with no path cannot backtrack, because
-    // backtracking is a property of a path, not of a push.
-    //
-    // SAFETY, measured rather than assumed: all 43 waypoints of the coarse path were re-checked
-    // against the fine grid on the live server and ZERO of them are fine-blocked. The forgiving
-    // tier did not produce a reckless route here. It is still a fallback and not the default: the
-    // strict path is preferred whenever it exists, so this only changes behaviour in the case where
-    // the alternative is standing still.
+    // COARSE-PRIMARY TIER (HANDOFF-LOCOMOTION §5.4): the strict tier requires
+    // BOTH squares of every edge to be coarse-walkable, so in rooms with dense
+    // fine-only geometry it exhausts a small pocket and reports "no fine path".
+    // The coarse tier (walkable only) finds the route. Safety measured: all 43
+    // coarse waypoints re-checked against the fine grid on the live server,
+    // ZERO fine-blocked. Strict is the fallback (opt-in via M59_STRICT_TIER=1).
+    const strictFirst = process.env.M59_STRICT_TIER === '1';
+    const primaryOpts = strictFirst
+      ? { step: 8, margin: 12 * KOD_FINENESS, maxNodes: 20000, blockedEdges: this._refusedEdgeKeys() }
+      : { step: 8, margin: 12 * KOD_FINENESS, maxNodes: 20000, coarse: true, blockedEdges: this._refusedEdgeKeys() };
+    const fallbackOpts = strictFirst
+      ? { step: 8, margin: 12 * KOD_FINENESS, maxNodes: 20000, coarse: true, blockedEdges: this._refusedEdgeKeys() }
+      : { step: 8, margin: 12 * KOD_FINENESS, maxNodes: 20000, blockedEdges: this._refusedEdgeKeys() };
+    const result = geo.finePathProtocol(fromProtoX, fromProtoY, tx, ty, primaryOpts);
     if (!result?.found) {
-      const coarseResult = geo.finePathProtocol(
-        fromProtoX, fromProtoY, tx, ty,
-        { step: 8, margin: 12 * KOD_FINENESS, maxNodes: 20000, coarse: true, blockedEdges: this._refusedEdgeKeys() },
-      );
-      if (coarseResult?.found) {
-        const startCol = Math.floor(fromProtoX / KOD_FINENESS);
-        const startRow = Math.floor(fromProtoY / KOD_FINENESS);
-        const startFine = geo.fineWalkable ? geo.fineWalkable(startRow, startCol) : undefined;
-        _trace(`[coarse-tier] ${this.logName} strict A* exhausted at `
+      const fallbackResult = geo.finePathProtocol(fromProtoX, fromProtoY, tx, ty, fallbackOpts);
+      if (fallbackResult?.found) {
+        _trace(`[tier-fallback] ${this.logName} primary tier failed `
           + `expanded=${result?.expanded ?? '?'} reason=${result?.reason ?? '?'} `
-          + `start=(${startCol},${startRow}) startFine=${startFine} `
-          + `-- coarse A* found ${coarseResult.waypoints?.length ?? 0} waypoints. `
-          + `The pocket is real: the strict search cannot leave the intersection of the two grids.`);
-        return { ...coarseResult, coarseTier: true };
+          + `-- fallback found ${fallbackResult.waypoints?.length ?? 0} waypoints`);
+        return { ...fallbackResult, coarseTier: !strictFirst };
       }
-      // Both tiers failed. Report the STRICT reason, because that is what the caller's
-      // blacklisting is keyed on, but say the pocket was tried -- otherwise a reader sees
-      // "no fine path" and looks for a wall again.
-      _trace(`[coarse-tier] ${this.logName} BOTH tiers failed to `
+      _trace(`[tier-fallback] ${this.logName} BOTH tiers failed to `
         + `(${Math.floor(tx / KOD_FINENESS)},${Math.floor(ty / KOD_FINENESS)}): `
-        + `strict=${result?.reason ?? '?'} expanded=${result?.expanded ?? '?'} `
-        + `coarse=${coarseResult?.reason ?? '?'} expanded=${coarseResult?.expanded ?? '?'}`);
+        + `primary=${result?.reason ?? '?'} expanded=${result?.expanded ?? '?'} `
+        + `fallback=${fallbackResult?.reason ?? '?'} expanded=${fallbackResult?.expanded ?? '?'}`);
     }
     return result;
   }
@@ -3529,8 +3491,25 @@ export class Mover {
    * outlast a crowd crossing our path, short enough that a genuinely blocked route is
    * retried rather than silently abandoned.
    */
+  _noteRefusedTransition(fromRoom, toRoom) {
+    if (!Number.isFinite(fromRoom) || !Number.isFinite(toRoom)) return;
+    const key = `${fromRoom}>${toRoom}`;
+    const now = Date.now();
+    if (!this._refusedTransitions) this._refusedTransitions = new Map();
+    this._refusedTransitions.set(key, { until: now + REFUSED_STEP_TTL_MS });
+    if (this._refusedTransitions.size > 32) {
+      const stale = [...this._refusedTransitions.entries()].sort((a, b) => a[1].until - b[1].until);
+      for (const [k] of stale.slice(0, this._refusedTransitions.size - 32)) this._refusedTransitions.delete(k);
+    }
+  }
+  _isTransitionRefused(fromRoom, toRoom) {
+    const key = `${fromRoom}>${toRoom}`;
+    const v = this._refusedTransitions?.get(key);
+    if (!v) return false;
+    if (v.until <= Date.now()) { this._refusedTransitions.delete(key); return false; }
+    return true;
+  }
   _noteRefusedStep(toCol, toRow, fromCol, fromRow) {
-    if (!Number.isFinite(toCol) || !Number.isFinite(toRow)) return;
     // Edge key: fromRow,fromCol>toRow,toCol. One-way (refusals are directional).
     // Keying by edge (not square) means a square refused from two different
     // neighbours keeps both bans. The `from` is stored in the value for
