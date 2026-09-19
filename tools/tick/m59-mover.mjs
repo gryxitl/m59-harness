@@ -1517,8 +1517,12 @@ export class Mover {
       const result = this._plan(myProtoX, myProtoY);
       // PLAN OUTCOME TRACE: velocity never engages because path is null at
       // its block — is _plan failing, or is the path dropped after?
-      if (process.env.M59_MOVE_DEBUG !== '0')
-        try { console.error(`[movedbg] ${this.logName} plan from=(${Math.floor(myProtoX / KOD_FINENESS)},${Math.floor(myProtoY / KOD_FINENESS)}) dest=${this.dest ? this.dest.col + ',' + this.dest.row : 'null'} found=${result.found} wp=${result.found ? result.waypoints.length : 0} reason=${result.found ? '-' : (result.reason ?? '?')} expanded=${result.expanded} budget=20000 tgtFine=${geo?.fineWalkable?.(Math.floor((this.destProto?.y ?? 0) / KOD_FINENESS), Math.floor((this.destProto?.x ?? 0) / KOD_FINENESS))} tgtStand=${geo?.standable?.(Math.floor((this.destProto?.y ?? 0) / KOD_FINENESS), Math.floor((this.destProto?.x ?? 0) / KOD_FINENESS))} adjusted=${(tx !== this.destProto?.x || ty !== this.destProto?.y) ? 'yes' : 'no'} goal=${Math.floor(ty / KOD_FINENESS)},${Math.floor(tx / KOD_FINENESS)}`); } catch {}
+      if (process.env.M59_MOVE_DEBUG !== '0') {
+        let _tgtFine = '?', _tgtStand = '?';
+        try { _tgtFine = geo?.fineWalkable?.(Math.floor((this.destProto?.y ?? 0) / KOD_FINENESS), Math.floor((this.destProto?.x ?? 0) / KOD_FINENESS)) ?? '?'; } catch {}
+        try { _tgtStand = geo?.standable?.(Math.floor((this.destProto?.y ?? 0) / KOD_FINENESS), Math.floor((this.destProto?.x ?? 0) / KOD_FINENESS)) ?? '?'; } catch {}
+        try { console.error(`[movedbg] ${this.logName} plan from=(${Math.floor(myProtoX / KOD_FINENESS)},${Math.floor(myProtoY / KOD_FINENESS)}) dest=${this.dest ? this.dest.col + ',' + this.dest.row : 'null'} found=${result.found} wp=${result.found ? result.waypoints.length : 0} reason=${result.found ? '-' : (result.reason ?? '?')} expanded=${result.expanded} budget=20000 tgtFine=${_tgtFine} tgtStand=${_tgtStand} adjusted=${(tx !== this.destProto?.x || ty !== this.destProto?.y) ? 'yes' : 'no'} goal=${Math.floor(ty / KOD_FINENESS)},${Math.floor(tx / KOD_FINENESS)}`); } catch {}
+      }
       if (result.found) {
         this.path = result.waypoints;
         this.pathIdx = 0;
