@@ -1596,7 +1596,7 @@ export class Mover {
     // Gated on sends (resting sends nothing — stillness without sends is
     // rest, not dither).
     if (this.dest != null && this._fanIndex == null && this._fanTarget == null) {
-      const winMs = this._progWinMs ?? 15000;
+      const winMs = this._progWinMs ?? 10000;
       const pw = (this._progWin ??= []);
       const sendsNow = this._sendCount ?? 0;
       const _pw = Pose.confirmed(s);
