@@ -2599,7 +2599,8 @@ function fleeExits(session, ws) {
               }
             }
             if (!hunt) {
-              hunt = nearestHuntRoom(resolved, charLevel, ceiling, charLevel + 1, session._pokeRelocate ? roomNum : undefined);
+              const _triedExcl = session?._huntTried && Date.now() - session._huntTried.at < 300000 ? session._huntTried.room : undefined;
+              hunt = nearestHuntRoom(resolved, charLevel, ceiling, charLevel + 1, session._pokeRelocate ? roomNum : _triedExcl);
               if (session._pokeRelocate) session._pokeRelocate = false;
               // Stamp the re-pick floor when a NEW hunt room is picked (the
               // nearestHuntRoom path and the assigned fallback path, not the held
