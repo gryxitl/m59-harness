@@ -921,6 +921,10 @@ export class M59Client {
       // not be caught with it. See tools/m59-move-drops.mjs.
       this._droppedUserMovesAt = nowMs;
       this._lastUserMoveDropAt = nowMs;
+      if (process.env.M59_DROP_TRACE === '1') {
+        const e = new Error('move-drop');
+        console.error(`[move-drop-trace] ${this._name ?? '?'}\n${e.stack}`);
+      }
       return false;
     }
     this._lastUserMoveAt = nowMs;
