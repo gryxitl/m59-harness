@@ -113,6 +113,7 @@ import { codeExits } from '../m59-map.mjs';
 import { isGrounded, isEmbedded, nearestGrounded, segHeightOk, transitBanned } from './m59-ground.mjs';
 import { Pose } from './m59-pose.mjs';
 import '../m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
+import { USER_MOVE_MIN_INTERVAL_MS } from '../m59-client.mjs';
 
 // WHO MAY OWN THE DESTINATION. Setting a destination throws away the previous
 // one's path, stuckTicks and escape fan, so simultaneous callers destroy each
@@ -3405,7 +3406,7 @@ export class Mover {
           + `gap=${Date.now() - (this._lastMoveSubmitAt ?? 0)}ms refused=${this._submitsRefused}`);
       return false;
     }
-    Promise.resolve(s.pacer.submit('move', sendFn, 100)).catch(() => {});
+    Promise.resolve(s.pacer.submit('move', sendFn, USER_MOVE_MIN_INTERVAL_MS + 50)).catch(() => {});
     return true;
   }
 
