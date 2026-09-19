@@ -923,7 +923,8 @@ export class M59Client {
       this._lastUserMoveDropAt = nowMs;
       if (process.env.M59_DROP_TRACE === '1') {
         const e = new Error('move-drop');
-        console.error(`[move-drop-trace] ${this._name ?? '?'}\n${e.stack}`);
+        const lines = e.stack.split('\n').slice(1, 6);
+        for (const l of lines) console.error(`[move-drop-trace] ${this._name ?? '?'} ${l.trim()}`);
       }
       return false;
     }
