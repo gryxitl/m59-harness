@@ -2523,7 +2523,7 @@ function fleeExits(session, ws) {
           let hunt = null;
           const assigned = pol?.assignedRoom != null ? Number(pol.assignedRoom) : NaN;
           if (Number.isFinite(assigned) && assigned > 0) {
-            const cands = huntRoomsAtOrBelow(charLevel, ceiling, charLevel - 2);
+            const cands = huntRoomsAtOrBelow(charLevel, ceiling, charLevel + 1);
             const match = cands.find(c => Number(c.room) === assigned);
             if (match && Number(resolved) === assigned) {
               hunt = { ...match, hops: 0, path: [] };
@@ -2546,7 +2546,7 @@ function fleeExits(session, ws) {
           // (hops=0) or after 10 minutes (stale hold).
           const held = session?._huntDestHold;
           if (held && Date.now() - held.at < 600000 && held.room !== resolved) {
-            const heldCands = huntRoomsAtOrBelow(charLevel, ceiling, charLevel - 2).find(c => Number(c.room) === held.room);
+            const heldCands = huntRoomsAtOrBelow(charLevel, ceiling, charLevel + 1).find(c => Number(c.room) === held.room);
             if (heldCands) {
               try {
                 const r = findPath(map, resolved, heldCands.room, { danger: false });
@@ -2570,7 +2570,7 @@ function fleeExits(session, ws) {
           if (!hunt) {
             const _picked = session?._huntPickedAt;
             if (_picked && Date.now() - _picked.at < 600000) {
-              const _pickedCands = huntRoomsAtOrBelow(charLevel, ceiling, charLevel - 2).find(c => Number(c.room) === _picked.room);
+              const _pickedCands = huntRoomsAtOrBelow(charLevel, ceiling, charLevel + 1).find(c => Number(c.room) === _picked.room);
               if (_pickedCands) {
                 try {
                   const r = findPath(map, resolved, _pickedCands.room, { danger: false });
@@ -2587,7 +2587,7 @@ function fleeExits(session, ws) {
               }
             }
             if (!hunt) {
-              hunt = nearestHuntRoom(resolved, charLevel, ceiling, charLevel - 2, session._pokeRelocate ? roomNum : undefined);
+              hunt = nearestHuntRoom(resolved, charLevel, ceiling, charLevel + 1, session._pokeRelocate ? roomNum : undefined);
               if (session._pokeRelocate) session._pokeRelocate = false;
               // Stamp the re-pick floor when a NEW hunt room is picked (the
               // nearestHuntRoom path and the assigned fallback path, not the held
@@ -2615,7 +2615,7 @@ function fleeExits(session, ws) {
             const blocked = new Set([...rdRooms, ...(ruFresh ? [Number(ru.to)] : [])]);
             const inPair = rdRooms.includes(Number(resolved)) || (hunt && rdRooms.includes(Number(hunt.room))) || ruFresh;
             if (inPair) {
-              const cands = huntRoomsAtOrBelow(charLevel, ceiling, charLevel - 2);
+              const cands = huntRoomsAtOrBelow(charLevel, ceiling, charLevel + 1);
               const avoid = cands.find(c => !blocked.has(Number(c.room)));
               if (!avoid) {
                 onDecision?.({ ticks, goal: 'hunt', action: null,
@@ -2813,7 +2813,7 @@ function fleeExits(session, ws) {
                 const _cb = characterBand(client, session?.policy ?? policy, ws.armed === true);
                 if (_cb == null) return; // vitals not ready
                 const { charLevel, band: _band, ceiling: _ceiling } = _cb;
-                const alt = nearestHuntRoom(roomNum, charLevel, _ceiling, charLevel - 2, roomNum);
+                const alt = nearestHuntRoom(roomNum, charLevel, _ceiling, charLevel + 1, roomNum);
                 if (alt && alt.room !== roomNum) {
                   session._huntWaitStart = now;
                   if (router && router.dest == null) {

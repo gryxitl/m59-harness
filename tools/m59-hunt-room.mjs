@@ -117,10 +117,12 @@ export function nearestHuntRoom(fromRoom, level, ceiling, minLevel, excludeRoom 
   const mapNum = objIdToNum(fromRoom) ?? fromRoom;
   let candidates = huntRoomsAtOrBelow(level, ceiling, minLevel);
   if (!candidates.length) {
-    // Fallback: if no in-band room, go to the nearest room with any mob.
-    // The band is a guideline, not a hard constraint — standing still
-    // forever is worse than fighting an out-of-band mob.
-    candidates = huntRoomsAtOrBelow(level, 999, 1);
+    // Fallback: if no in-band room, go to the nearest room with any mob
+    // WITHIN THE CEILING. Standing still forever is worse than fighting an
+    // out-of-band mob, but marching at a lv75 skeleton 13 hops away is a
+    // death spiral (each death drops max HP by 1, and max health IS the
+    // level). Widen minLevel downward, keep the ceiling.
+    candidates = huntRoomsAtOrBelow(level, ceiling, 1);
   }
   if (!candidates.length) return null;
 
