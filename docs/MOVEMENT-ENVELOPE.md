@@ -658,9 +658,15 @@ squares, `RUN_STRIDE_PROTO = 320` = 5 squares). We are not holding back.
 
 | term | achieved | available | used |
 |---|---|---|---|
-| packets per second | 0.59 | 1.0 (our 1000 ms cap) | 59% |
+| packets per second | 0.59 | 0.952 (our 1050 ms cap) | 62% |
 | squares per packet | 1.31 | 5.00 (proven accepted) | 26% |
 | **product** | **0.77 sq/s** | 4.76 sq/s | **16%** |
+
+> **2026-09-19:** The rows above were measured on the 1050 ms build. Cadence constants were
+> aligned at 1000 ms in `057debb` (USER_MOVE_MIN_INTERVAL_MS 1050→1000, matching MOVE_CAP_MS),
+> so `available` packets/second is now 1.00. The 799 drops/hour measured pre-change are the
+> mechanism behind the 0.59 shortfall. The utilization columns need re-measuring from
+> `cadence_report()`, which emits `move_cap_ms` for exactly this comparison.
 
 **And the reason the product is low is not in either term.** Breaking out the packets that are
 actually strides: 93.9% of integrations run the full stride (`stopped=clear`, 7,064 of 7,520) and
