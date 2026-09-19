@@ -3227,19 +3227,7 @@ export class Mover {
             protocolToClient(fromX), protocolToClient(fromY),
             protocolToClient(_ex), protocolToClient(_ey),
             { slide: false, playerRadius: PLAYER_WALL_CLEARANCE_CLIENT_UNITS });
-          if (t && t.blocked === true && t.arrived !== true) {
-            // BISECT: the extension heading clips a wall. Instead of dropping to
-            // the waypoint (losing the spare), find the furthest vouched point
-            // along the heading. This raises declared ground per packet in
-            // corridors without touching the planner's tiers.
-            const hit = this._bisectToWall(geo, fromX, fromY, _ex, _ey,
-              { playerRadius: PLAYER_WALL_CLEARANCE_CLIENT_UNITS });
-            if (Math.hypot(hit.x - fromX, hit.y - fromY) > _dl) {
-              aim = { x: hit.x, y: hit.y };
-            }
-          } else {
-            aim = { x: _ex, y: _ey };
-          }
+          if (!(t && t.blocked === true && t.arrived !== true)) aim = { x: _ex, y: _ey };
         } catch {
           // An unvouched-for extension is not taken. Falling back costs the half square;
           // it does not cost the wall.
