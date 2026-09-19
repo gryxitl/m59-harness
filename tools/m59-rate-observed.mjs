@@ -42,9 +42,9 @@ for await (const line of rl) {
   }
 }
 if (_totalStarts > 1) {
-  const kept = sends.length - _lastStartLine;
-  sends.length = _lastStartLine;
-  console.log(`(window: the current session only — ${_totalStarts} sessions in the file, ${kept} sends from earlier sessions excluded)`);
+  const excluded = _lastStartLine;
+  sends.splice(0, _lastStartLine);
+  console.log(`(window: the current session only — ${_totalStarts} sessions in the file, ${excluded} sends from earlier sessions excluded)`);
 }
 
 if (!sends.length) {
@@ -89,14 +89,11 @@ console.log(`  [move-sent] at= against a position source that is not the sim.`);
 // the same position over and over is not slow, it is stuck, and a rate figure alone hides that:
 // 790 of 879 sends in the original keeper-t3.log declared one identical aim, and the average
 // speed looked merely poor.
-const runs = [];
-let cur = 1;
+let cur = 1, longest = 0;
 for (let i = 1; i < sends.length; i++) {
   const same = sends[i].aim[0] === sends[i - 1].aim[0] && sends[i].aim[1] === sends[i - 1].aim[1];
   cur = same ? cur + 1 : 1;
-  runs.push(cur);
+  if (cur > longest) longest = cur;
 }
-let longest = 0;
-for (const r of runs) if (r > longest) longest = r;
 console.log(`  longest run declaring an identical aim: ${longest} packets`);
 console.log(`    (the defect this work started from was 790 of 879 sends on one identical aim)`);
