@@ -1449,8 +1449,8 @@ export class Mover {
         const _r = s?.policy?.allowRun !== false && _v >= RUN_VIGOR_FLOOR;
         const _ahead = this._routeAhead(_g, myProtoX, myProtoY, _r ? RUN_STRIDE_PROTO : WALK_STRIDE_PROTO);
         if (process.env.M59_SIM_TRACE === '1') {
-          const _off = Math.hypot(myProtoX - (this._simX ?? myProtoX), myProtoY - (this._simY ?? myProtoY));
-          if (_off > 64) console.error(`[sim-feet] ${this.logName} offset=${_off.toFixed(0)}u my=(${myProtoX.toFixed(0)},${myProtoY.toFixed(0)}) sim=(${(this._simX ?? 0).toFixed(0)},${(this._simY ?? 0).toFixed(0)})`);
+          const _off = Math.hypot(myProtoX - srvX, myProtoY - srvY);
+          if (_off > 64) console.error(`[pose-srv] ${this.logName} offset=${_off.toFixed(0)}u pose=(${myProtoX.toFixed(0)},${myProtoY.toFixed(0)}) srv=(${srvX.toFixed(0)},${srvY.toFixed(0)})`);
         }
         if (_ahead) { aimX = _ahead.x; aimY = _ahead.y; }
       }
