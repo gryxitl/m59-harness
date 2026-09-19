@@ -1518,10 +1518,15 @@ export class Mover {
       // PLAN OUTCOME TRACE: velocity never engages because path is null at
       // its block — is _plan failing, or is the path dropped after?
       if (process.env.M59_MOVE_DEBUG !== '0') {
-        let _tgtFine = '?', _tgtStand = '?';
-        try { _tgtFine = geo?.fineWalkable?.(Math.floor((this.destProto?.y ?? 0) / KOD_FINENESS), Math.floor((this.destProto?.x ?? 0) / KOD_FINENESS)) ?? '?'; } catch {}
-        try { _tgtStand = geo?.standable?.(Math.floor((this.destProto?.y ?? 0) / KOD_FINENESS), Math.floor((this.destProto?.x ?? 0) / KOD_FINENESS)) ?? '?'; } catch {}
-        try { console.error(`[movedbg] ${this.logName} plan from=(${Math.floor(myProtoX / KOD_FINENESS)},${Math.floor(myProtoY / KOD_FINENESS)}) dest=${this.dest ? this.dest.col + ',' + this.dest.row : 'null'} found=${result.found} wp=${result.found ? result.waypoints.length : 0} reason=${result.found ? '-' : (result.reason ?? '?')} expanded=${result.expanded} budget=20000 tgtFine=${_tgtFine} tgtStand=${_tgtStand}`); } catch (e) { console.error('[plandebug-threw] ' + e.message); }
+        let _tgt = 'no-dest';
+        if (this.destProto) {
+          const _tc = Math.floor(this.destProto.x / KOD_FINENESS), _tr = Math.floor(this.destProto.y / KOD_FINENESS);
+          let _f = '?', _s = '?';
+          try { _f = geo?.fineWalkable?.(_tr, _tc) ?? '?'; } catch {}
+          try { _s = geo?.standable?.(_tr, _tc) ?? '?'; } catch {}
+          _tgt = `${_tr},${_tc}=${_f}/${_s}`;
+        }
+        try { console.error(`[movedbg] ${this.logName} plan from=(${Math.floor(myProtoX / KOD_FINENESS)},${Math.floor(myProtoY / KOD_FINENESS)}) dest=${this.dest ? this.dest.col + ',' + this.dest.row : 'null'} found=${result.found} wp=${result.found ? result.waypoints.length : 0} reason=${result.found ? '-' : (result.reason ?? '?')} expanded=${result.expanded} budget=20000 tgt=${_tgt}`); } catch (e) { console.error('[plandebug-threw] ' + e.message); }
       }
       if (result.found) {
         this.path = result.waypoints;
