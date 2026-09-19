@@ -52,43 +52,57 @@ export async function sell(client, session, { merchantId, itemId, waitMs = 1500 
   if (!merchant)
     return { sent: false, sold: null, price: null, reason: 'merchant not in the room' };
 
-  // STEP 1: offer.
+  // STEP 1: offer. The NPC-buy path is offer → counteroffer → accept_offer.
+  // The merchant offers (counters) and we accept. The two-player packets
+  // (BP_REQ_OFFER/BP_OFFERED/BP_OFFER) never fire for an NPC merchant.
   const before1 = client.evSeq ?? 0;
   const offerItems = item.amount > 1 ? [{ id: itemId, amount: item.amount }] : itemId;
   await session.pacer.submit('trade', () => client.offer(merchantId, offerItems), waitMs).catch(() => {});
 
-  // Wait for the counter. The server replies with either a price (which we
-  // accept) or a refusal (which we report).
-  const ev1 = await client.waitFor({ since: before1, kinds: ['trade', 'message'], timeoutMs: waitMs * 2 })
+  // Wait for the COUNTEROFFER specifically. waitFor resolves on the first
+  // matching event, and our own `offer-sent` echo always arrives before the
+  // merchant's reply — so listening for both together returns the echo and looks
+  // exactly like a refusal. A merchant that declines does so by SPEAKING, so a
+  // refusal is a `said` from that object, not a system message.
+  const ev1 = await client.waitFor({ since: before1, kinds: ['countered', 'trade-ended'], timeoutMs: waitMs * 2 })
                 .catch(() => ({ events: [] }));
+  const countered = (ev1.events ?? []).find(e => e.kind === 'countered');
+  // Everything that landed in the meantime, for the report.
+  const all = client.eventsSince?.(before1) ?? (ev1.events ?? []);
+  const speech = all.filter(e => e.kind === 'said' && e.speaker === merchantId).map(e => e.text);
+  const messages = all.filter(e => e.text && e.kind !== 'said').map(e => e.text);
 
-  const tradeEv = (ev1.events ?? []).find(e => e.kind === 'trade');
-  const msgs1 = (ev1.events ?? []).filter(e => e.text).map(e => e.text);
-
-  if (!tradeEv) {
-    // No counter arrived. Either the merchant refused outright (a message)
-    // or the offer was lost. Report and stop.
-    const refusal = msgs1.find(m => /refuse|won't|cannot|don't/i.test(m));
-    if (refusal) return { sent: true, sold: null, price: null, reason: refusal };
-    return { sent: true, sold: null, price: null, reason: 'no counter from merchant' };
+  if (!countered) {
+    // No money on the table means it declined. Leave nothing hanging.
+    await session.pacer.submit('trade', () => client.cancelOffer(), waitMs).catch(() => {});
+    return { sent: true, sold: null, price: null,
+             reason: speech.length
+               ? speech.join('; ')
+               : (messages.length ? messages.join('; ') : 'no counteroffer came back') };
   }
 
-  // STEP 2: accept the counter.
+  // STEP 2: accept the counter. The items move a beat after the accept lands.
+  // Reading inventory too early reports the pre-sale stack, which makes a correct
+  // sale look like a no-op. CAPTURE THE PRICE BEFORE ACCEPTING: the counter
+  // sits in client.trade.theirs only while the trade is open, and the accept
+  // clears it. The broker captures it before accepting (m59-broker.mjs:6126
+  // precedes :6136).
+  const carriedBefore = (client.inventory ?? []).length;
+  const price = (client.trade?.theirs || []).reduce((n, i) => n + (i.amount || 1), 0) || null;
   const before2 = client.evSeq ?? 0;
   await session.pacer.submit('trade', () => client.acceptOffer(), waitMs).catch(() => {});
-  const ev2 = await client.waitFor({ since: before2, kinds: ['trade', 'message', 'inventory'], timeoutMs: waitMs })
+  await new Promise(r => setTimeout(r, 1400));
+  await session.pacer.submit('read', () => client.requestInventory?.(), waitMs).catch(() => {});
+  const ev2 = await client.waitFor({ since: before2, kinds: ['inventory', 'message'], timeoutMs: waitMs * 2 })
                 .catch(() => ({ events: [] }));
 
   const msgs2 = (ev2.events ?? []).filter(e => e.text).map(e => e.text);
   // On success the server says "You sold X for Y shillings" and the trade
   // ends. On refusal it says "They don't want that" or similar.
-  const success = msgs2.some(m => /sold|received|thank/i.test(m));
+  const success = msgs2.some(m => /sold|received|thank/i.test(m))
+    || (client.inventory ?? []).length < carriedBefore;
   if (!success)
     return { sent: true, sold: null, price: null, reason: msgs2.join('; ') || 'trade refused' };
-
-  // Parse the price from the message if possible.
-  const m = msgs2.join(' ').match(/(\d+)\s*shillings?/i);
-  const price = m ? Number(m[1]) : null;
 
   return { sent: true, sold: name, price, reason: null };
 }

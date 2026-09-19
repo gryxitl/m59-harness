@@ -2657,6 +2657,7 @@ export const SELL_TO = [
   /joguer/i,           // Joguer's Herbs and Roots, Barloque — mushrooms, herbs, elderberry
   /quintor/i,          // Quintor's Smithy, Jasper — weapons and armour
   /paddock|solomon|pietro/i,   // inns and grocers we have traded with
+  /morrigan/i,         // Limping Toad Inn, Marion — buys food, reagents, torches
 ];
 // NEVER. Named separately from "not on the allowlist" because these actively take goods.
 export const NEVER_SELL_TO = [

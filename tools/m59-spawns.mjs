@@ -908,6 +908,29 @@ export const moneyPerKill = (c) => {
 // The advancement ceiling, and the reason a hit-point goal can be *finished*.
 export const healthCeiling = (stamina) => 101 + (stamina ?? 0);
 
+// One call site, one truth: the character's current max HP (their "level" in
+// Meridian 59 — not a traditional RPG level, just the max health they've earned
+// from hunting), the engagement band (how much above their level they can safely
+// fight, halved when unarmed), the ceiling (max mob level they'll engage), the
+// floor (min mob level they'll engage — 5 above their level), their stamina, and
+// whether they've hit the stamina-based cap.
+//
+// `client` is the game client (has `.vitals()` and `.statsById`).
+// `policy` is the session policy (may have `threatBand` override).
+// `isArmed` is the caller's reading for this pass (ws.armed, the GOAP regex, etc.) —
+// the helper does not guess it, because the 11 call sites read it three different ways.
+export function characterBand(client, policy = {}, isArmed = true) {
+  const maxHp = client.vitals?.()?.health?.max;
+  if (maxHp == null) return null; // vitals not ready — route nowhere
+  const charLevel = Math.max(maxHp, 20);
+  const stamina = client.stat?.('stamina') ?? null;
+  const fullBand = policy?.threatBand ?? Math.floor(charLevel / 4);
+  const band = isArmed ? fullBand : Math.floor(fullBand / 2);
+  const ceiling = charLevel + band;
+  const floor = charLevel + 5;
+  const atCap = stamina == null ? false : maxHp >= healthCeiling(stamina);
+  return { charLevel, band, ceiling, floor, stamina, atCap };
+}
 // One goal's opinion of one creature, normalised to 0..1 so goals can be added up.
 // `pays: false` means this creature does nothing for this goal — for `advance` that
 // disqualifies it, for `money` it merely scores no bonus.

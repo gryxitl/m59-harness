@@ -138,6 +138,10 @@ export function recordKill(character, { at = Date.now(), creature = null, room =
   return ev;
 }
 
+// Reader for the in-memory kill feed (dashboard tally + tests).
+export function killFeed(character) {
+  return feedOf(character).feed.filter(e => e?.kind === 'kill');
+}
 export function recordDeath(character, { at = Date.now(), killer = null, observed = false,
                                          room = null, room_num = null, level = null,
                                          in_safe_spot = false } = {}) {

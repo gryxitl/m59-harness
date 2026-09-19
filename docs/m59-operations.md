@@ -19,7 +19,8 @@ Meridian.exe /H:127.0.0.1 /P:5959 /U:fleet01 /W:<password> /Q /S
 - `--list` shows the roster; `--show` prints the real command lines.
 
 **Each shortcut is a plaintext password**, so `shortcuts/` is gitignored and
-written `0700`, exactly like `substrate/fleet-accounts.json`. Terminal output
+written `0700`, exactly like the rosters (`substrate/fleet-state.json`,
+`substrate/fleets/*.json`, `substrate/fleet-accounts.json`). Terminal output
 masks the password unless `--show` is given — do not pass `--show` in a shared
 transcript, and do not commit or paste the files.
 

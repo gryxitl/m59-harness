@@ -137,7 +137,12 @@ console.log('what the threshold is still allowed to do');
   ok('a fight still disengages at the same fraction', /disengageAt: safe\.fleeAt/.test(src));
   ok('a wall still outranks a journey below it', /inRealTrouble = wouldPlayDead/.test(src));
   ok('the watchdog still interrupts a blind walk below it',
-     /pulled the character out of a blind walk/.test(src));
+     (() => {
+       // The watchdog was extracted to its own module (743ce84) — the guarantee now
+       // lives in ITS source, not the autopilot's.
+       const wsrc = readFileSync(join(HERE, 'm59-watchdog.mjs'), 'utf8');
+       return /pulled the character out of a blind walk/.test(wsrc);
+     })());
   // And the travel guard's own flee rung was ALREADY players-only — it tests `worthEnding`,
   // which under the default `travel_flee_from: 'players'` is the strangers list. The two
   // ladders now agree, which is the point.

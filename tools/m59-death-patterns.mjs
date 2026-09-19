@@ -33,6 +33,7 @@
 // No dependencies. Reads the ledger JSONL files, needs nothing live.
 
 import { readLedger } from './m59-ledger.mjs';
+import { pathToFileURL } from 'node:url';
 
 // ── pattern detection (exported for testing) ──────────────────────────────────
 function countBy(arr, key) {
@@ -117,7 +118,7 @@ function parseWindow(s) {
 
 // ── main (only when run directly, not imported) ──────────────────────────────
 const isMain = process.argv[1] &&
-  import.meta.url === new URL(`file://${process.argv[1]}`).href;
+  import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (isMain) {
   const argv = process.argv.slice(2);

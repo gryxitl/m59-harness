@@ -53,6 +53,13 @@ export async function buy(client, session, { itemId, waitMs = 1200, name: wantNa
   // pass, which is a re-read of the world between every phase rather than a plan made
   // once and executed blind.
   let buyList = c.buyList;
+  // STALE LIST: the cache is per-room (a Raza weapon list must not suppress
+  // the Marion smith trip or offer Raza prices in Marion). Drop it when the
+  // room changed since it was cached.
+  try {
+    const rn = session?.world?.room?.num ?? client?.room?.num ?? null;
+    if (buyList?.room != null && rn != null && buyList.room !== rn) { buyList = null; c.buyList = null; }
+  } catch { /* keep the list on lookup failure */ }
   let answered = null;  // hoisted: the purchase phase (outside the open-shop block) needs the seller
 
   if (!buyList?.items?.length) {
@@ -146,6 +153,7 @@ export async function buy(client, session, { itemId, waitMs = 1200, name: wantNa
       return { sent: true, bought: false, reason: 'no merchant in this room opened a shop list' };
     }
     buyList = { items: answered.items };
+    try { buyList.room = session?.world?.room?.num ?? client?.room?.num ?? null; } catch {}
     c.buyList = buyList;  // cache so later passes skip the re-open
   }
 
@@ -178,12 +186,19 @@ export async function buy(client, session, { itemId, waitMs = 1200, name: wantNa
   const cost = entry.cost ?? 0;
 
   // THE PURSE CHECK. A courtesy -- the server's refusal is the real answer, but
-  // planning a buy we cannot afford wastes the pass.
-  const purse = (c.inventory ?? [])
-    .filter(o => /shilling/i.test(c.rsc?.get?.(o.nameRsc) ?? ''))
-    .reduce((sum, o) => sum + (o.amount ?? 1), 0);
-  if (purse < cost)
-    return { sent: false, bought: null, reason: `cannot afford: ${name} costs ${cost}, purse has ${purse}` };
+  // planning a buy we cannot afford wastes the pass. THE PURSE IS A STACK IN THE
+  // PACK, NOT A FIELD ON THE CLIENT. When the stack is absent (0-count or not
+  // in the list), do NOT clamp to 0 -- send the purchase and let the server
+  // refuse. A 0-count stack is invisible while the object is still in the list;
+  // treating "no stack" as "broke" is the same measurement bug as the goap.goal
+  // null and the aim= traps.
+  const shillings = (c.inventory ?? [])
+    .filter(o => /shilling/i.test(c.rsc?.get?.(o.nameRsc) ?? ''));
+  if (shillings.length) {
+    const purse = shillings.reduce((sum, o) => sum + (o.amount ?? 1), 0);
+    if (purse < cost)
+      return { sent: false, bought: null, reason: `cannot afford: ${name} costs ${cost}, purse has ${purse}` };
+  }
 
   // BUY THE ENTRY WE CHOSE. The shop must be OPEN when the item request goes out —
   // the server tracks the "current seller" only briefly after we asked for the list,

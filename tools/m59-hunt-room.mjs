@@ -20,7 +20,7 @@ let _objIdToNum = null;
 
 function loadSpawns() {
   if (_spawns) return _spawns;
-  const file = 'substrate/m59-spawns.json';
+  const file = new URL('../substrate/m59-spawns.json', import.meta.url).pathname;
   if (!existsSync(file)) return null;
   _spawns = JSON.parse(readFileSync(file, 'utf8'));
   return _spawns;
@@ -70,24 +70,37 @@ const DANGEROUS_SPIDER_ROOMS = new Set([
   4, 6, 26, 27, 28,  // spider lv50 (underworld/early rooms)
   // Sewer rooms: giant rats (lv30) co-spawn with lupoggs (lv105)
   377, 378, 379, 108, 111, 112, 380,
+  // Sweet Grass Prairies: groundworm larvae (lv35, karma-aggr) + navigation
+  // issues — characters get stuck and die. Temporarily excluded.
+  557, 556, 555,
 ]);
 
-export function huntRoomsAtOrBelow(level, ceiling) {
+export function huntRoomsAtOrBelow(level, ceiling, minLevel) {
   const spawns = loadSpawns();
   if (!spawns) return [];
   const maxLevel = ceiling ?? level;
+  const min = minLevel ?? level + 5;
   const out = [];
   for (const [num, entries] of Object.entries(spawns.rooms ?? {})) {
     const roomNum = parseInt(num);
-    // Skip rooms with dangerous spiders — a character can filter out the
-    // spider as a target, but the spider can still aggro and kill them.
     if (DANGEROUS_SPIDER_ROOMS.has(roomNum)) continue;
+    // Collect all qualifying entries. Prefer prey STRICTLY ABOVE the character's
+    // level (AdvancementCheck rolls only when victim level > own level, so prey
+    // at or below pays nothing). Among above-level prey, pick the highest (most
+    // XP). If no above-level prey exists, fall back to closest-to-own-level.
+    let best = null;
+    let bestAbove = null;
     for (const e of entries) {
-      if (e.huntable && e.level != null && e.level <= maxLevel) {
-        out.push({ room: roomNum, creature: e.creature, level: e.level });
-        break;  // one match per room is enough
+      if (e.huntable && e.level != null && e.level <= maxLevel && e.level >= min) {
+        if (e.level > level) {
+          if (!bestAbove || e.level > bestAbove.level) bestAbove = e;
+        } else if (!best || Math.abs(e.level - level) < Math.abs(best.level - level)) {
+          best = e;
+        }
       }
     }
+    const chosen = bestAbove ?? best;
+    if (chosen) out.push({ room: roomNum, creature: chosen.creature, level: chosen.level });
   }
   return out;
 }
@@ -99,17 +112,30 @@ export function huntRoomsAtOrBelow(level, ceiling) {
  * @param {number} level - the character's level
  * @returns {{room: number, creature: string, level: number, hops: number, path: number[]}|null}
  */
-export function nearestHuntRoom(fromRoom, level, ceiling) {
+export function nearestHuntRoom(fromRoom, level, ceiling, minLevel, excludeRoom = null) {
   // Convert objId to map num if needed.
   const mapNum = objIdToNum(fromRoom) ?? fromRoom;
-  const candidates = huntRoomsAtOrBelow(level, ceiling);
+  let candidates = huntRoomsAtOrBelow(level, ceiling, minLevel);
+  if (!candidates.length) {
+    // Fallback: if no in-band room, go to the nearest room with any mob
+    // WITHIN THE CEILING. Standing still forever is worse than fighting an
+    // out-of-band mob, but marching at a lv75 skeleton 13 hops away is a
+    // death spiral (each death drops max HP by 1, and max health IS the
+    // level). Widen minLevel downward, keep the ceiling.
+    candidates = huntRoomsAtOrBelow(level, ceiling, 1);
+  }
   if (!candidates.length) return null;
 
   const map = loadMap();
   if (!map) return null;
 
   let best = null;
-  for (const c of candidates) {
+  // Check at most 3 candidates to keep the tick loop unblocked. The
+  // findPath function takes ~5s on a cache miss; checking all 11
+  // candidates would block the tick loop for 55s.
+  const toCheck = candidates.slice(0, excludeRoom != null ? 5 : 3);
+  for (const c of toCheck) {
+    if (excludeRoom != null && c.room === excludeRoom) continue;
     if (c.room === mapNum) {
       // Already there.
       return { ...c, hops: 0, path: [] };
@@ -123,3 +149,4 @@ export function nearestHuntRoom(fromRoom, level, ceiling) {
   }
   return best;
 }
+

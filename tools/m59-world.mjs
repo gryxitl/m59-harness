@@ -306,7 +306,7 @@ export class World {
   // Can we get there, and in how many steps? This is the question the raw protocol
   // cannot answer and an agent most needs answered, because the cost of finding out
   // by walking is one second per step and a wrong guess is a wasted minute.
-  reach(toCol, toRow) {
+  reach(toCol, toRow, { collision = null } = {}) {
     const me = this.origin(), geo = this.geometry;
     if (!me) return { reachable: null, why: 'own position unknown' };
     if (!geo) return { reachable: null, why: 'no geometry for this room' };
@@ -324,7 +324,7 @@ export class World {
     //
     // So this answers the tactical question — how far is that square, really — exactly as
     // it did before clearance existed. Crossing the room is `walkTo`'s business.
-    const r = geo.path(me.row, me.col, toRow, toCol, { clearance: 0 });
+    const r = geo.path(me.row, me.col, toRow, toCol, { clearance: 0, ...(collision != null ? { collision } : {}) });
     if (!r.found) return { reachable: false, verified: false, why: r.reason };
     // REACHABLE, AND SEPARATELY, WALKABLE ALL THE WAY.
     //
@@ -622,31 +622,75 @@ export class World {
     for (const ce of codeExits(room.num)) {
       const direct = [], staged = [];
       if (geo && me) {
-        for (let r = 1; r <= geo.rows; r++) {
-          for (let c = 1; c <= geo.cols; c++) {
-            if (!inRegion(ce.when, r, c) || !geo.walkable(r, c)) continue;
-            const p = this.reach(c, r);
-            if (p.reachable) {
-              direct.push({ col: c, row: r, steps: p.steps, reachable: true,
-                            verified: p.verified !== false });
-              continue;
+        // USE THE TRIGGER TARGETS IF THEY ARE PROVIDED.
+        // The `trigger_targets` are computed by the `codeExits` function from the `when`
+        // condition. They are concrete positions that satisfy the condition, so the
+        // character knows where to walk to trigger the exit.
+        if (ce.trigger_targets && Array.isArray(ce.trigger_targets)) {
+          for (const t of ce.trigger_targets) {
+            if (t.row == null || t.col == null) continue;
+            const r = t.row, c = t.col;
+            // If the target is not walkable, find the nearest walkable square
+            // that IS in the trigger zone.
+            let targetR = r, targetC = c;
+            if (!geo.walkable(r, c)) {
+              // Spiral search for the nearest walkable square in the trigger zone.
+              let found = false;
+              for (let radius = 1; radius <= 20 && !found; radius++) {
+                for (let dr = -radius; dr <= radius && !found; dr++) {
+                  for (let dc = -radius; dc <= radius && !found; dc++) {
+                    if (Math.max(Math.abs(dr), Math.abs(dc)) !== radius) continue;
+                    const nr = r + dr, nc = c + dc;
+                    if (nr < 1 || nr > geo.rows || nc < 1 || nc > geo.cols) continue;
+                    if (!geo.walkable(nr, nc)) continue;
+                    // Check if the square is in the trigger zone.
+                    if (!inRegion(ce.when, nr, nc)) continue;
+                    targetR = nr; targetC = nc;
+                    found = true;
+                  }
+                }
+              }
+              if (!found) {
+                console.error(`[debug] No walkable square in trigger zone for target (${r}, ${c})`);
+                continue; // No walkable square in the trigger zone.
+              }
             }
-
-            // A code trigger can sit behind a gap narrower than one square. The .roo
-            // direction grid cannot express that gap, but the fine BSP geometry can.
-            // Keep a square beside the trigger that the ordinary walker CAN reach;
-            // leaveVia stages there and locally validates the final fine steps.
-            //
-            // Western Border of the Twisted Wood -> the Icky Cave is the worked example:
-            // every square satisfying row 15..17, col 1..6 is disconnected in the square
-            // graph, while passable half-square wall segments lead into it. Throwing these
-            // candidates away produced a local refusal before one packet reached the server.
-            const approach = this.approachSquare(c, r);
-            if (approach)
-              staged.push({ col: c, row: r, steps: approach.steps + 1, reachable: false,
-                            verified: false,
-                            approach_on: { col: approach.col, row: approach.row } });
+            const p = this.reach(targetC, targetR, { collision: false });
+            if (p.reachable) {
+              direct.push({ col: targetC, row: targetR, steps: p.steps, reachable: true,
+                            verified: p.verified !== false });
+            } else {
+              console.error(`[debug] Target (${targetR}, ${targetC}) is not reachable (coarse) — me=(${me?.col},${me?.row}) geo=${geo?.rows}x${geo?.cols} reason=${p.why}`);
+            }
           }
+        } else {
+          // FALL BACK TO THE `when` CONDITION IF NO TRIGGER TARGETS ARE PROVIDED.
+          for (let r = 1; r <= geo.rows; r++) {
+            for (let c = 1; c <= geo.cols; c++) {
+              if (!inRegion(ce.when, r, c) || !geo.walkable(r, c)) continue;
+              const p = this.reach(c, r, { collision: false });
+              if (p.reachable) {
+                direct.push({ col: c, row: r, steps: p.steps, reachable: true,
+                              verified: p.verified !== false });
+                continue;
+              }
+            }
+          }
+          
+          // A code trigger can sit behind a gap narrower than one square. The .roo
+          // direction grid cannot express that gap, but the fine BSP geometry can.
+          // Keep a square beside the trigger that the ordinary walker CAN reach;
+          // leaveVia stages there and locally validates the final fine steps.
+          //
+          // Western Border of the Twisted Wood -> the Icky Cave is the worked example:
+          // every square satisfying row 15..17, col 1..6 is disconnected in the square
+          // graph, while passable half-square wall segments lead into it. Throwing these
+          // candidates away produced a local refusal before one packet reached the server.
+          const approach = this.approachSquare(c, r);
+          if (approach)
+            staged.push({ col: c, row: r, steps: approach.steps + 1, reachable: false,
+                          verified: false,
+                          approach_on: { col: approach.col, row: approach.row } });
         }
       }
       const ranked = (direct.length ? direct : staged).sort((a, b) => a.steps - b.steps);

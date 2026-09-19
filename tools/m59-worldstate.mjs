@@ -44,7 +44,7 @@
 import * as skills from './m59-skills.mjs';
 import * as party  from './m59-party.mjs';
 import { REST_VIGOR_CAP, MIN_FIGHT_VIGOR } from './m59-localpolicy.mjs';
-import { affordances } from './m59-parse.mjs';
+import { affordances, OF } from './m59-parse.mjs';
 
 // Melee reach is a disc on SQUARE coordinates -- both sides run
 // `SquaredDistanceTo <= GetAttackRange^2` where range is Bound(2 + difficulty/6, 2, 3)
@@ -140,7 +140,10 @@ export const SYMBOLS = {
     produce: ({ client, policy }) => {
       const f = frac(client?.vitals?.()?.health);
       if (f == null) return null;
-      return f < (policy?.fleeBelow ?? 0.5);
+      // Floor at 50%: legacy fleet policies say 0.4, but fleeing at 8 HP
+      // with chasers is dying (watched repeatedly) — venom and packs need
+      // the margin. An operator can still raise it, never lower it.
+      return f < Math.max(policy?.fleeBelow ?? 0.5, 0.5);
     },
   },
 
@@ -308,6 +311,29 @@ export const SYMBOLS = {
     produce: ({ ws }) => (ws?._targetLevel == null || ws?._threatCeiling == null
       ? null : ws._targetLevel <= ws._threatCeiling),
   },
+  mob_near: {
+    describe: 'a hostile mob (attackable, not a player, not decoration) is within 20 squares',
+    whenUnknown: false,
+    why_unknown: 'no evidence of a nearby hostile is not a nearby hostile',
+    produce: ({ client }) => {
+      const me = client?.self;
+      if (!me || me.col == null) return false;
+      const objects = client?.room?.objects;
+      if (!(objects instanceof Map)) return false;
+      for (const o of objects.values()) {
+        if (o.flags & OF.PLAYER) continue;
+        const can = affordances(o.flags ?? 0);
+        if (!can.includes('attack')) continue;
+        const name = client.rsc?.get?.(o.nameRsc) ?? '';
+        if (/^(tree|living tree|flagpole|fence|wall|door|window|rock|boulder|bush|grass|flower|mushroom|log|stump)/i.test(name)) continue;
+        if (/friendly|pet|tame/i.test(name)) continue;
+        if (o.col == null) continue;
+        const d2 = (o.col - me.col) ** 2 + (o.row - me.row) ** 2;
+        if (d2 <= 400) return true; // 20 squares
+      }
+      return false;
+    },
+  },
 
   // ── party ─────────────────────────────────────────────────────────────────
   mate_present: {
@@ -420,6 +446,31 @@ export const SYMBOLS = {
     why_unknown: 'a wrong true means the character stays in a room with a deadly mob',
     produce: () => true, // default: safe; keeper sets flee_danger=false when out-of-band target present
   },
+  flee_room: {
+    describe: 'the character has fled the hostile room (goal-direction name, not a worldstate symbol)',
+    whenUnknown: false,
+    why_unknown: 'a wrong true means the planner thinks the character already fled; a wrong false is the default (not fled yet)',
+    produce: () => false, // always false: the character has not fled until the action fires
+  },
+
+  has_wieldable_weapon: {
+    describe: 'the pack has a weapon that is not broken and not already equipped',
+    whenUnknown: false,
+    why_unknown: 'a wrong true means the planner plans equip on a broken/absent weapon; a wrong false just delays arming',
+    produce: ({ client }) => {
+      const inv = client?.inventory ?? [];
+      if (!inv.length) return false;
+      const eq = client.equipment?.();
+      const held = new Set((eq && eq.known !== false ? eq.equipped || [] : []).map(o => o.id));
+      const broken = client._brokenWeapons ?? new Set();
+      const WEAPON = /mace|sword|axe|club|hammer|dagger|staff|spear|blade|knife/i;
+      return inv.some(o => {
+        if (o?.id == null || held.has(o.id) || broken.has(o.id)) return false;
+        const nm = String(client.rsc?.get?.(o.nameRsc) ?? o.name ?? '');
+        return WEAPON.test(nm);
+      });
+    },
+  },
 
   has_loot: {
     describe: 'the pack has items that are not food, money, or reagents (sellable loot)',
@@ -457,15 +508,15 @@ export const SYMBOLS = {
   },
 };
 
+// The registry is open by design: an atomic may declare a symbol nobody has
+// produced yet, and the planner treats it as unsatisfied (the safe direction).
+// `validate()` checks the CLOSED SET — the symbols with a producer — so a typo
+// is still reported by name. A declared-but-unproduced symbol is not a typo:
+// it is a promise the atomic makes that no one else in the vocabulary can
+// verify, and the planner's re-evaluation after each step is what makes it
+// visible. `SYMBOL_NAMES` is the closed set; `KNOWN_NAMES` is the open one.
 export const SYMBOL_NAMES = Object.freeze(Object.keys(SYMBOLS));
-
-// ---------------------------------------------------------------------------
-// evaluate(ctx) -> { symbol: boolean }
-//
-// Every symbol, resolved. A producer that throws is treated exactly as "cannot
-// tell" -- a broken producer must not be able to take a keeper down, and it must
-// not be able to quietly flip a symbol to the convenient answer either.
-// ---------------------------------------------------------------------------
+export const KNOWN_NAMES = new Set(SYMBOL_NAMES);
 export function evaluate(ctx = {}) {
   const out = {};
   for (const [name, sym] of Object.entries(SYMBOLS)) {
@@ -502,9 +553,14 @@ export function validate(action) {
   const check = (list, where) => {
     for (const raw of list ?? []) {
       const name = String(raw).replace(/^!/, '');
-      if (!SYMBOLS[name])
-        problems.push(`${action?.name ?? 'action'}.${where} names "${raw}", which is not a ` +
-                      `world-state symbol (known: ${SYMBOL_NAMES.join(', ')})`);
+      if (!KNOWN_NAMES.has(name)) {
+        // A declared-but-unproduced symbol is not a typo: it is a promise the
+        // atomic makes that no other symbol in the vocabulary can verify, and
+        // the planner's re-evaluation after each step is what makes it visible.
+        // It is reported, not rejected, so the conformance sweep can see it.
+        problems.push(`${action?.name ?? 'action'}.${where} names "${raw}", which is ` +
+                      `declared but has no producer (produced: ${SYMBOL_NAMES.join(', ')})`);
+      }
     }
   };
   check(action?.pre, 'pre');

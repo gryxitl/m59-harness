@@ -1,0 +1,203 @@
+#!/usr/bin/env node
+// tools/m59-rate-live.mjs — the fleet's speed, measured from the SERVER's position.
+//
+//   node tools/m59-rate-live.mjs substrate/keeper-t3.log
+//
+// WHY THIS FILE EXISTS. Every rate figure this repository has ever printed was squares per
+// PACKET, computed from the mover's own estimate of where it was. Both halves of that are
+// wrong in the same direction. Per-packet is the wrong denominator — one square per packet
+// at one packet per twelve seconds is 3% of the client, not 40% — and the mover's estimate is
+// not the character. An independent audit could not reproduce the numbers quoted in
+// docs/TICK-MOVEMENT-PLAN.md because there was no committed tool that produced them, which is
+// a fair criticism of a document that cited figures it could not regenerate.
+//
+// WHAT IT READS. `[move-sent] ... at=` is the position we DECLARED. `srvXY=` inside
+// [movedbg] vel-tick is the SERVER's raw position at that moment. Ground is summed over
+// consecutive distinct server positions, which is the only quantity that describes how fast
+// the character is actually going. Room transitions (a jump over TRANSITION_CUTOFF units) are
+// excluded: the character was moved, it did not walk.
+//
+// WHAT IT REFUSES TO DO. It will not report a rate from the declared positions, because those
+// measure the stride, and it will not fall back to the mover's sim, because that measures the
+// estimate. A log without srvXY gets a refusal, not a number.
+
+import { readFileSync } from 'node:fs';
+
+const file = process.argv[2];
+const argSince = (process.argv.find(a => a.startsWith('--since=')) ?? '').split('=')[1];
+if (!file) { console.error('usage: m59-rate-live.mjs <keeper log> [--since=<ISO time>]'); process.exit(1); }
+let txt;
+try { txt = readFileSync(file, 'utf8'); }
+catch (e) { console.error(`cannot read ${file}: ${e.message}`); process.exit(1); }
+
+// The current session only. A keeper log spans every restart it has survived and the mover's
+// counters restart with each one; measuring across sessions mixes code versions, which is how
+// a rate came to be quoted against a baseline produced by different software.
+const starts = [...txt.matchAll(/\[keeper\] \S+ starting on port/g)];
+if (starts.length > 1) {
+  const before = txt.length;
+  txt = txt.slice(starts[starts.length - 1].index);
+  console.log(`(window: current session only — ${starts.length} in the file, ` +
+              `${((before - txt.length) / 1e6).toFixed(1)} MB of earlier code excluded)`);
+}
+
+// AN OPTIONAL TIME WINDOW, because a cumulative reading is not a rate. The first version of
+// this tool reported 0.81 squares/s, and a reading 90 s later reported 0.46 on the same code
+// in the same session — because the log is append-mode and the second window CONTAINS the
+// first. Ground divided by elapsed-since-boot averages the whole session, so it drifts with
+// history and cannot answer 'is it faster now'. --since takes an ISO timestamp and measures
+// only the lines after it, which is what a before/after comparison needs and what an auditor
+// re-running a claim needs.
+let windowFrom = argSince ? Date.parse(argSince) : NaN;
+if (argSince && !Number.isFinite(windowFrom)) {
+  console.error(`--since: '${argSince}' does not parse as an ISO timestamp. Refusing to guess.`);
+  process.exit(1);
+}
+if (Number.isFinite(windowFrom)) {
+  const before = txt.length;
+  const keep = txt.split('\n').filter(l => {
+    const m = l.match(/^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z)/);
+    return !m || Date.parse(m[1]) >= windowFrom;
+  });
+  txt = keep.join('\n');
+  console.log(`(window: lines at or after ${new Date(windowFrom).toISOString()} — ` +
+              `${((before - txt.length) / 1e6).toFixed(1)} MB of earlier log excluded)`);
+}
+
+const KOD = 64;
+const CLIENT_WALK = 2.5;      // squares/s: MOVEUNITS(256 client)/MOVE_DELAY(100ms) / 16 / 64
+const CLIENT_RUN = 5.0;
+const TRANSITION_CUTOFF = 1000;
+
+// Server-truth positions, in time order, deduplicated.
+const srv = [];
+// Server positions from EITHER field: `srv=` on every [move-sent] line (the tight sample, one
+// per packet) and the older `srvXY=` on [movedbg] vel-tick lines (sparse — only the ticks where
+// the stride declaration ran). Prefer the dense one when the log has it.
+const _srvPat = /\[move-sent\][^\n]*?srv=([-\d]+),([-\d]+)/g;
+let _usedDense = false;
+for (const m of txt.matchAll(_srvPat)) {
+  const p = [Number(m[1]), Number(m[2])];
+  if (!Number.isFinite(p[0]) || p[0] < 0) continue;
+  if (!srv.length || srv[srv.length - 1][0] !== p[0] || srv[srv.length - 1][1] !== p[1]) srv.push(p);
+  _usedDense = true;
+}
+if (!_usedDense) for (const m of txt.matchAll(/srvXY=\(([-\d]+),([-\d]+)\)/g)) {
+  const p = [Number(m[1]), Number(m[2])];
+  if (!Number.isFinite(p[0]) || !Number.isFinite(p[1]) || p[0] < 0) continue;
+  if (!srv.length || srv[srv.length - 1][0] !== p[0] || srv[srv.length - 1][1] !== p[1]) srv.push(p);
+}
+if (srv.length < 2) {
+  console.log(`${file}: no server positions in the log.`);
+  console.log('This instrument measures ground from the SERVER\'s position (the srvXY= field on');
+  console.log('[movedbg] vel-tick lines). Nothing else describes how fast the character is going:');
+  console.log('the declared position measures the stride, and the mover\'s sim measures its own');
+  console.log('estimate. Older logs carry neither. Run against a log from the current mover.');
+  process.exit(0);
+}
+
+let ground = 0, walking = 0, transitions = 0;
+for (const [a, b] of srv.map((p, i) => [p, srv[i + 1]]).filter(([, b]) => b)) {
+  const d = Math.hypot(b[0] - a[0], b[1] - a[1]);
+  if (d > TRANSITION_CUTOFF) { transitions++; continue; }
+  ground += d; walking++;
+}
+
+const packets = (txt.match(/\[move-sent\]/g) ?? []).length;
+const strides = (txt.match(/vel-tick declare=/g) ?? []).length;
+
+// PER-BRANCH ATTRIBUTION, read from the `site=` field each send site stamps at the single
+// place every packet passes through. Attributing a packet to a branch by which debug line
+// happened to precede it is the same mistake as the historical '244,021 sends', which counted
+// the log text of one of nine send sites: a metric taken from whatever was logged rather than
+// from what the code guarantees.
+const bySite = new Map();
+for (const m of txt.matchAll(/\[move-sent\] n=\d+ site=([\w-]+)/g))
+  bySite.set(m[1], (bySite.get(m[1]) ?? 0) + 1);
+
+// Wall-clock window from the log's own timestamps, when it has them.
+const times = [...txt.matchAll(/^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z)/gm)]
+  .map(m => Date.parse(m[1])).filter(Number.isFinite);
+const seconds = times.length > 1 ? (times[times.length - 1] - times[0]) / 1000 : null;
+
+const squares = ground / KOD;
+console.log(file);
+console.log(`  server positions      ${srv.length} distinct (${transitions} room transitions excluded)` +
+            (_usedDense ? ' [dense: one per packet]' : ' [sparse: stride ticks only — a lower-bound rate]'));
+console.log(`  packets sent          ${packets}  (${strides} from the stride declaration)`);
+console.log(`  GROUND (server truth) ${squares.toFixed(2)} squares`);
+if (seconds && seconds > 0) {
+  const rate = squares / seconds;
+  console.log(`  window                ${seconds.toFixed(0)} s`);
+  console.log(`  RATE                  ${(rate * 100).toFixed(0)} squares per 100 s = ${rate.toFixed(2)} squares/s`);
+  console.log(`  vs the client         ${(rate / CLIENT_WALK * 100).toFixed(0)}% of walk (${CLIENT_WALK}/s), ${(rate / CLIENT_RUN * 100).toFixed(0)}% of run (${CLIENT_RUN}/s)`);
+  console.log(`  packets per second    ${(packets / seconds).toFixed(2)} (the client reports ~1/s)`);
+} else {
+  console.log('  window                unknown — the log has no parseable timestamps, so no');
+  console.log('                        per-second rate is reported. Ground alone is not a rate.');
+}
+console.log(`  ground per packet     ${(squares / Math.max(1, packets)).toFixed(2)} squares (client stride: 2.5 walk / 5.0 run)`);
+
+// ---------------------------------------------------------------- moving windows
+// THE NUMBER THE GOAL ASKS FOR IS THE RATE WHILE MOVING, not the average over a life.
+//
+// Every figure this tool has printed varied by 3x between runs on identical code, and the
+// reason is in the decider, not the mover: `healthy -> rest` accounts for a large share of the
+// sampled ticks, the character sits down to recover vigor, the mover returns `resting` and
+// sends nothing. A rate taken across a resting window is the rate of a character that was
+// sitting down. 0.81 squares/s was a walking stretch and 0.33 a resting one; neither reading
+// was wrong and neither answered the question.
+//
+// So split the timeline wherever the SENDING stops for longer than the client's own report
+// interval — that boundary is a rest, a room transition, or a stop, and it is visible without
+// knowing why — and report the contiguous stretches separately. The median of those is the
+// figure comparable to the client's 2.5 squares/s.
+{
+  const events = [];
+  for (const m of txt.matchAll(/^(\d{4}-\d\d-\d\dT[\d:.]+Z) \[move-sent\][^\n]*?at=([-\d]+),([-\d]+)[^\n]*?srv=([-\d]+),([-\d]+)/gm)) {
+    events.push({ t: Date.parse(m[1]), at: [+m[2], +m[3]], srv: [+m[4], +m[5]] });
+  }
+  const GAP_MS = 3000;   // three report intervals: past this the character was not walking
+  const runs = [];
+  let cur = [];
+  for (let i = 0; i < events.length; i++) {
+    if (i > 0 && events[i].t - events[i - 1].t > GAP_MS) { runs.push(cur); cur = []; }
+    cur.push(events[i]);
+  }
+  if (cur.length) runs.push(cur);
+  const stats = [];
+  for (const r of runs) {
+    if (r.length < 3) continue;
+    let g = 0, dur = r[r.length - 1].t - r[0].t;
+    for (let i = 1; i < r.length; i++) {
+      const d = Math.hypot(r[i].srv[0] - r[i - 1].srv[0], r[i].srv[1] - r[i - 1].srv[1]);
+      if (d < TRANSITION_CUTOFF) g += d;
+    }
+    if (dur > 0) stats.push({ pk: r.length, sq: g / KOD, sec: dur / 1000, rate: g / KOD / (dur / 1000) });
+  }
+  if (stats.length) {
+    const rates = stats.map(x => x.rate).sort((a, b) => a - b);
+    const med = rates[Math.floor(rates.length / 2)];
+    console.log('  contiguous MOVE windows (gaps over ' + GAP_MS + ' ms split them):');
+    for (const x of stats.slice(-6))
+      console.log(`    ${String(x.pk).padStart(4)} packets, ${x.sq.toFixed(1).padStart(6)} squares in ${x.sec.toFixed(0).padStart(4)} s = ${x.rate.toFixed(2)} sq/s (${(x.rate / CLIENT_WALK * 100).toFixed(0)}% of walk)`);
+    console.log(`  MEDIAN MOVING RATE    ${med.toFixed(2)} squares/s = ${(med / CLIENT_WALK * 100).toFixed(0)}% of the client's walk, ${rates[rates.length - 1].toFixed(2)} best`);
+    console.log('  (the session-wide figure above averages in the time the character spent');
+    console.log('   resting, which is a decision of the decider and not a limit of the mover.)');
+  } else {
+    console.log('  no contiguous move window long enough to measure (need 3+ packets per window).');
+  }
+}
+if (bySite.size) {
+  console.log('  packets by send site:');
+  for (const [k, v] of [...bySite].sort((a, b) => b[1] - a[1]))
+    console.log(`    ${String(v).padStart(6)}  ${k}`);
+  if (bySite.get('unlabelled'))
+    console.log('    ^ UNLABELLED means a send site was added without naming itself. Every site');
+  console.log('  (ground per site is not reported: the log carries the server position far less');
+  console.log('   often than there are packets, so per-site ground would be an attribution.)');
+} else {
+  console.log('  no site= field in these packets: an older log. Ground per branch is not');
+  console.log('  reportable and guessing it from neighbouring debug lines is how the');
+  console.log("  the '244,021 sends' figure came to exist.");
+}

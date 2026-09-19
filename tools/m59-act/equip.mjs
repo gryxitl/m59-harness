@@ -73,7 +73,7 @@ export async function equip(client, session, { itemId, off = false, waitMs = 700
   };
 }
 
-equip.pre     = [];
+equip.pre     = ['has_wieldable_weapon'];
 equip.effects = ['armed'];
 equip.atomic  = 'equip';
 

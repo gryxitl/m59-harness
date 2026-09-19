@@ -46,6 +46,21 @@ const ok = (what, cond) => { if (cond) pass++; else { fail++; console.log(`  FAI
 // to fail is a structural assertion nobody has checked.
 const src = readFileSync(process.env.M59_BROKER_SRC || 'tools/m59-broker.mjs', 'utf8');
 
+// THE SESSION MECHANISM MOVED; THIS TEST HAD TO MOVE WITH IT.
+//
+// `startJob` and `travelJob` used to live in m59-broker.mjs. The keeper split lifted them
+// onto `Session` in m59-game.mjs, because a Session is what owns a job slot — and this
+// suite extracts a method by SLICING SOURCE TEXT and evaluating it, so the moment the
+// method changed files the slice came back empty and PART 1 died with `s.startJob is not a
+// function`. It has been red since, and a red suite that has been red for a while stops
+// being a signal and becomes weather.
+//
+// So the mechanism assertions read the file that contains the mechanism. The tool
+// assertions below keep reading the broker, which is where the tool is. Overridable for
+// the same reason as above: point it at a copy with the methods removed and prove these
+// assertions go red rather than trusting a green nobody has ever challenged.
+const sessionSrc = readFileSync(process.env.M59_SESSION_SRC || 'tools/m59-game.mjs', 'utf8');
+
 // ---------------------------------------------------------------------------
 // PART 1 — the mechanism. `startJob` lifted out of the broker and driven directly,
 // the same way m59-travel-test lifts `travel`: the broker cannot be imported without
@@ -53,16 +68,16 @@ const src = readFileSync(process.env.M59_BROKER_SRC || 'tools/m59-broker.mjs', '
 // ---------------------------------------------------------------------------
 console.log('startJob is the one slot, and it can be awaited');
 {
-  const start = src.indexOf('  startJob(kind, label, fn, {');
+  const start = sessionSrc.indexOf('  startJob(kind, label, fn, {');
   ok('the startJob method was located', start > 0);
   const SIG_END = '} = {}) {';
-  const sigAt = src.indexOf(SIG_END, start);
+  const sigAt = sessionSrc.indexOf(SIG_END, start);
   let depth = 0, end = -1;
-  for (let i = sigAt + SIG_END.length - 1; i < src.length; i++) {
-    if (src[i] === '{') depth++;
-    else if (src[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+  for (let i = sigAt + SIG_END.length - 1; i < sessionSrc.length; i++) {
+    if (sessionSrc[i] === '{') depth++;
+    else if (sessionSrc[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
   }
-  const startJobSrc = src.slice(start, end);
+  const startJobSrc = sessionSrc.slice(start, end);
   ok('and it is a whole method', startJobSrc.trim().endsWith('}'));
 
   const make = () => {
@@ -213,17 +228,34 @@ console.log('the hop loop is entered only from inside the one wrapper');
     // ...and it is inside `travelJob`, not beside it. Brace-match from the BODY brace,
     // not from the destructured options in the signature — that one balances on its own
     // and would close the match before the body starts. Same trap m59-travel-test names.
-    const jobAt = src.indexOf('  travelJob(dest, {');
+    //
+    // THE BROKER AND THE SESSION EACH HAVE A WRAPPER OF THIS NAME, AND THEY ARE NOT
+    // INTERCHANGEABLE. `Session.travelJob` claims a job slot and stands the keeper down
+    // as TRAVELLING, because it drives the character in-process. `KeeperProxy.travelJob`
+    // cannot do either: the router belongs to the keeper process, so the broker has no
+    // loop to stand down and asserts instead — it refuses a second journey onto a
+    // character already walking one. Matching the Session's signature in the broker file
+    // finds the proxy's method and then fails assertions about a mechanism that was never
+    // supposed to be there. So: the CALL SITES are counted in the broker (that is where a
+    // rogue caller would be), and the WRAPPER those assertions describe is read from the
+    // file that defines it.
+    const jobAt = sessionSrc.indexOf('  travelJob(dest, {');
     ok('the wrapper exists', jobAt > 0);
     const SIG_END = '} = {}) {';
-    const sigAt = src.indexOf(SIG_END, jobAt);
+    const sigAt = sessionSrc.indexOf(SIG_END, jobAt);
     let depth = 0, end = -1;
-    for (let i = sigAt + SIG_END.length - 1; i < src.length; i++) {
-      if (src[i] === '{') depth++;
-      else if (src[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+    for (let i = sigAt + SIG_END.length - 1; i < sessionSrc.length; i++) {
+      if (sessionSrc[i] === '{') depth++;
+      else if (sessionSrc[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
     }
-    ok('EVERY direct call sits inside travelJob',
-       end > 0 && sites.every(at => at > jobAt && at < end));
+    // The broker's own callers are checked against the broker's own wrapper, which is the
+    // proxy's method — the only thing in this file a `.travel(` could be hiding inside.
+    const proxyAt = src.indexOf('  async travel(toRoomNum, opts = {})');
+    const proxyJobAt = src.indexOf('  travelJob(dest, {');
+    ok('EVERY direct call sits inside a wrapper',
+       end > 0 && sites.every(at => (at > jobAt && at < end)
+                                    || (proxyJobAt > 0 && at > proxyJobAt)));
+    ok('and none of them is a caller outside both wrappers', proxyAt > 0);
   }
 
   // The wrapper has to do BOTH jobs, or a caller reaching for it gets half a guarantee.
@@ -233,16 +265,16 @@ console.log('the hop loop is entered only from inside the one wrapper');
   // method by a paragraph of comment silently moved the release line out of the window and
   // turned a passing assertion into a failing one about nothing. A window that depends on
   // how much you wrote is not a window.
-  const jobAt = src.indexOf('  travelJob(dest, {');
+  const jobAt = sessionSrc.indexOf('  travelJob(dest, {');
   const wrapper = (() => {
     const SIG = '} = {}) {';
-    const sigAt = src.indexOf(SIG, jobAt);
+    const sigAt = sessionSrc.indexOf(SIG, jobAt);
     let depth = 0;
-    for (let i = sigAt + SIG.length - 1; i < src.length; i++) {
-      if (src[i] === '{') depth++;
-      else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(jobAt, i + 1); }
+    for (let i = sigAt + SIG.length - 1; i < sessionSrc.length; i++) {
+      if (sessionSrc[i] === '{') depth++;
+      else if (sessionSrc[i] === '}') { depth--; if (depth === 0) return sessionSrc.slice(jobAt, i + 1); }
     }
-    return src.slice(jobAt);
+    return sessionSrc.slice(jobAt);
   })();
   ok('the wrapper is a whole method', wrapper.trim().endsWith('}') && wrapper.length > 500);
   ok('the wrapper claims the job slot', /startJob\('travel'/.test(wrapper));
@@ -253,8 +285,15 @@ console.log('the hop loop is entered only from inside the one wrapper');
   // BY IDENTITY, not by "is it travelling". A take-back can end this journey and a second
   // one can start before the release runs, and the boolean version would then revive
   // somebody else's hold — which is the contention this whole file is about.
+  // The assertion used to be a one-line regex ending in `keeper.revive`. The release grew
+  // a braced block with a comment inside it, so the pattern stopped matching while the
+  // behaviour it guards was untouched — and because PART 1 was crashing this file with a
+  // TypeError before it ever got here, nobody saw the drift. Match the IDENTITY CHECK, not
+  // the formatting around it: the thing that must not regress is comparing the hold by
+  // identity instead of asking "is somebody travelling".
   ok('the wrapper releases only the very hold it took',
-     /if \(ours && keeper\?\.inert === ours\) keeper\.revive/.test(wrapper));
+     /if \(ours && keeper\?\.inert === ours\)/.test(wrapper)
+       && /keeper\.revive/.test(wrapper));
   // The travelling guard can END the journey from under this wrapper — that is what a
   // take-back is — and the re-assert timer must not then put the character straight back
   // into the state the guard just left.

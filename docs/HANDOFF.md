@@ -1,287 +1,92 @@
-# Handoff: the GOAP keeper rebuild
-
-You are picking up a rebuild of this repository's decision-making layer. This
-document is written for a version of you with **no memory of the work**. Read it
-before touching `tools/m59-act/`, `m59-worldstate.mjs`, `m59-plan.mjs` or
-`m59-goap-planner.mjs`.
-
-Read `docs/keeper-rebuild-plan.md` next — it is the plan; this is the orientation.
-
-**If you change the shape of this work, update or delete this file.** Its
-predecessor (`docs/bt-goap-handoff.md`) survived long enough to describe an
-orphaned module with a live bug as "the path forward", and was deleted for it.
-
----
-
-## 0. START HERE — how to actually run it
-
-```bash
-# plan only. Sends nothing.
-node tools/m59-goap-run.mjs --fleet local --agent fleet01 --goal vigor_ok
-
-# the same, executing the plan one step at a time
-node tools/m59-goap-run.mjs --fleet local --agent fleet01 --goal vigor_ok --apply
-```
-
-`tools/m59-goap-run.mjs` is **the entry point and the only thing here that runs a
-character.** Everything else is a library. If you are looking for "the GOAP keeper"
-as a daemon you will not find one, because there is not one yet: this logs in, reads
-the vocabulary, plans, steps, reports, and exits.
-
-It is **not** a keeper (no loop, no supervision, no watchdog — `m59-autopilot.mjs`
-is still the real one and this does not touch it), **not** a broker client (it opens
-its own connection, so it will bump a broker off that character), and **cannot
-move** (`m59-act/step` requires the broker's fine-coordinate mover; the minimal
-session here has none, so `step` refuses by design — see §5).
-
-Agent names differ per fleet: the `local` roster has `fleet01..fleet04`, not
-`t1..t5`. `node tools/m59-fleets.mjs` lists them.
-
----
-
-## 1. What is being built, in one paragraph
-
-`tools/m59-autopilot.mjs` is a ~13,000-line keeper: one sequential ladder of
-if/return decisions driving a character. The rebuild replaces the ladder with a
-**GOAP planner over small honest atomics**. The planner searches over actions
-declared with preconditions and effects, in a **closed vocabulary of world-state
-symbols**, and replans continuously. The old ladder still runs the fleet; nothing
-here has replaced it yet.
-
----
-
-## 2. The one rule that must not be broken
-
-**Survival lives in PRECONDITIONS. Never in goals, never in costs.**
-
-The two natural ways to put survival in a planner are both wrong:
-
-- *as a goal* — `stay_alive` at top priority means the planner never hunts; ranked,
-  it can lose.
-- *as a cost* — danger adds +1000, and **a cost can be outbid**. A large enough
-  reward beats it, and you find out which fights were worth dying for from the
-  death log.
-
-Every survival rule this repository has paid for is a **refusal**:
-`threatCeiling()` returns null on unknown max health and *every caller reads null
-as refuse*; `leaveHold` refuses a discretionary departure below the rest
-threshold; selling is an allowlist rather than a check.
-
-A precondition is a refusal with a planner's face on:
-
-```javascript
-attack.pre = ['armed', 'has_target', 'in_reach', 'target_in_band'];
-```
-
-`target_in_band` there means the planner **cannot generate** a plan that swings at
-a faction soldier. Not discouraged — impossible, because no valid plan exists.
-`m59-plan-test.mjs` and `m59-cost-test.mjs` both pin this; if you ever find
-yourself adding a danger weight to make a plan come out right, stop.
-
-`m59-cost.mjs` has `suspiciousCosts()`, which flags any action priced near 100s as
-"a refusal wearing a number" and tells you to put it in `pre`.
-
----
-
-## 3. The map
-
-| file | what it is |
-|---|---|
-| `tools/m59-goap-run.mjs` | **the entry point** — runs one character under the planner |
-| `tools/m59-act/*.mjs` | the atomics: `attack`, `step`, `equip`, `rest`/`stand`, `cast`, `eat` |
-| `tools/m59-act-test.mjs` | **the conformance sweep** — runs over every file in `m59-act/` |
-| `tools/m59-worldstate.mjs` | the ACT vocabulary (live client, ~1s clock), 14 symbols |
-| `tools/m59-errandstate.mjs` | the ERRAND vocabulary (fleet rows over MCP, minutes), 8 symbols |
-| `tools/m59-plan.mjs` | the join: builds the action set, validates it, plans, steps it |
-| `tools/m59-goap-planner.mjs` | A\* over pre/effects (salvaged from the abandoned fork) |
-| `tools/m59-cost.mjs` | costs in expected seconds |
-| `tools/m59-fake-client.mjs` | **one** client-shaped fake for every offline test |
-| `tools/m59-bt-delegation-test.mjs` | ratchet: how often new code calls back into the monolith |
-| `tools/m59-atomics.mjs` | the 14 coarse MCP errand verbs (**not yet given pre/effects**) |
-
-Everything runs offline. No broker, no server, no fleet:
-
-```bash
-node tools/m59-act-test.mjs          # 142
-node tools/m59-plan-test.mjs         #  25
-node tools/m59-cost-test.mjs         #  23
-node tools/m59-worldstate-test.mjs   # 108
-node tools/m59-errandstate-test.mjs  #  37
-node tools/m59-fake-client-test.mjs  #  51
-node tools/m59-bt-delegation-test.mjs
-```
-
----
-
-## 4. The atomic contract
-
-Four rules, **enforced mechanically** by `m59-act-test.mjs` over every file in
-`m59-act/`. Each exists because of a failure already paid for here:
-
-1. **Takes `(client, session)`, never the keeper.** Checked in the source, since a
-   signature cannot say it. The previous attempt's modules took a keeper and called
-   71 of its methods; 25 existed on one fork only, so they could not be carried to
-   another trunk at all. An atomic over the client is portable because
-   `m59-client.mjs` is identical everywhere.
-2. **Declares `pre`/`effects` from the closed vocabulary.**
-3. **No loop around an await.** 82% of deaths had the keeper blind, worst case 909
-   seconds inside one call. Looping belongs to the caller so it can be interrupted.
-4. **Refuses by returning, never by throwing.** A refusal that throws must be caught
-   by every caller, and the ones that forget read it as success — which is how "no
-   error" came to mean "the merchant sold it", when a refusal here is a sentence
-   spoken to the room and never an error on the wire.
-
-Verified to bite: plant an atomic violating all four and the sweep fails all four
-independently.
-
----
-
-## 5. Traps specific to THIS work
-
-**THE FAKE IS THE MOST DANGEROUS FILE.** Three bugs so far were fixture bugs, not
-logic bugs, and each passed its own suite:
-
-- `client.equipment()` is a *method returning `{known, equipped[]}`*, not a Map.
-  Two modules read it as a Map with `.keys()`, got an empty set unconditionally, and
-  therefore reported every character as wearing nothing — forever.
-- `client.armed()` **has never existed**. Two call sites asked for it; both answered
-  false for every character, and one gated a branch that has never executed.
-- A real spell entry carries **`nameRsc`, not `name`**. The fake supplied `name`, so
-  the live resolution path never ran once.
-
-`m59-fake-client-test.mjs` now compares the fake against `M59Client` itself and
-asserts that the invented methods are absent from **both**. When you add an atomic
-that calls a new client method, **add it to that list** or you are back here.
-
-**TWO VOCABULARIES, AND NO NAME MAY BE SHARED.** `m59-worldstate` reads a live
-client (pushed, true now); `m59-errandstate` reads a `fleet` row (minutes old).
-Sharing a name lets a plan chain a one-second fact to a five-minute-old one
-silently. A test pins that the two name sets are disjoint. This repository already
-paid for that once: `ms_since_moved` measures the KEEPER, was read as the
-CHARACTER, invented a stall that was not there, and got two correct behaviours
-reverted.
-
-**UNKNOWN FAILS SAFE, AND SAFE IS PER SYMBOL.** `armed` unknown reads **true** (a
-timed-out inventory read must not idle the fleet mid-fight). `target_in_band`
-unknown reads **false** (a ceiling that defaults open kills somebody). They are
-deliberately opposite and a test pins that. If a refactor ever makes them agree,
-one of them is wrong and it is not obvious which.
-
-AND DO NOT SET A DIRECTION BY ANALOGY — that is how the only live-corrected symbol
-got it wrong. `vigor_ok` was `true` because "same as armed: a failed read must not
-park a healthy character". But being wrong about ARMED stops a fight already
-happening, while being wrong about VIGOR only prevents a meal, and the asymmetry
-runs the other way: a wrong `false` costs one cast, a wrong `true` sends a character
-out tired at six times the death rate. Ask what each direction COSTS, per symbol.
-
-**THE GRID IS FOR PLANNING, NOT FOR STEPPING.** Upstream measured 218 of 311
-centre-to-centre grid steps failing in room 587, and **92% of the failures did not
-move the character at all** — so a caller replans from an unchanged position and
-asks for the same refused step for ever. `m59-act/step` therefore requires
-`session.step` (the broker's fine-coordinate mover) and refuses without it.
-
-**DO NOT ADD AN OPTION THE MOVER DROPS.** `step` used to take a `speed` and gate it
-on vigor. The broker's mover is `step(col, row, { confirm, beforeMutation })` and
-takes no speed, so the argument was silently discarded and the guard could never
-fire. A lever connected to nothing is worse than no lever.
-
----
-
-## 6. State: what works, what is unproven
-
-**Working, offline.** The supply chain plans and is derived rather than written
-down:
-
-```
-goal { vigor_ok: true }  ->  cast create food  ->  eat        (~1.95s)
-```
-
-And the refusals, which matter more:
-
-| | |
-|---|---|
-| never learned the spell | **no plan** — the action does not exist |
-| 94 herbs + 1 elderberry | **no plan** — `min(pair)`, never the sum |
-| no mana | **no plan** |
-| target above the ceiling | **no plan at any price** |
-
-**ONE LIVE RUN HAS HAPPENED — PLAN-ONLY, AND IT CORRECTED A SYMBOL.**
-`m59-goap-run.mjs` logged a character in on the local server and read the
-vocabulary. It found three things the offline suite could not, and they are the
-model for what live running is FOR:
-
-1. `requestInventory()` / `requestSpells()` are SENDS, not promises — they return
-   `undefined`, so `.catch()` on them throws. It died on that line straight after
-   login. No offline test had ever chained onto them.
-2. A real character's `vitals()` carried health and mana and **no vigor at all** —
-   vigor arrives as a `BP_STAT` and simply had not. Ordinary, not a fault.
-3. So `vigor_ok` read `true` on no evidence, `{ vigor_ok: true }` was already
-   satisfied, **the plan came back EMPTY**, and a hungry character would never have
-   eaten. `vigor_ok` now fails CLOSED, and the same character plans `eat`.
-
-**NOTHING HAS BEEN EXECUTED AGAINST A SERVER YET.** No `--apply` run has happened,
-so still unverified:
-
-- every `waitMs` is a guess
-- whether `create food` produces something matching `FOOD_RE` (an invented regex)
-- whether a use list arrives inside `equip`'s window
-- whether `apply(food, selfId)` is actually how eating works
-- whether the plan feeds a character at all
-
-Treat "the design is coherent" and "the design works" as different claims. The first
-is supported; the second is supported only for reading state, not for acting.
-
----
-
-## 7. Environment, and one thing to be careful about
-
-**There are two fleets and the default is remote.**
-
-```
-local      4 slots   127.0.0.1:5959       <- Docker, this machine
-default    5 slots   76.214.42.186:5959   <- SOMEBODY ELSE'S MACHINE, and it is
-                                             what every tool picks with no --fleet
-```
-
-Controlled experiments belong on `--fleet local`. On the remote one the fleet is
-being driven, so the subject walks away mid-experiment — five shop candidates in a
-row were walked out before a second purchase could be measured. `node
-tools/m59-which.mjs` before anything, and it exits non-zero on a mismatch.
-
-The broker is currently **stopped**. `node tools/m59-service.mjs start --fleet local`.
-
-**Before anything risky:** `node tools/m59-backup.mjs --credentials-only`. The
-rosters are the only record of the account passwords — no reset, no email, no way
-to ask the server.
-
----
-
-## 8. Next steps, in order
-
-1. **The live `--apply` pass.** Plan-only is done (§6). The remaining half is
-   `node tools/m59-goap-run.mjs --fleet local --agent fleet01 --goal vigor_ok
-   --apply`, then compare the vigor/pack/mana it reports against what the atomics
-   *claimed*. A disagreement is the finding. This is still the highest-value thing
-   available, and every `waitMs` in the atomics is a guess until it runs.
-2. **Give `m59-atomics.mjs` real `pre`/`effects`** from `m59-errandstate`. Its 14
-   verbs currently declare `effect` as prose (`'room=to, health readable'`), so the
-   coarse layer cannot be planned over at all. This is what makes the two-library
-   claim true rather than asserted.
-3. **More atomics** — `pick_up`, `drop`, `buy`, `sell`, `deposit`, `withdraw` — each
-   through the same sweep.
-4. **Wire a planner-driven character behind a per-character opt-in**, directional
-   errands first, where being wrong costs a wasted trip rather than a character.
-
----
-
-## 9. Working agreements that have held up
-
-- **Keep the shared-file footprint to one commit.** Everything else is new files,
-  so an upstream push can only ever collide in one place. A 21-commit upstream
-  movement branch merged into 46 files with zero conflicts because of this.
-- **Any step that does not leave `m59-autopilot.mjs` shorter is not migration**, it
-  is a parallel implementation. That is how the last attempt added 1,450 lines to
-  the monolith while "decomposing" it.
-- **The ledger is the referee** for anything live: kills/minute from `countKills`,
-  never a keeper's own tally, which is emptied in the constructor while keepers
-  restart about once a minute.
+# Session Handoff — Meridian 59 Fleet Viability
+
+## Goal
+Make the Meridian 59 fleet operationally viable: characters should kill monsters, buy equipment, and level up. The user's core complaint: "this is a game from 1995 defeating us." Characters must not fight players.
+
+## Constraints & Preferences
+- Commands run from `/Users/costas/Documents/Projects/m59-harness`; `substrate/keeper-t{1..5}.log` + `substrate/broker-default.log` are the state sources.
+- **Back up logs before every restart** — restarts truncate `keeper-*.log` in place. Pattern: `TS=$(date +%Y%m%d-%H%M%S); mkdir -p /tmp/keeper-logs-$TS; cp substrate/keeper-*.log /tmp/keeper-logs-$TS/`.
+- **Port mapping**: t1→8911, t3→8912, t4→8913, t5→8914, t2→8915. Verified from `substrate/broker-default.log` `[keeper] spawned` lines.
+- **Fleet is "default"** (unnamed), 5 characters, broker on 8901. Verified via `node tools/m59-which.mjs`.
+- **`substrate/keeper-t*.log` is append-mode with no rotation (>276MB for t4).** Use byte-offset recipe: `wc -c` at generation start, then `tail -c +<off+1> | grep -c` for the window. `grep` only reads the first 4MB; `tail -c 2000000` reads the wrong region on 400MB+ files.
+- **The user is frustrated with looping/going in circles.** Be direct, make progress, don't re-analyze the same issue repeatedly.
+- **Characters must not fight players.** The `is_player === false` check + `how === 'generator'` compendium filter prevent this.
+- **`m59-decide.mjs` imports only `{ trustedBuyer }` from `../m59-skills.mjs`** — `skills` is NOT a defined symbol in that file. Any `console.error` template that references `skills.isArmed(...)` throws a ReferenceError and kills the tick's decision loop.
+- **`substrate/history/fleet-2026-09-14.jsonl` mixes two fleets** — `m59-fleetpath.mjs:113-116` returns plain `substrate/history/` when `M59_FLEET` is unset. Per-character trends from that file are unreliable.
+- **`substrate/tougher/*.json` keys on in-world names** (Gountrug.json, Kage.json, Sasquatch.json) and holds `gains` (max-HP points) only — no kill tally. The `player_improve_maxhealth` announcement is the only server-authoritative, non-duplicable progress signal.
+
+## Progress
+### Done
+- [x] **`_packWeapon` disjunct removed from `armed` goal** — `tools/tick/m59-decide.mjs:2977`. The `_packWeapon` disjunct made the `armed` goal fire even when `ws.armed=true`. Characters were stuck in `armed` for 30+ minutes instead of hunting.
+- [x] **`ZAP_ON` regex fixed** — `tools/m59-zap.mjs:31`: now matches both "sparks jump and crackle" AND "crackle with blue energy". The old regex only matched one, so `zapStatus()` reported `active:false` forever.
+- [x] **Mana check added to `shouldCastZap`** — `tools/m59-zap.mjs:152-154`. `findZapSpell` now returns `{ id, name, mana }`.
+- [x] **Zap-cast guard added to `_maybeReequip`** — `tools/tick/m59-combat.mjs:712`: prevents the cast/reequip collision.
+- [x] **Reequip cooldown added** — `tools/tick/m59-combat.mjs:711,723`: 30s cooldown.
+- [x] **Combat classifier extended** — `tools/m59-client.mjs:1016-1024`: now recognizes "slaps", "killed", "wounded", "valiantly slain", "damaged". The old classifier was matching none of the actual phrasing.
+- [x] **Kill routing into ledger via `combatLog` entry stamping** — `tools/tick/m59-combat.mjs:235-256`: stamps `e.ledgered = 'killed' | 'died' | 'skip'` on each entry so it's processed exactly once.
+- [x] **Kill attribution fixed** — uses `c.me?.name ?? this.session?.name` (character name, not keeper name). Matches `m59-tougher.mjs` keying.
+- [x] **`room_num` fixed** — `tools/tick/m59-combat.mjs:253`: added `this.session?.world?.room?.num` as fallback.
+- [x] **Creature extraction made case-insensitive** — `tools/tick/m59-combat.mjs:238-248`: matches both first-person and third-person forms. Third-person gated on actor (`thirdPerson[1] === charName`).
+- [x] **`died` event added to ledger** — `tools/tick/m59-combat.mjs:257-270`: classifies `### X was just killed by Y` as `kind:'died'`, captures victim and killer.
+- [x] **`flee_hurt` relaxed** — `tools/tick/m59-decide.mjs:2895`: `ws.below_flee === true && (ws.has_target === true || (ws._mobCount ?? 0) > 0)`. The old `in_reach === true` requirement left a gap.
+- [x] **Kill drain skip made observable** — `tools/tick/m59-combat.mjs:244,249`: `[kill-skip]` log for skipped entries.
+- [x] **`buy_next_planned_skills` fixed for keeper-backed characters** — `tools/m59-broker.mjs:8365`: `KeeperProxy` guard skips the forced refresh.
+- [x] **Travel timeout in outfit fixed** — `tools/m59-outfit.mjs:266`: 30s → 180s.
+- [x] **Outfit lease raised** — `tools/m59-outfit.mjs:950`: 120s → 300s.
+- [x] **Router A1-A4 already in code** — re-entry arrival, cross-room oscillation breaker, route-drop TTL memory, debug gate. All verified in `tools/m59-route-test.mjs` (57 passing).
+- [x] **Decider B1-B4 already in code** — route-drop memory respect, hunt repick floor, `_fight` gate redefinition, GOAP reporting.
+- [x] **Tests passing** — 106/106 in `m59-decide-test.mjs`, 57/57 in `m59-route-test.mjs`.
+
+### In Progress
+- [ ] **A1 verified working** — 36 total arrivals (t2: 2, t3: 9, t4: 17, t5: 8) in 25-min V-live window. Zero oscillation, zero route drops.
+- [ ] **A2 unexercised** — fleet never crossed 200↔556 edge in the observation window.
+
+### Pending
+- [ ] **"Buy equipment" unaddressed** — zero `bought` events in `substrate/history/fleet-2026-09-14.jsonl` all session.
+- [ ] **"Level up" unaddressed** — `ready_to_learn` stays unsent. `buy_next_planned_skills` now works but characters need more points (e.g. "brawling still needs 176 point(s)").
+- [ ] **t4's ceiling 20, below peers' 26–28** — cause unattributed. No death count measurement for t4 in this session.
+- [ ] **Kill count is not reliable** — the 500-entry `combatLog` ring is shared by 5 characters. First-person kill prose is sent only to the victim's own client and carries no name. The kill count is a floor with unknown confidence.
+- [ ] **Death count is an artifact** — the `### X was just killed by Y` line is sent only to the dying player's own client, after the server has already moved them to the Underworld. The `room_num` values in the ledger are where the character happened to be after respawning, not where they died.
+- [ ] **`m59-client.mjs` has zero test coverage** — the combat classifier (`_noteCombatOutcome`) is the single function both the ledger and the `tougher` attribution key off, and it has no tests.
+
+## Key Decisions
+- **`_packWeapon` disjunct removed**: The `armed` goal's `when` was `ws => (ws.armed === false || ws._packWeapon === true) && ...`. The `_packWeapon` disjunct made the goal fire even when `ws.armed=true`. Fixed by removing the disjunct.
+- **`ZAP_ON` regex fixed**: The server sends two different ON phrases. The old regex only matched one. Fixed to match both.
+- **Combat classifier extended**: The server says "Your punch slaps" and "You killed" — not "hits"/"misses". The old classifier was matching none of the actual phrasing.
+- **Kill routing via entry stamping**: Replaced HWM approach (which had ordering bugs) with `e.ledgered` stamping. Each entry is processed exactly once regardless of timestamp ordering.
+- **Kill attribution uses character name**: `c.me?.name ?? this.session?.name` matches `m59-tougher.mjs` keying.
+- **Third-person kill filter gates on actor**: `"X has valiantly slain Y"` is the room announcement our own kill produces. Filter by `thirdPerson[1] === charName`, not by dropping the line entirely.
+- **`flee_hurt` relaxed to fire when mobs present**: The old `in_reach === true` requirement left a gap. Now fires when `below_flee && (has_target || _mobCount > 0)`.
+- **`buy_next_planned_skills` KeeperProxy guard**: The `force:true` refresh routes into `readLive` which hits the KeeperProxy throw-stub. Skip the forced refresh for KeeperProxy sessions and rely on the push-maintained cache.
+
+## Critical Context
+- **Fleet state (23:22, final read)**:
+  ```
+  t1: hp=15/25 goal=None
+  t2: hp=26/26 goal=healthy
+  t3: hp=28/28 goal=hunt
+  t4: hp=20/20 goal=healthy [FROZEN — acked, not readback-verified; _inert is process-local, broker rejoin clears it]
+  t5: hp=25/26 goal=hunt [FROZEN — acked, not readback-verified; _inert is process-local, broker rejoin clears it]
+  ```
+  All characters at or near full HP. t4 and t5 freeze acked but not readback-verified (in-memory flag, cleared by broker rejoin).
+
+- **V-live results (25-min window, broker pid 56557)**:
+  - A1 (re-entry arrival): 36 total arrivals (t2: 2, t3: 9, t4: 17, t5: 8)
+  - A2 (cross-room oscillation breaker): unexercised — fleet never crossed 200↔556
+  - t2's flap: 1176 `move-sent` in window (~1/s, near-saturation). `aim=` jumps ~37 squares between n=22 and n=23 — destination churn (goal/hunt repick), not send reversal. `srv=864,160` (Underworld respawn) accounts for 146 of 1176 sends. `stride-declaration` dominates the 544 stretch.
+  - t4: ceiling 20, below peers' 26–28. Cause unattributed.
+  - Freeze stops locomotion; recovery not attributed. HP moved in both directions regardless of freeze state (t1 unfrozen fell 20→15, t3 unfrozen rose 26→28, t2 revived early and climbed 4→26 while running).
+
+- **Kill ledger (88 kills / 5 deaths)**:
+  - Kill count is a floor with unknown confidence (first-person prose has no name to validate against)
+  - Death count is an artifact (broadcast only to dying client, room is post-respawn location, restarts lose deaths)
+  - `substrate/tougher/*.json` gains are the only trustworthy progress signal
+
+## Next Steps
+1. **Outfit's teacher errand never completing a buy within its own lease** — the travel timeout (180s) and lease (300s) are set, but the errand still times out. `aim=` jumps between distant pairs — goal/hunt repick rewriting the target every few seconds. `stride-declaration` dominates, not `walk-past-boundary`/`escape-fan-probe`.
+2. **`bought` events still zero** — the buy path is not producing any `bought` events in the ledger. The `buy_next_planned_skills` tool now returns a real preflight reason ("brawling still needs 176 point(s)"), but the outfit errand's buy path is separate and still not working.
+3. **t4's ceiling 20, below peers' 26–28** — cause unattributed. No death count measurement for t4 in this session. Route to a weaker-mob room if the ceiling continues to drop.
+4. **Investigate t2's flap** — 1176 `move-sent` in 25 min (~1/s, near-saturation). `aim=` jumps between distant pairs (n=22 aim=2092,3195 → n=23 aim=3296,1952) — goal/hunt repick rewriting the target every few seconds. `srv=864,160` (Underworld respawn) accounts for 146 of 1176 sends. `stride-declaration` dominates the 544 stretch.
+5. **`/state` now reports `inert`** — added `inert: !!(session._tickLoop?._inert || session._inert)` to `state()`. Previously the field was missing, so a freeze was unverifiable from the endpoint. Verify by checking `inert: true` after a freeze and `inert: false` after a revive.
+6. **Add test coverage for `m59-client.mjs`** — the combat classifier has zero tests. Pin the kill/death regexes in a new `tools/m59-client-test.mjs`.
+7. **Add the out-of-reach `flee_hurt` test case** — `m59-decide-test.mjs:372,515` only tests `in_reach: true`. Add a case with `in_reach: false` and `_mobCount: 1`.

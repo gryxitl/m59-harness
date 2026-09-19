@@ -18,15 +18,39 @@ process.env.M59_KEEPER = '1';
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { createServer } from 'http';
 import { Session, Pacer } from './m59-session.mjs';
+import { USER_MOVE_MIN_INTERVAL_MS } from './m59-client.mjs';
 import { autopilotFor, dropAutopilot, autopilotIfAny } from './m59-autopilot.mjs';
-import { TickLoop } from './m59-tick.mjs';
-import { makeDecider, DEFAULT_GOALS, intend, INTENTS } from './m59-decide.mjs';
-import { Router, routeIntent } from './m59-route.mjs';
+import { TickLoop } from './tick/m59-tick.mjs';
+import { makeDecider, DEFAULT_GOALS, intend, INTENTS } from './tick/m59-decide.mjs';
+import { Router, routeIntent } from './tick/m59-route.mjs';
+import { Pose } from './tick/m59-pose.mjs';
 import { protocolToClient, clientToProtocol, buildAllRoomGeometry } from './m59-roo.mjs';
 import { loadMap, buildReverseEdges } from './m59-map.mjs';
 import { attachStepMasks } from './m59-routes.mjs';
 import * as watchdog from './m59-watchdog.mjs';
+
+// EVERY LOG LINE GETS A WALL-CLOCK PREFIX, and this exists because it was not true.
+//
+// The keeper writes stderr straight to `substrate/keeper-<agent>.log` (broker.mjs:766, an
+// append-mode fd handed to the child's stdio) with no timestamp layer. So the file that every
+// rate argument in this repository has been conducted from could not support a rate: without
+// timestamps, squares per SECOND is not computable from it by anyone, and it was quoted anyway
+// — I read 0.09 and 0.35 squares/s off this log tonight, and neither was derivable from what
+// was actually in it. The window came from wall-clock memory of when the restart happened,
+// which is not a measurement and cannot be reproduced by a reader, or by an auditor, or by me
+// tomorrow.
+//
+// Prefixing at the stream rather than at each call site is deliberate: there are hundreds of
+// console.error calls in the tick files, and a convention is not enforced by a comment.
+{
+  const _oe = console.error.bind(console);
+  const _ol = console.log.bind(console);
+  const stamp = () => new Date().toISOString();
+  console.error = (...a) => _oe(stamp(), ...a);
+  console.log = (...a) => _ol(stamp(), ...a);
+}
 import './m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
+import { installCastWatch } from './tick/m59-cast.mjs';
 
 // ---------------------------------------------------------------- args
 
@@ -101,6 +125,14 @@ async function join() {
     inGame = true;
     console.error(`[keeper] ${agent} joined as ${session.client?.me?.name ?? character}`);
 
+    // OBSERVE CASTS FROM THE SERVER'S TEXT. Installed here, after join, because joinOnce
+    // assigns client.onEvent itself (m59-game.mjs:1407) and a wrapper installed before login
+    // is silently overwritten — which is the same shape of bug this file exists to fix.
+    // It wraps and chains, so the legacy consumers (raw recorder, banker, combat, loyalty)
+    // still receive every event. See tools/tick/m59-cast.mjs for why text is the only
+    // reliable cast-completion signal there is.
+    try { installCastWatch(session); } catch (e) { console.error(`[keeper] cast watch failed: ${e?.message}`); }
+
     // Start the autopilot: GOAP (default) or tick driver
     if (mode === 'tick') {
       // WARM THE MAP THIS KEEPER'S ROUTER WILL USE, before the Router loads it.
@@ -124,6 +156,18 @@ async function join() {
       const router = new Router({ session });
       session._mover = router.mover;
       session._router = router;
+      // SINGLE POSITION TRUTH. The Sensor updates it each frame; the Mover
+      // advances it on each send and resets it on teleport/blink/room change.
+      // Every other tick file reads session._pose.current() and nothing else.
+      session._pose = new Pose();
+      // PHASE 0: expose the policy on the session so the Mover can read it.
+      // The flag this line used to name, policy.ownPhysics, no longer selects anything: it was
+      // the gate on the velocity declaration that 2d44a48 deleted, and the engine that replaced
+      // it has no switch. It is still passed through to the status page below because
+      // substrate/fleet-state.json sets it for two characters, and a status field that silently
+      // disappears is worse than one that reports a stale value — but nothing should read it as
+      // a mode. See docs/TICK-MOVEMENT-PLAN.md.
+      session.policy = policy;
       INTENTS.travel = routeIntent(router);
 
       const plannerDecide = makeDecider({ session, goals: DEFAULT_GOALS,
@@ -144,8 +188,15 @@ async function join() {
         const t0 = Date.now();
         if (router.dest != null) {
           const r = intend('travel', frame, act, { client: session.client, session, ws: {} });
-          if (r.sent) { decideTimes.push(Date.now() - t0); _maybeLogMetrics(); return; }
+          // Always fall through to plannerDecide: the stuck-detection block
+          // (blink escape) is only in plannerDecide, and a character can be
+          // stuck even when the travel intent sent a packet (server refused).
         }
+        // ISOLATION SWITCH (mover testing): travel-only, no goal ladder.
+        // policy.tickIsolate='travel' (fleet-state) or M59_TICK_ISOLATE=travel.
+        // Set destinations manually via POST /action travel. Everything else
+        // (armed/buy/hunt/rest/fight/unstuck) stays off: mover+router alone.
+        if (policy.tickIsolate === 'travel' || process.env.M59_TICK_ISOLATE === 'travel') return;
         plannerDecide(frame, act, loop);
         decideTimes.push(Date.now() - t0);
         _maybeLogMetrics();
@@ -226,22 +277,44 @@ function state() {
     agent,
     character: me?.name ?? character,
     in_game: inGame,
+    stalled: (() => {
+      const now = Date.now();
+      const lastRx = c?.lastRxAt ?? 0;
+      const rxStale = lastRx > 0 && now - lastRx > 45000;
+      const mv = session._mover;
+      const mvFresh = mv?._lastTickStateAt && now - mv._lastTickStateAt < 20000;
+      const mvStuck = mv?._lastTickState === 'stuck' && mvFresh && !session._inMelee && session._resting !== true;
+      const inert = !!(session._tickLoop?._inert || session._inert);
+      if (inert) return false;
+      if (!rxStale && !mvStuck) return false;
+      return {
+        since_seconds: lastRx ? Math.round((now - lastRx) / 1000) : null,
+        idle_passes: mv?.stuckTicks ?? 0,
+        why: rxStale ? `no server data for ${Math.round((now - lastRx) / 1000)}s` : `mover stuck (lastTickState=stuck, ${mv?.stuckTicks} ticks)`,
+      };
+    })(),
+    inert: !!(session._tickLoop?._inert || session._inert),
     room: room ? { name: c?.rsc?.get?.(room.nameRsc) ?? room.name, num: room.num } : null,
     hp: v.health ? { value: v.health.value, max: v.health.max } : null,
     vigor: v.vigor ? { value: v.vigor.value, max: v.vigor.max } : null,
     mana: v.mana ? { value: v.mana.value, max: v.mana.max } : null,
     gold: me?.gold ?? null,
-    equipment: c?.inventory ? c.inventory
-      .filter(o => o.flags & 0x04)
-      .map(o => c.rsc?.get?.(o.nameRsc) ?? '')
-      .filter(Boolean) : [],
-    pack: c?.inventory ? c.inventory
-      .filter(o => !(o.flags & 0x04))
-      .map(o => {
-        const name = c.rsc?.get?.(o.nameRsc) ?? '';
-        return o.amount > 1 ? `${name} (x${o.amount})` : name;
-      })
-      .filter(Boolean) : [],
+    equipment: (() => {
+      try { const e = c?.equipment?.(); return e ? e.equipped.map(o => o.name ?? o.id) : []; } catch { return []; }
+    })(),
+    pack: (() => {
+      try {
+        const eq = c?.equipment?.();
+        const usingIds = new Set((eq?.equipped ?? []).map(o => o.id));
+        return (c?.inventory ?? [])
+          .filter(o => !usingIds.has(o.id))
+          .map(o => {
+            const name = c.rsc?.get?.(o.nameRsc) ?? '';
+            return o.amount > 1 ? `${name} (x${o.amount})` : name;
+          })
+          .filter(Boolean);
+      } catch { return []; }
+    })(),
     skills: (c?.skills ?? []).map(s => ({
       name: c.rsc?.get?.(s.nameRsc) ?? '',
     })).filter(s => s.name),
@@ -251,8 +324,16 @@ function state() {
       mana: s.mana,
     })).filter(s => s.name),
     goap: autopilot ? {
-      goal: autopilot._goapKeeper?.state()?.goal ?? null,
-      action: autopilot._currentAction ?? null,
+      // TICK MODE (B4): the driver is session._tickDecide, not a _goapKeeper, so
+      // _goapKeeper?.state() is structurally null. Report the LIVE goal/action/plan
+      // from the decider's last decision (stamped on session._lastDecision by the
+      // wrapped onDecision).
+      goal: (autopilot.mode === 'tick' && session._tickDecide)
+        ? (session._lastDecision?.goal ?? null)
+        : (autopilot._goapKeeper?.state()?.goal ?? null),
+      action: (autopilot.mode === 'tick' && session._tickDecide)
+        ? (session._lastDecision?.action ?? null)
+        : (autopilot._currentAction ?? null),
       // In tick mode the driver is session._tickDecide, NOT autopilot.running
       // (which stays false because the autopilot's own loop isn't the driver).
       // Report running=true when EITHER is active, or the broker's proxy sees
@@ -262,7 +343,9 @@ function state() {
       running: autopilot.running || !!(session._tickDecide),
       mode: autopilot.mode,
       useGOAP: autopilot.policy?.useGOAP ?? false,
-      plan: autopilot._goapKeeper?.state() ?? null,
+      plan: (autopilot.mode === 'tick' && session._tickDecide)
+        ? (session._lastDecision ?? null)
+        : (autopilot._goapKeeper?.state() ?? null),
       // Tick driver target (for the 3D viewer).
       target: (autopilot.mode === 'tick' && session._tickDecide)
         ? (() => {
@@ -439,6 +522,9 @@ const server = createServer(async (req, res) => {
       const me = c?.self;
       const room = c?.room;
       if (!room?.objects) return json({ error: 'no room data', in_game: inGame });
+      // The MAP room, which is the one that carries the .roo we actually loaded. Needed below
+      // because the live client object does not carry room dimensions at all.
+      const rvWroom = session?.world?.room ?? null;
       const objects = [];
       for (const o of room.objects.values()) {
         objects.push({
@@ -453,8 +539,16 @@ const server = createServer(async (req, res) => {
         });
       }
       json({
-        cols: room.cols ?? 50,
-        rows: room.rows ?? 48,
+        // THESE WERE `room.cols ?? 50` AND `room.rows ?? 48`. The client's room object
+        // (m59-client.mjs:259) has NO cols AND NO rows fields and nothing ever sets them, so
+        // the `??` fallbacks fired every single time and this endpoint reported the constants
+        // 50 and 48 as if they were measurements of the room in view. That is how a real
+        // investigation was sent looking for a server/.roo size disagreement in a room whose
+        // .roo is 50x49 and whose kod is 50x49: the '48' was a default. Report the source
+        // honestly -- the .roo we loaded -- and say so when we do not know.
+        cols: room.cols ?? (rvWroom?.roo?.cols ?? null),
+        rows: room.rows ?? (rvWroom?.roo?.rows ?? null),
+        dims_source: room.cols != null ? 'server' : (rvWroom?.roo ? 'roo file (the server does not send room dimensions)' : 'unknown'),
         self: me ? { col: me.col, row: me.row, degrees: me.degrees ?? null } : null,
         objects,
         room_name: c?.rsc?.get?.(c.roomNameRsc) ?? null,
@@ -469,12 +563,28 @@ const server = createServer(async (req, res) => {
         // is the same source the /health endpoint uses (1011 for Raza Inn).
         room_num: session.world?.room?.num ?? c?.room?.id ?? null,
         // The decider's current target, for the 3D viewer.
+        // Prefer the combat target; fall back to the router's travel destination.
         target: (() => {
           const tid = session._tickDecide?.state?.()?.targetId ?? null;
-          if (tid == null) return null;
-          const t = room.objects.get(tid);
-          if (!t) return null;
-          return { col: t.col, row: t.row, name: c?.rsc?.get?.(t.nameRsc) ?? '' };
+          if (tid != null) {
+            const t = room.objects.get(tid);
+            if (t) return { col: t.col, row: t.row, name: c?.rsc?.get?.(t.nameRsc) ?? '' };
+          }
+          // Decider selection can lag (or miss) while combat is already engaged:
+          // fall back to the combat controller's live target so the beacon
+          // shows who the character is actually fighting.
+          const ctid = session?._combat?.targetId ?? null;
+          if (ctid != null) {
+            const t = room.objects.get(ctid);
+            if (t && t.col != null) return { col: t.col, row: t.row, name: c?.rsc?.get?.(t.nameRsc) ?? session._combat.targetName ?? '' };
+          }
+          const router = session._router;
+          if (router?.status?.()) {
+            const st = router.status();
+            const so = st.leg?.stand_on;
+            if (so && so.col != null) return { col: so.col, row: so.row, name: `travel to room ${st.dest}` };
+          }
+          return null;
         })(),
       });
       return;
@@ -579,17 +689,26 @@ const server = createServer(async (req, res) => {
       const dr = parseInt(u.searchParams.get('r'), 10);
       if (!Number.isInteger(dc) || !Number.isInteger(dr)) return json({ error: 'need ?c=<col>&r=<row>' });
       const F = 64, H = 32;
+      const coarse = u.searchParams.get('coarse') === '1';
       const t0 = Date.now();
       const p = geo?.finePathProtocol
-        ? geo.finePathProtocol(me.col * F + H, me.row * F + H, dc * F + H, dr * F + H, { step: 8, margin: 12 * F, maxNodes: 20000 })
+        ? geo.finePathProtocol(me.col * F + H, me.row * F + H, dc * F + H, dr * F + H, { step: 8, margin: 12 * F, maxNodes: 20000, coarse })
         : { found: false, reason: 'no finePathProtocol' };
       return json({
         self: { col: me.col, row: me.row },
         to: { col: dc, row: dr },
+        coarse,
         targetFineWalkable: geo?.fineWalkable ? geo.fineWalkable(dr, dc) : undefined,
         found: p.found,
         reason: p.reason ?? null,
-        waypoints: (p.waypoints ?? []).map(w => ({ col: Math.round((w.x - H) / F) + 1, row: Math.round((w.y - H) / F) + 1 })),
+        // Waypoint protocol coords are SQUARE CENTRES (col*64 + 32), so the inverse
+        // is the plain `(x - 32) / 64` with no offset. This used to add +1, which
+        // compensated for navgeom emitting the square EDGE (64c); that made the
+        // reported column one higher than the square the waypoint is actually in.
+        // It was invisible because this endpoint is read by a human, and the
+        // sibling /path3d mapping below had the OPPOSITE offset — the two
+        // diagnostics disagreed by two squares about the same waypoint.
+        waypoints: (p.waypoints ?? []).map(w => ({ col: Math.round((w.x - H) / F), row: Math.round((w.y - H) / F) })),
         wpCount: p.waypoints?.length ?? 0,
         expanded: p.expanded ?? null,
         ms: Date.now() - t0,
@@ -603,19 +722,60 @@ const server = createServer(async (req, res) => {
       const me = c?.self;
       const geo = session?.world?.geometry;
       if (!me) return json({ error: 'no self' });
-      const tid = session._tickDecide?.state?.()?.targetId ?? null;
-      const t = tid != null ? c?.room?.objects?.get?.(tid) : null;
+      // The target: prefer the decider's combat target; fall back to the
+      // router's current leg staging square (the travel destination).
+      let tid = session._tickDecide?.state?.()?.targetId ?? null;
+      let t = tid != null ? c?.room?.objects?.get?.(tid) : null;
+      let isTravel = false;
+      if (!t || t.col == null) {
+        // No combat target — check the decider's patrol target (nudge).
+        const pt = session._tickDecide?.state?.()?.patrolTarget;
+        if (pt && pt.col != null && pt.row != null) {
+          t = { col: pt.col, row: pt.row, name: 'patrol nudge' };
+        }
+      }
+      if (!t || t.col == null) {
+        // No combat or patrol target — check the router's current leg for a travel destination.
+        const router = session._router;
+        if (router?.status?.()) {
+          const st = router.status();
+          console.error(`[path3d] router status: ${JSON.stringify(st).slice(0,200)}`);
+          const so = st.leg?.stand_on;
+          if (so && so.col != null && so.row != null) {
+            t = { col: so.col, row: so.row, name: `travel to room ${st.dest}` };
+            isTravel = true;
+          }
+        } else {
+          console.error(`[path3d] no router or no status`);
+        }
+      }
       if (!t || t.col == null) return json({ path: [], direct: null });
       const F = 64, H = 32; // KOD_FINENESS, half
       const sx = me.col * F + H, sy = me.row * F + H;
       const tx = t.col * F + H, ty = t.row * F + H;
-      // The fine path (waypoints in protocol coords -> viewer col/row).
+      // THE PLANNED PATH IS THE MOVER'S OWN PATH (what it is stepping along,
+      // waypoint by waypoint). /findpath and /path3d used to re-plan with a
+      // 4000-node budget while the mover plans with 20000, so the viewer drew
+      // “no path” for routes the mover had found and was following — the
+      // budget, not the geometry, disagreed. Draw the mover's committed path
+      // when it has one; fall back to a fresh plan at the MOVER'S budget.
+      const mv = session._mover ?? session._tickDecide?.mover ?? null;
       let path = [];
-      if (geo?.finePathProtocol) {
+      const mpath = mv?.path;
+      if (mpath && mpath.length) {
+        path = mpath.slice(mv.pathIdx ?? 0).map(w => ({
+          x: Math.round((w.x - H) / F) - 1, z: Math.round((w.y - H) / F) - 1,
+        }));
+      } else if (geo?.finePathProtocol) {
         try {
-          const p = geo.finePathProtocol(sx, sy, tx, ty, { step: 8, margin: 12 * F, maxNodes: 4000 });
+          const p = geo.finePathProtocol(sx, sy, tx, ty, { step: 8, margin: 12 * F, maxNodes: 20000 });
           if (p.found) {
             path = (p.waypoints ?? []).map(w => ({
+              // Viewer space is 0-based (m59-room3d.mjs:26,32,38 draw col-1), and
+              // waypoints are square CENTRES, so `(x - 32)/64 - 1` is the correct
+              // centre -> viewer-x. Do not "fix" the -1: it is the 0-based viewer,
+              // not a frame patch. The mover's own path (above) uses the same
+              // mapping, which is the point — one frame for both.
               x: Math.round((w.x - H) / F) - 1, z: Math.round((w.y - H) / F) - 1,
             }));
           }
@@ -636,9 +796,47 @@ const server = createServer(async (req, res) => {
           };
         } catch (e) { direct = { blocked: false, error: e.message }; }
       }
-      json({ path, direct, self: { x: me.col - 1, z: me.row - 1 }, target: { x: t.col - 1, z: t.row - 1 } });
+      json({ path, direct, self: { x: me.col - 1, z: me.row - 1 }, target: { x: t.col - 1, z: t.row - 1 }, is_travel: isTravel });
       return;
     }
+// DROPPED USER MOVES, IN ONE PLACE. The client drops a UserMove that arrives inside the
+// 1050ms speedhack window and counts the drops, and for a while that was the only
+// movement number in the system that nothing read: a character could have every move it
+// planned swallowed by its own throttle, keep planning, and look perfectly healthy from
+// the outside. A count with no rate cannot be acted on (is 10 drops a week or a
+// second?), and a rate with no window cannot be compared across characters — so both
+// are computed here and every reader uses this one.
+function moveDropStats(session) {
+  const c = session?.client;
+  const dropped = c?._droppedUserMoves ?? 0;
+  const lastDrop = c?._droppedUserMovesAt ?? null;
+  const now = Date.now();
+  // Session lifetime, from the first move we tried to send. If none was ever sent
+  // there is no window and no rate — reporting 0/s would be a claim, not a measurement.
+  const since = c?._firstUserMoveAt ?? c?._lastUserMoveAt ?? null;
+  const windowMs = since != null ? Math.max(0, now - since) : null;
+  const recentMs = lastDrop != null ? Math.max(0, now - lastDrop) : null;
+  return {
+    dropped,
+    // Per second over the whole session, and over the last 60s from the most recent
+    // drop — the number that says whether this is happening NOW.
+    rate_per_sec: windowMs != null && windowMs > 0 ? +(dropped / (windowMs / 1000)).toFixed(4) : null,
+    recent_rate_per_sec: recentMs != null ? +(dropped / (Math.max(recentMs, 1) / 1000)).toFixed(4) : null,
+    window_ms: windowMs,
+    last_drop_ms_ago: recentMs,
+    // The throttle itself, printed so a reader can tell a drop from a refusal: a drop
+    // never reached the wire, a refusal went out and the server said no.
+    throttle_ms: USER_MOVE_MIN_INTERVAL_MS,
+  };
+}
+
+    if (req.method === 'GET' && path === '/move-drops') {
+      // Dropped UserMoves: count, rate, and the window both were measured over.
+      // tools/m59-move-drops.mjs is the reader; it aggregates across the fleet.
+      json(moveDropStats(session));
+      return;
+    }
+
     if (req.method === 'GET' && path === '/probe') {
       // Debug: report the character's position, neighbor walkability,
       // and the geometry state. Used to diagnose stuck-on-a-ledge.
@@ -668,6 +866,7 @@ const server = createServer(async (req, res) => {
       }
       json({
         pos: { col: me.col, row: me.row },
+        moveDrops: moveDropStats(session),
         myHeight: geo?.fineHeightAt ? geo.fineHeightAt(me.col * 64 + 32, me.row * 64 + 32) : null,
         neighbors,
         target: t ? { col: t.col, row: t.row, name: c?.rsc?.get?.(t.nameRsc) } : null,
@@ -866,7 +1065,7 @@ const server = createServer(async (req, res) => {
 
     if (req.method === 'POST' && path === '/action') {
       const body = JSON.parse(await readBody(req));
-      const { name, args } = body;
+      const { name, args = {} } = body;
       try {
         let result;
         switch (name) {
@@ -889,7 +1088,23 @@ const server = createServer(async (req, res) => {
               break;
             }
             const maxHops = args.maxHops ?? 5;
-            result = await session.travel(dest, { maxHops });
+            // FIRE-AND-FORGET ON THE TICK DRIVER. The old model awaited the
+            // entire journey (blocking the HTTP handler for minutes). On the
+            // tick driver, set the router's destination and return immediately;
+            // the tick loop's travel/hunt goal drives the hops one per tick.
+            const router = session._router;
+            if (router) {
+              const ok = router.to(Number(dest));
+              // MANUAL-DEST PROTECTION: hunt and stuck-escape must not steal
+              // an operator-ordered destination (they did, every minute).
+              // Stamped here, honored in the hunt goal and stuck-escape.
+              if (ok) { try { session._manualDest = { dest: Number(dest), at: Date.now() }; session._operatorDest = { dest: Number(dest), at: Date.now() }; } catch {} }
+              result = ok ? { sent: true, what: `travel to room ${dest} (router set, tick-driven)` }
+                          : { sent: false, what: `travel refused: ${router._refusedHazard?.why ?? 'invalid destination'}` };
+            } else {
+              // No router (standalone session): fall back to the blocking call.
+              result = await session.travel(dest, { maxHops });
+            }
             break;
           }
           case 'go': {
@@ -899,7 +1114,14 @@ const server = createServer(async (req, res) => {
             if (!candidates.length) {
               result = { error: `no exit to ${dest}`, exits: exits.map(e => ({ kind: e.kind, to: e.to, col: e.stand_on?.col, row: e.stand_on?.row })) };
             } else {
-              result = await session.leaveViaAny(candidates);
+              // FIRE-AND-FORGET ON THE TICK DRIVER. `leaveViaAny` is a long
+              // operation (walk to the exit square, then go through). Awaiting
+              // it blocks the HTTP handler for the entire walk. Kick it off
+              // and return immediately; the tick loop drives the movement.
+              session.leaveViaAny(candidates)
+                .then(r => { console.error(`[go] ${session.name ?? '?'}: ${JSON.stringify(r).slice(0,200)}`); })
+                .catch(e => console.error(`[go] ${session.name ?? '?'} err: ${e.message}`));
+              result = { sent: true, what: `go to ${dest} (fire-and-forget)` };
             }
             break;
           }
@@ -957,6 +1179,12 @@ const server = createServer(async (req, res) => {
               // the character relocated) or a max timeout, rather than a fixed short
               // hold that would unfreeze too early and let the next move packet kill
               // the cast.
+              // STAND BEFORE CAST: a resting character has PFLAG_NO_MAGIC set
+              // (player.kod:1166) and the server refuses the cast whole. UC_STAND ->
+              // StopResting() -> ResetPlayerFlagList() clears the flag; wait 2s for
+              // the server to process it before the cast begins.
+              await session.pacer.submit('stand', () => c.stand?.()).catch(() => {});
+              await new Promise(r => setTimeout(r, 2000));
               const loop = session._tickLoop;
               if (loop) {
                 const since = c.evSeq;  // events after this are from the cast
@@ -972,6 +1200,39 @@ const server = createServer(async (req, res) => {
                 c.cast(spell.id, []);
                 result = { sent: true, spell: spellName };
               }
+            }
+            break;
+          }
+          case 'inert': {
+            const loop = session._tickLoop;
+            if (loop) {
+              loop._frozen = true;
+              loop._inert = true;  // exempt from the 60s TTL; cleared by `revive`
+              loop._frozenAt = Date.now();
+              session._inert = { why: args?.why ?? 'asked to go inert', at: Date.now() };
+              console.error(`[keeper] ${session.name ?? '?'} inert: ${args?.why ?? 'asked to go inert'}`);
+              result = { inert: true, why: args?.why ?? 'asked to go inert' };
+            } else if (autopilot) {
+              autopilot.stop(args?.why ?? 'asked to go inert');
+              result = { inert: true, why: args?.why ?? 'asked to go inert' };
+            } else {
+              result = { error: 'no tick loop or autopilot' };
+            }
+            break;
+          }
+          case 'revive': {
+            const loop = session._tickLoop;
+            if (loop) {
+              loop._frozen = false;
+              loop._inert = false;
+              delete session._inert;
+              console.error(`[keeper] ${session.name ?? '?'} revived`);
+              result = { revived: true };
+            } else if (autopilot && !autopilot.running) {
+              autopilot.start();
+              result = { revived: true };
+            } else {
+              result = { already_running: true };
             }
             break;
           }
@@ -1128,6 +1389,69 @@ const server = createServer(async (req, res) => {
               if (ev?.events?.length) desc = ev.events.map(e => e.text ?? e.description ?? e.what ?? e.kind).join('\n');
             } catch {}
             result = result ?? { sent: true, id, description: desc };
+            break;
+          }
+          case 'escape_pocket': {
+            const { escapePocket } = await import('./m59-act/escape-pocket.mjs');
+            result = await escapePocket(session.client, session);
+            break;
+          }
+          case 'moverstate': { // live mover internals (diagnostics)
+            const _ids = (globalThis.__objIds ??= new WeakMap());
+            const _idOf = o => { if (o == null) return null; if (!_ids.has(o)) _ids.set(o, _ids.size + 1); return _ids.get(o); };
+            const mv = session?._mover;
+            const me = session?.client?.self;
+            let gateProbe = null;
+            try {
+              gateProbe = mv ? mv._movementGateOk(100, 100, 0, 0, 0, 0) : 'nomover';
+            } catch (e) { gateProbe = 'throw:' + e.message; }
+            result = {
+              hasMover: !!mv, hasRouter: !!session?._router,
+              sameMover: session?._mover === session?._router?.mover,
+              sessionId: _idOf(session), clientId: _idOf(session?.client),
+              pacerId: _idOf(session?.pacer), moverSessionId: _idOf(mv?.session),
+              moverClientId: _idOf(mv?.session?.client), moverPacerId: _idOf(mv?.session?.pacer),
+              dest: mv?.dest ?? null, pathLen: mv?.path?.length ?? null,
+              pathIdx: mv?.pathIdx ?? null, fanIdx: mv?.fanIndex ?? null,
+              fanTgt: mv?._fanTarget != null, blink: mv?._blinkPending ?? null,
+              sitting: mv?.sitting ?? null, stuck: mv?.stuckTicks ?? null,
+              sends: mv?._sendCount ?? null,
+              progWin: mv?._progWin?.length ?? null,
+              restGateAge: Date.now() - (session?._lastRestStep ?? 0),
+              lastSent: mv ? { x: mv._lastReportX ?? null, y: mv._lastReportY ?? null } : null,
+              lastRepAge: mv ? Date.now() - (mv._lastReportAt ?? 0) : null,
+              reportIntervalMs: mv?.reportIntervalMs ?? null,
+              gateProbe, me: me ? { col: me.col, row: me.row, x: me.x, y: me.y } : null,
+              poseSrc: session?._pose?.current?.()?.source ?? null,
+              poseSrv: (() => { try { const s = session?._pose?.server; return s ? { col: s.col, row: s.row } : null; } catch { return null; } })(),
+              poseSim: (() => { try { const s = session?._pose?.sim; return s ? { col: Math.floor(s.x / 64), row: Math.floor(s.y / 64) } : null; } catch { return null; } })(),
+              divResets: session?._pose?.divergenceResets ?? null,
+              divergence: (() => { try { return session?._pose?.divergence?.() ?? null; } catch { return null; } })(),
+              pathWp: mv?.path ? mv.path.slice(0, 6).map(w => [Math.round(w.x / 64), Math.round(w.y / 64)]) : null,
+              routerDest: session?._router?.dest ?? null,
+              routerLeg: session?._router?.leg ? { to: session._router.leg.next, standOn: session._router.leg.standOn, kind: session._router.leg.kind } : null,
+              routerSub: session?._router?.subWp ?? null,
+              // Reports the VALUE SET IN THE ROSTER, not a mode in effect. Nothing in the mover
+              // reads this any more; it is here so a roster that still carries it is visible
+              // rather than invisible. Do not read it as 'which engine is running'.
+              ownPhysics: session?.policy?.ownPhysics ?? null,
+            };
+            break;
+          }
+          case 'geo': { // live geometry probe
+            const geo = session?.world?.geometry;
+            const row = Number(body.row) || 0;
+            const col = Number(body.col) || 0;
+            result = {
+              hasGeo: !!geo,
+              collisionReady: geo?.collisionReady ?? null,
+              rows: geo?.rows ?? null,
+              cols: geo?.cols ?? null,
+              roomNum: geo?.roomNum ?? geo?.num ?? null,
+              standable: geo?.standable ? geo.standable(row, col) : null,
+              walkable: geo?.walkable ? geo.walkable(row, col) : null,
+              fineWalkable: geo?.fineWalkable ? geo.fineWalkable(row, col) : null,
+            };
             break;
           }
           default:

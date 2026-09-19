@@ -3,7 +3,7 @@
 //
 // Design: engage the mob directly (no safe-spot-first). Retreat to cover only
 // when HP is low. Phases: idle/close (approach), fight (swing), retreat (cover).
-import { CombatController } from './m59-combat.mjs';
+import { CombatController } from './tick/m59-combat.mjs';
 
 let pass = 0, fail = 0;
 const ok = (what, cond, detail) => {
@@ -11,13 +11,13 @@ const ok = (what, cond, detail) => {
   else { fail++; console.log(`  FAIL ${what}${detail ? ' — ' + detail : ''}`); }
 };
 
-function rig({ meCol = 5, meRow = 5, targetCol = 8, targetRow = 5, targetId = 100, targetFlags = 0, hpPct = 100 } = {}) {
+function rig({ meCol = 5, meRow = 5, targetCol = 8, targetRow = 5, targetId = 100, targetFlags = 0, hpPct = 100, roomName = 'unknown' } = {}) {
   const sent = [];
   const isWalkable = (r, c) => r >= 1 && c >= 1;
   const geo = { fineWalkable: (r, c) => isWalkable(r, c), standable: (r, c) => isWalkable(r, c) };
   const objects = new Map();
   if (targetId != null) {
-    objects.set(targetId, { id: targetId, col: targetCol, row: targetRow, name: 'centipede', flags: targetFlags });
+    objects.set(targetId, { id: targetId, col: targetCol, row: targetRow, name: 'giant rat', flags: targetFlags });
   }
   const session = {
     name: 'test', live: true,
@@ -25,7 +25,7 @@ function rig({ meCol = 5, meRow = 5, targetCol = 8, targetRow = 5, targetId = 10
       state: 'game',
       self: { col: meCol, row: meRow, x: meCol * 64 + 32, y: meRow * 64 + 32 },
       room: { objects },
-      rsc: { get: () => 'centipede' },
+      rsc: { get: () => 'giant rat' },
       moveTo: (x, y) => sent.push({ x, y }),
       moveSpeed: () => 1,
       vitals: () => ({ health: { value: hpPct, max: 100, pct: hpPct } }),
@@ -42,8 +42,13 @@ function rig({ meCol = 5, meRow = 5, targetCol = 8, targetRow = 5, targetId = 10
     position: { col: session.client.self.col, row: session.client.self.row },
     objects,
     vitals: { health: { value: hpPct, max: 100, pct: hpPct } },
+    room: { name: roomName },
   });
   const controller = new CombatController(session);
+  // Latch like live selection does: the decider sets ws._targetId and the
+  // controller binds by id (never scans). Without this the rig's mob is
+  // invisible to the id-only binding (by design: no furniture wars).
+  if (targetId != null) { controller.targetId = targetId; controller.targetName = 'giant rat'; }
   return { controller, act, sent, session, frame };
 }
 
@@ -69,7 +74,7 @@ console.log('\nfights from range: one swing per SWING_MS');
 {
   const { controller, act, sent, frame } = rig({ meCol: 1, meRow: 1, targetCol: 2, targetRow: 1 });
   controller.phase = 'fight';
-  controller.targetId = 100; controller.targetName = 'centipede';
+  controller.targetId = 100; controller.targetName = 'giant rat';
   controller.lastSwing = 0;
   const r1 = controller.tick(frame(), act);
   ok('first tick swings', r1.kind === 'swing', r1.kind);
@@ -92,7 +97,7 @@ console.log('\nre-engages when HP recovers');
 {
   const { controller, act, sent, frame } = rig({ meCol: 1, meRow: 1, targetCol: 6, targetRow: 1 });
   controller.phase = 'retreat';
-  controller.targetId = 100; controller.targetName = 'centipede';
+  controller.targetId = 100; controller.targetName = 'giant rat';
   controller._retreatStart = Date.now();
   // HP is full (100), so retreat should give up and re-engage.
   const r = controller.tick(frame(), act);
@@ -103,7 +108,7 @@ console.log('\nretreat timeout: re-engages after 60s even if still low');
 {
   const { controller, act, sent, frame } = rig({ meCol: 1, meRow: 1, targetCol: 6, targetRow: 1, hpPct: 40 });
   controller.phase = 'retreat';
-  controller.targetId = 100; controller.targetName = 'centipede';
+  controller.targetId = 100; controller.targetName = 'giant rat';
   controller._retreatStart = Date.now() - 61000; // 61s ago
   const r = controller.tick(frame(), act);
   ok('phase back to close (timeout)', controller.phase === 'close', controller.phase);
@@ -139,9 +144,9 @@ console.log('\ncasts zap when it has blue mushrooms and the enchantment is down'
   };
   const act = { face: () => {}, swing: () => {} };
   const frame = { position: { col: 5, row: 5 }, objects, vitals: { health: { value: 100, max: 100, pct: 100 } } };
-  const { CombatController } = await import('./m59-combat.mjs');
+  const { CombatController } = await import('./tick/m59-combat.mjs');
   const controller = new CombatController(session);
-  const r = controller.tick(frame, act, { has_target: true });
+  const r = controller.tick(frame, act, { has_target: true, _targetId: 200 });
   ok('casts zap (kind=zap-cast)', r.kind === 'zap-cast', r.kind + ' ' + (r.what ?? ''));
   ok('unequipped the mace', sent.some(s => s.unuse === 'mace'), JSON.stringify(sent));
   ok('cast the zap spell', sent.some(s => s.cast === 'zap'), JSON.stringify(sent));
@@ -177,13 +182,100 @@ console.log('\ndoes not cast zap when the enchantment is already active');
   };
   const act = { face: () => {}, swing: (id) => sent.push({ swing: id }) };
   const frame = { position: { col: 5, row: 5 }, objects, vitals: { health: { value: 100, max: 100, pct: 100 } } };
-  const { CombatController } = await import('./m59-combat.mjs');
+  const { CombatController } = await import('./tick/m59-combat.mjs');
   const controller = new CombatController(session);
-  const r = controller.tick(frame, act, { has_target: true });
+  const r = controller.tick(frame, act, { has_target: true, _targetId: 200 });
   ok('does not cast (already active)', r.kind !== 'zap-cast', r.kind);
   ok('swings instead (zap-touched)', r.kind === 'swing', r.kind + ' ' + (r.what ?? ''));
 }
 
+console.log('\nraw-step fallback is production-gated to the 1/s send law');
+{
+  const { controller, act, sent } = rig({ meCol: 5, meRow: 5, targetCol: 12, targetRow: 5 });
+  const me = { col: 5, row: 5, x: 352, y: 352 };
+  controller._walkTo(act, { col: 8, row: 5 }, 'test walk', me);
+  controller._walkTo(act, { col: 8, row: 5 }, 'test walk', me);
+  controller._walkTo(act, { col: 8, row: 5 }, 'test walk', me);
+  const steps = sent.filter(s => s.step);
+  ok('three rapid fallback walks produce one step (no queue flood)', steps.length === 1, JSON.stringify(sent));
+}
+
+console.log('\npath distance counts squares, not nodes');
+{
+  // A direct 3-square path has 2 endpoint waypoints: must read as 3 (walk),
+  // not 2 (fight). Watched live: swung at air 3 squares out indefinitely.
+  const sent = [];
+  const geo = {
+    fineWalkable: () => true, standable: () => true,
+    finePathProtocol: (fx, fy, tx, ty) => ({ found: true, waypoints: [{ x: tx, y: ty }], expanded: 1 }),
+  };
+  const objects = new Map();
+  objects.set(100, { id: 100, col: 8, row: 5, name: 'giant rat', flags: 0 });
+  const session = {
+    name: 'test', live: true,
+    client: {
+      state: 'game',
+      self: { col: 5, row: 5, x: 5 * 64 + 32, y: 5 * 64 + 32 },
+      room: { objects },
+      rsc: { get: () => 'giant rat' },
+      moveTo: (x, y) => sent.push({ x, y }),
+      moveSpeed: () => 1,
+      vitals: () => ({ health: { value: 100, max: 100, pct: 100 } }),
+    },
+    pacer: { depth: 0, submit: (k, fn) => { fn(); return Promise.resolve(); } },
+    world: { geometry: geo },
+  };
+  const act = { step: (c, r) => sent.push({ step: [c, r] }), swing: (id) => sent.push({ swing: id }), face: () => {} };
+  const frame = () => ({ position: { col: 5, row: 5 }, objects, vitals: { health: { value: 100, max: 100, pct: 100 } }, geometry: geo });
+  const controller = new CombatController(session);
+  const r = controller.tick(frame(), act, { has_target: true, _targetId: 100 });
+  ok('3 squares out walks instead of swinging at air', r.kind === 'walk', r.kind + ' ' + (r.what ?? ''));
+}
+
+console.log('\nprohibited kinds are not latched, even by id');
+{
+  const t = rig({ meCol: 5, meRow: 5, targetCol: 6, targetRow: 5 });
+  t.controller.targetId = null;
+  t.session.client.rsc = { get: () => 'centipede' };
+  const objs = t.frame().objects;
+  objs.clear();
+  objs.set(100, { id: 100, col: 6, row: 5, name: 'centipede', flags: 0 });
+  const r = t.controller.tick(t.frame(), t.act, { has_target: true, _targetId: 100 });
+  ok('latch refuses the pede', r.kind === 'idle', r.kind);
+}
+
+console.log('\nkill feed: a swung-at target that vanishes is recorded');
+{
+  const { killFeed } = await import('./m59-tougher.mjs');
+  const t = rig({ meCol: 5, meRow: 5, targetCol: 6, targetRow: 5 });
+  t.session.client.rsc = { get: () => 'giant rat' };
+  const before = killFeed('test').length;
+  // Swing while in reach (records _lastSwingAt).
+  let r = t.controller.tick(t.frame(), t.act, { has_target: true });
+  // Target vanishes (died) -> loot transition records the kill.
+  t.frame().objects.clear();
+  r = t.controller.tick(t.frame(), t.act, { has_target: false });
+  ok('loot transition fires', r.kind === 'loot', r.kind);
+  const after = killFeed('test');
+  ok('kill recorded to the feed', after.length === before + 1 && after[after.length - 1].creature === 'giant rat',
+     JSON.stringify(after.slice(-1)));
+}
+
+console.log('\nretreat stuck: falls back to swing instead of idle');
+{
+  const { controller, act, sent, session, frame } = rig({ meCol: 5, meRow: 5, targetCol: 6, targetRow: 5, hpPct: 30, roomName: 'test-stuck-room' });
+  controller.phase = 'retreat';
+  controller._retreatStart = Date.now();
+  // Stub the mover to return a stuck verdict.
+  session._mover = { to(){}, tickLogged: () => ({ state: 'stuck', why: 'server static across 5 sends' }) };
+  const ws = { has_target: true, target_in_band: true, in_reach: true };
+  const r = controller.tick(frame(), act, ws);
+  ok(`stuck retreat swings (got ${r.kind})`, r.kind === 'swing');
+}
+
+
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
+
 

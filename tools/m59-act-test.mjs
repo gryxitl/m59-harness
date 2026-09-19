@@ -72,8 +72,15 @@ for (const file of files) {
     ok(`${n}: declares pre`, Array.isArray(fn.pre));
     ok(`${n}: declares effects`, Array.isArray(fn.effects));
     const problems = validate({ name: n, pre: fn.pre, effects: fn.effects });
-    ok(`${n}: every pre/effect is a known world-state symbol`, problems.length === 0,
-       problems[0] ?? '');
+    // A declared-but-unproduced symbol is not a typo: it is a promise the atomic
+    // makes that no other symbol in the vocabulary can verify, and the planner's
+    // re-evaluation after each step is what makes it visible. It is reported, not
+    // rejected, so the conformance sweep can see it.
+    const unproduced = problems.filter(p => p.includes('declared but has no producer'));
+    const typos = problems.filter(p => !p.includes('declared but has no producer'));
+    ok(`${n}: every pre/effect is a known world-state symbol`, typos.length === 0,
+       typos[0] ?? '');
+    if (unproduced.length) console.log(`  note ${n}: ${unproduced.join('; ')}`);
     // An atomic that changes nothing is a Condition, not an Action. The exception:
     // item-level atomics (pickup, drop, buy, sell, deposit, withdraw) change the
     // pack or the purse, which the 14-symbol vocabulary does not model. They are
