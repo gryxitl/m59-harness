@@ -2739,7 +2739,14 @@ function fleeExits(session, ws) {
           // in a random direction to break the stuck state and increase the
           // chance of a target spawning.
           if (hunt && hunt.room === resolved) {
-            // Arrived at the hunt room: clear the hold so the next re-pick is free.
+            // Arrived at the hunt room: stamp the attempt so the 30s relocate
+            // and nearestHuntRoom cannot immediately re-pick a different room.
+            // The room may hold nothing in band right now, but re-routing to a
+            // farther room is a policy loop, not a movement failure. Hold the
+            // room for the cooldown duration and let the spawn table reset.
+            session._huntTried = { room: resolved, at: Date.now() };
+            // Clear the travel-time hold so the next re-pick (after cooldown)
+            // is free. A room that empties later must be abandonable.
             if (session?._huntDestHold) delete session._huntDestHold;
             if (session?._huntDest) delete session._huntDest;
             // YIELD when the router's destination is set and it's not the
@@ -2822,14 +2829,17 @@ function fleeExits(session, ws) {
               session._huntWaitStart = now; // reset the timer
               const roomNum = resolveRoomNum(frame?.room ?? {}, session?.world?.map ?? null) ?? frame?.room?.num ?? frame?.room?.id ?? null;
               if (roomNum != null) {
-                // HUNT ROOM STICKY: if the current room is the _huntPickedAt room
-                // and the 10-minute floor hasn't elapsed, do not re-target. The
-                // room may hold nothing in band right now, but re-routing to a
-                // strictly farther room (hops=2 vs hops=1) is a policy loop, not
-                // a movement failure. Hold the room and let the spawn table reset.
-                const _picked = session?._huntPickedAt;
-                if (_picked && _picked.room === roomNum && Date.now() - _picked.at < 600000) {
+                // HUNT ROOM STICKY: if the current room is the _huntTried room
+                // (stamped on arrival, not cleared) and the 5-minute cooldown
+                // hasn't elapsed, do not re-target. The room may hold nothing
+                // in band right now, but re-routing to a farther room is a
+                // policy loop, not a movement failure. Hold the room and let
+                // the spawn table reset.
+                const _tried = session?._huntTried;
+                if (_tried && _tried.room === roomNum && Date.now() - _tried.at < 300000) {
                   // Sticky: do not re-target. The 30s timer is already reset.
+                  onDecision?.({ ticks, goal: 'hunt', action: null,
+                    what: `hunt room sticky (room ${roomNum}, ${Math.round((Date.now() - _tried.at) / 1000)}s since arrival)`, sent: false });
                 } else {
                   const _cb = characterBand(client, session?.policy ?? policy, ws.armed === true);
                   if (_cb == null) return; // vitals not ready
