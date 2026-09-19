@@ -30,7 +30,7 @@ export const STEPS_PER_MOVE = 20;
 // move.c:49 — minimum ms between moving MOVEUNITS.
 export const MOVE_DELAY = 100;
 // move.c:57 — at most one position packet per this many ms. Our client's
-// USER_MOVE_MIN_INTERVAL_MS is 1050: the same law plus 5% so the server's counter drains.
+// USER_MOVE_MIN_INTERVAL_MS is 1000: the server's one-packet-per-second contract.
 export const MOVE_INTERVAL = 1000;
 // move.c:63 — only report a move at least this large (client units, compared squared).
 export const MOVE_THRESHOLD = 1024 / 4;

@@ -255,7 +255,7 @@ function makeRoom() {
   });
 }
 
-// A clock the test owns. The mover's send gate is a 1050ms live constraint; a rig that
+// A clock the test owns. The mover's send gate is a 1000ms live constraint; a rig that
 // ticks in microseconds collapses it and measures a rate that cannot happen.
 let CLOCK = 0;
 const REAL_NOW = Date.now;
@@ -400,11 +400,11 @@ function declaredPastWall(room, sends, startX) {
 
 // Tick the mover once per report interval.
 //
-// intervalMs is 1500, not the 1050 the client's own send throttle allows, and the difference
+// intervalMs is 1500, not the 1000 the client.s own send throttle allows, and the difference
 // is not sloppiness — it is the shape of the system. The escape fan parks a probe and refuses
 // to judge it until one echo window has passed: `Date.now() - this._fanSentAt < 1500` returns
 // 'waiting' (mover:734), because BP_MOVE echoes arrive ~1200ms after a send while the fan's
-// nine probes would otherwise exhaust in 900ms. A rig that ticks at 1050ms never lets a probe
+// nine probes would otherwise exhaust in 900ms. A rig that ticks at 1000ms never lets a probe
 // resolve, so the fan holds at heading 0 forever, the tick never falls through to the
 // statement under test, and the test reports a clean mover that was never asked to move.
 // Ticking at 1500 lets each probe complete, which is what a live keeper does.

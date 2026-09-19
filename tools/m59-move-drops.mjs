@@ -6,7 +6,7 @@
 //   node tools/m59-move-drops.mjs --json       machine-readable
 //   node tools/m59-move-drops.mjs --since 60   only drops from the last 60s
 //
-// The client drops a UserMove that arrives inside the 1050ms speedhack window. It has
+// The client drops a UserMove that arrives inside the 1000ms server cadence window. It has
 // counted those drops since the window was added and nothing ever read the number. That
 // is not a cosmetic gap: a drop is a movement command the character decided to take and
 // never sent, and a mover that is stuck re-fires every tick, so a character can spend its

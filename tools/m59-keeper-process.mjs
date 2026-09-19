@@ -800,7 +800,7 @@ const server = createServer(async (req, res) => {
       return;
     }
 // DROPPED USER MOVES, IN ONE PLACE. The client drops a UserMove that arrives inside the
-// 1050ms speedhack window and counts the drops, and for a while that was the only
+// 1000ms server cadence window and counts the drops, and for a while that was the only
 // movement number in the system that nothing read: a character could have every move it
 // planned swallowed by its own throttle, keep planning, and look perfectly healthy from
 // the outside. A count with no rate cannot be acted on (is 10 drops a week or a

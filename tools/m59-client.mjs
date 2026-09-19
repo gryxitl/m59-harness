@@ -101,11 +101,11 @@ export const BPNAME = Object.fromEntries(Object.entries(BP).map(([k, v]) => [v, 
 
 // The speedhack budget, named. user.kod gives the server ~1 UserMove/second
 // (piMovesCounter +1 per packet, -1 per second, trip above 2 with a snap-back to the
-// pre-stride square). 1050ms is 5% under budget so the counter drains; it was a bare
-// literal inside moveTo, which meant nothing else in the system could state the law a
-// dropped move is measured against. Exported so tools/m59-move-drops.mjs reports the
-// same number the client enforces rather than a copy that can drift.
-export const USER_MOVE_MIN_INTERVAL_MS = 1050;
+// The server's contract is one BP_REQ_MOVE per second (user.kod:2937). 1000ms matches
+// MOVE_CAP_MS (m59-mover.mjs:338) and the official client's cadence law (move.c:57).
+// The old 1050 was a 5% slack that dropped ~40% of sends (measured: 799 drops/hour
+// against 1202 sends) because the mover's 1000ms slot opened 50ms before the client's gate.
+export const USER_MOVE_MIN_INTERVAL_MS = 1000;
 
 // BP_USERCOMMAND sub-opcodes, include/proto.h:222. A whole second command space
 // reached through one opcode, holding the things the real client's slash commands
