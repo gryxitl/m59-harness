@@ -913,12 +913,16 @@ export class M59Client {
     // the mover has its own cap so it can skip send bookkeeping too).
     const nowMs = Date.now();
     if (nowMs - (this._lastUserMoveAt ?? 0) < USER_MOVE_MIN_INTERVAL_MS) {
+      // LATEST-WINS: hold the newest move and re-issue when the window closes.
+      // A refused move is not a dead move — it is the position the character
+      // wants to be at, and the server's 1/s law is a timing constraint, not
+      // a rejection of the position. Dropping it meant the character sat one
+      // stride behind the mover's declaration for up to 1000ms, which is the
+      // entire rate deficit. Replacing a pending move is safe: movement is
+      // latest-wins (the next tick re-fires), so the oldest pending move is
+      // the least useful.
+      this._pendingUserMove = { x, y, speed, room, at: nowMs };
       this._droppedUserMoves = (this._droppedUserMoves ?? 0) + 1;
-      // Stamped as well as counted, because a bare total cannot be acted on. Ten drops
-      // accumulated over a week of a character sitting in a town square is nothing; ten
-      // in the last four seconds means something is re-firing movement at a character
-      // that cannot move, which is the failure this counter was added to catch and could
-      // not be caught with it. See tools/m59-move-drops.mjs.
       this._droppedUserMovesAt = nowMs;
       this._lastUserMoveDropAt = nowMs;
       if (process.env.M59_DROP_TRACE === '1') {
@@ -926,6 +930,22 @@ export class M59Client {
         const lines = e.stack.split('\n').slice(1, 6);
         for (const l of lines) console.error(`[move-drop-trace] ${this.user ?? '?'} ${l.trim()}`);
       }
+      // Arm a flush timer: re-issue the pending move when the window closes.
+      // Only one timer at a time; a new pending move replaces the old one and
+      // re-arms the timer for the new position.
+      if (this._pendingFlushTimer) { clearTimeout(this._pendingFlushTimer); this._pendingFlushTimer = null; }
+      const delay = Math.max(0, USER_MOVE_MIN_INTERVAL_MS - (nowMs - this._lastUserMoveAt));
+      this._pendingFlushTimer = setTimeout(() => {
+        this._pendingFlushTimer = null;
+        const p = this._pendingUserMove;
+        this._pendingUserMove = null;
+        if (!p) return;
+        // TTL: discard a position that is 200ms stale.
+        if (Date.now() - p.at > USER_MOVE_MIN_INTERVAL_MS + 200) return;
+        this._lastUserMoveAt = Date.now();
+        this.send(BP.REQ_MOVE, u16b(p.y), u16b(p.x), u8b(p.speed), u32(objId(p.room || 0)));
+      }, delay);
+      this._pendingFlushTimer.unref?.();
       return false;
     }
     this._lastUserMoveAt = nowMs;
