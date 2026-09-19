@@ -28,28 +28,26 @@ const CLIENT_SQUARES_PER_PACKET = 2.5;   // MOVEUNITS per MOVE_DELAY, reported p
 const TRANSITION_CUTOFF = 600;           // units; above this it is a room change, not a stride
 
 // STREAM: logs now exceed the V8 string limit (~512 MB). Read line by line.
-const sends = [];
-let _lastStartLine = 0;
-let _totalStarts = 0;
+// Bucket by n= resets: _sendCount restarts at 1 every session. Close a bucket
+// whenever n <= prev; keep the last bucket (the current session).
 const _re = /\[move-sent\] n=(\d+)(?: site=(\S+))? at=([-\d.]+),([-\d.]+) aim=([-\d.]+),([-\d.]+) from=([-\d.]+),([-\d.]+)/;
-const _startRe = /\[keeper\] \S+ starting on port/;
 const _tsRe = /^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)/;
-let _firstTs = null, _lastTs = null;
+const buckets = [[]];
+let prevN = 0;
 const rl = createInterface({ input: createReadStream(file, { encoding: 'utf8' }) });
 for await (const line of rl) {
-  if (_startRe.test(line)) { _lastStartLine = sends.length; _totalStarts++; }
   const m = line.match(_re);
-  if (m) {
-    const ts = line.match(_tsRe);
-    if (ts) { if (!_firstTs) _firstTs = ts[1]; _lastTs = ts[1]; }
-    sends.push({ n: Number(m[1]), site: m[2] ?? '?', at: [Number(m[3]), Number(m[4])], aim: [Number(m[5]), Number(m[6])], from: [Number(m[7]), Number(m[8])] });
-  }
+  if (!m) continue;
+  const n = Number(m[1]);
+  if (n <= prevN && buckets[buckets.length - 1].length > 0) buckets.push([]);
+  prevN = n;
+  const ts = line.match(_tsRe);
+  buckets[buckets.length - 1].push({ n, site: m[2] ?? '?', at: [Number(m[3]), Number(m[4])], aim: [Number(m[5]), Number(m[6])], from: [Number(m[7]), Number(m[8])], ts: ts ? ts[1] : null });
 }
-if (_totalStarts > 1) {
-  const excluded = _lastStartLine;
-  sends.splice(0, _lastStartLine);
-  console.log(`(window: the current session only — ${_totalStarts} sessions in the file, ${excluded} sends from earlier sessions excluded; kept ${sends.length} sends ${_firstTs ?? '?'} → ${_lastTs ?? '?'})`);
-}
+const sends = buckets[buckets.length - 1];
+const firstTs = sends.length ? sends[0].ts : null;
+const lastTs = sends.length ? sends[sends.length - 1].ts : null;
+console.log(`(window: last of ${buckets.length} n= buckets — ${sends.length} sends ${firstTs ?? '?'} → ${lastTs ?? '?'})`);
 
 if (!sends.length) {
   console.log(`${file}: no [move-sent] lines with at= field.`);
