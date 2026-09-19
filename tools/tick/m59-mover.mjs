@@ -1524,7 +1524,7 @@ export class Mover {
           let _f = '?', _s = '?';
           try { _f = geo?.fineWalkable?.(_tr, _tc) ?? '?'; } catch {}
           try { _s = geo?.standable?.(_tr, _tc) ?? '?'; } catch {}
-          _tgt = `${_tr},${_tc}=${_f}/${_s}`;
+          _tgt = `${_tc},${_tr}=${_f}/${_s}`;
         }
         try { console.error(`[movedbg] ${this.logName} plan from=(${Math.floor(myProtoX / KOD_FINENESS)},${Math.floor(myProtoY / KOD_FINENESS)}) dest=${this.dest ? this.dest.col + ',' + this.dest.row : 'null'} found=${result.found} wp=${result.found ? result.waypoints.length : 0} reason=${result.found ? '-' : (result.reason ?? '?')} expanded=${result.expanded} budget=20000 tgt=${_tgt}`); } catch (e) { console.error('[plandebug-threw] ' + e.message); }
       }
