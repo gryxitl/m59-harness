@@ -31,20 +31,24 @@ const TRANSITION_CUTOFF = 600;           // units; above this it is a room chang
 const sends = [];
 let _lastStartLine = 0;
 let _totalStarts = 0;
-const _re = /\[move-sent\] n=(\d+) site=(\S+) at=([-\d.]+),([-\d.]+) aim=([-\d.]+),([-\d.]+) from=([-\d.]+),([-\d.]+)/;
+const _re = /\[move-sent\] n=(\d+)(?: site=(\S+))? at=([-\d.]+),([-\d.]+) aim=([-\d.]+),([-\d.]+) from=([-\d.]+),([-\d.]+)/;
 const _startRe = /\[keeper\] \S+ starting on port/;
+const _tsRe = /^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)/;
+let _firstTs = null, _lastTs = null;
 const rl = createInterface({ input: createReadStream(file, { encoding: 'utf8' }) });
 for await (const line of rl) {
   if (_startRe.test(line)) { _lastStartLine = sends.length; _totalStarts++; }
   const m = line.match(_re);
   if (m) {
-    sends.push({ n: Number(m[1]), site: m[2], at: [Number(m[3]), Number(m[4])], aim: [Number(m[5]), Number(m[6])], from: [Number(m[7]), Number(m[8])] });
+    const ts = line.match(_tsRe);
+    if (ts) { if (!_firstTs) _firstTs = ts[1]; _lastTs = ts[1]; }
+    sends.push({ n: Number(m[1]), site: m[2] ?? '?', at: [Number(m[3]), Number(m[4])], aim: [Number(m[5]), Number(m[6])], from: [Number(m[7]), Number(m[8])] });
   }
 }
 if (_totalStarts > 1) {
   const excluded = _lastStartLine;
   sends.splice(0, _lastStartLine);
-  console.log(`(window: the current session only — ${_totalStarts} sessions in the file, ${excluded} sends from earlier sessions excluded)`);
+  console.log(`(window: the current session only — ${_totalStarts} sessions in the file, ${excluded} sends from earlier sessions excluded; kept ${sends.length} sends ${_firstTs ?? '?'} → ${_lastTs ?? '?'})`);
 }
 
 if (!sends.length) {
