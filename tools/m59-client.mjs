@@ -921,6 +921,7 @@ export class M59Client {
       // entire rate deficit. Replacing a pending move is safe: movement is
       // latest-wins (the next tick re-fires), so the oldest pending move is
       // the least useful.
+      const hadPending = this._pendingUserMove != null;
       this._pendingUserMove = { x, y, speed, room, at: nowMs };
       this._droppedUserMoves = (this._droppedUserMoves ?? 0) + 1;
       this._droppedUserMovesAt = nowMs;
@@ -930,22 +931,23 @@ export class M59Client {
         const lines = e.stack.split('\n').slice(1, 6);
         for (const l of lines) console.error(`[move-drop-trace] ${this.user ?? '?'} ${l.trim()}`);
       }
-      // Arm a flush timer: re-issue the pending move when the window closes.
-      // Only one timer at a time; a new pending move replaces the old one and
-      // re-arms the timer for the new position.
-      if (this._pendingFlushTimer) { clearTimeout(this._pendingFlushTimer); this._pendingFlushTimer = null; }
-      const delay = Math.max(0, USER_MOVE_MIN_INTERVAL_MS - (nowMs - this._lastUserMoveAt));
-      this._pendingFlushTimer = setTimeout(() => {
-        this._pendingFlushTimer = null;
-        const p = this._pendingUserMove;
-        this._pendingUserMove = null;
-        if (!p) return;
-        // TTL: discard a position that is 200ms stale.
-        if (Date.now() - p.at > USER_MOVE_MIN_INTERVAL_MS + 200) return;
-        this._lastUserMoveAt = Date.now();
-        this.send(BP.REQ_MOVE, u16b(p.y), u16b(p.x), u8b(p.speed), u32(objId(p.room || 0)));
-      }, delay);
-      this._pendingFlushTimer.unref?.();
+      // Arm the flush timer only when nothing is pending. A new pending move
+      // replaces the old one (latest-wins) but does NOT re-arm the timer —
+      // the original arm is still running and will flush the newest position.
+      if (!hadPending) {
+        const delay = Math.max(0, USER_MOVE_MIN_INTERVAL_MS - (nowMs - this._lastUserMoveAt));
+        this._pendingFlushTimer = setTimeout(() => {
+          this._pendingFlushTimer = null;
+          const p = this._pendingUserMove;
+          this._pendingUserMove = null;
+          if (!p) return;
+          // TTL: discard a position that is 200ms stale.
+          if (Date.now() - p.at > USER_MOVE_MIN_INTERVAL_MS + 200) return;
+          this._lastUserMoveAt = Date.now();
+          this.send(BP.REQ_MOVE, u16b(p.y), u16b(p.x), u8b(p.speed), u32(objId(p.room || 0)));
+        }, delay);
+        this._pendingFlushTimer.unref?.();
+      }
       return false;
     }
     this._lastUserMoveAt = nowMs;
