@@ -117,12 +117,12 @@ export function nearestHuntRoom(fromRoom, level, ceiling, minLevel, excludeRoom 
   const mapNum = objIdToNum(fromRoom) ?? fromRoom;
   let candidates = huntRoomsAtOrBelow(level, ceiling, minLevel);
   if (!candidates.length) {
-    // Fallback: if no in-band room, go to the nearest room with any mob
-    // WITHIN THE CEILING. Standing still forever is worse than fighting an
-    // out-of-band mob, but marching at a lv75 skeleton 13 hops away is a
-    // death spiral (each death drops max HP by 1, and max health IS the
-    // level). Widen minLevel downward, keep the ceiling.
-    candidates = huntRoomsAtOrBelow(level, ceiling, 1);
+    // Fallback: if no room has prey above the character's level within the
+    // ceiling, fall back to the old minLevel (level-2) so the character can
+    // at least fight prey at its level (pays nothing, but doesn't kill it).
+    // The old fallback (minLevel=1) dumped characters at lv30/35 prey when
+    // no lv21-25 prey existed, which killed lv20 characters.
+    candidates = huntRoomsAtOrBelow(level, ceiling, level - 2);
   }
   if (!candidates.length) return null;
 
