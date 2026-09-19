@@ -658,7 +658,7 @@ squares, `RUN_STRIDE_PROTO = 320` = 5 squares). We are not holding back.
 
 | term | achieved | available | used |
 |---|---|---|---|
-| packets per second | 0.59 | 0.952 (our 1050 ms cap) | 62% |
+| packets per second | 0.59 | 1.0 (our 1000 ms cap) | 59% |
 | squares per packet | 1.31 | 5.00 (proven accepted) | 26% |
 | **product** | **0.77 sq/s** | 4.76 sq/s | **16%** |
 

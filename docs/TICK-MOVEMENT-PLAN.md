@@ -1585,8 +1585,8 @@ with `MOVEMENT_COUNT_THRESHOLD = 2` (user.kod:61) and `USER_WALKING_SPEED = 18` 
 
 **One move packet per second is not a limitation we failed to fix. It is the server's contract for a
 legitimate player, and sending faster is what the server calls a speedhack.** Our
-`USER_MOVE_MIN_INTERVAL_MS = 1050` is not a bug, and neither is the reference client's
-`MOVE_INTERVAL = 1000`.
+`USER_MOVE_MIN_INTERVAL_MS = 1000` matches `MOVE_CAP_MS = 1000` and the reference client's
+`MOVE_INTERVAL = 1000`. The old 1050 was a 5% slack that dropped sends (measured: 799/hour).
 
 The goal's premise — that the velocity engine would move the fleet at the real client's rate, and
 that the rate would be above the step engine's — is false. **Both engines are capped at one packet
