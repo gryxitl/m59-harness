@@ -2742,7 +2742,7 @@ export class Mover {
           const back = this._roundBackward(moved, { x: aimX, y: aimY });
           this._submitMove(s, c, () => c.moveTo(back.x, back.y, speed, c.room?.id ?? 0));
           if (process.env.M59_MOVE_DEBUG !== '0')
-            try { const _sd = this._serverPos && this._lastDeclX != null ? Math.hypot(this._serverPos.x - this._lastDeclX, this._serverPos.y - this._lastDeclY) : -1; console.error(`[movedbg] ${this.logName} vel-tick declare=(${Math.round(moved.x)},${Math.round(moved.y)}) ground=${moved.moved.toFixed(0)} stopped=${moved.stopped ?? 'clear'} run=${runNow} stride=${strideNow} idx=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} me=(${me.col},${me.row}) srv=(${curCol},${curRow}) srvXY=(${Math.round(this._serverPos?.x ?? -1)},${Math.round(this._serverPos?.y ?? -1)}) srvDelta=${_sd.toFixed(0)} prevDecl=(${Math.round(this._lastDeclX ?? -1)},${Math.round(this._lastDeclY ?? -1)})`); } catch {}
+            try { console.error(`[movedbg] ${this.logName} vel-tick declare=(${Math.round(moved.x)},${Math.round(moved.y)}) ground=${moved.moved.toFixed(0)} stopped=${moved.stopped ?? 'clear'} run=${runNow} stride=${strideNow} idx=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} me=(${me.col},${me.row}) srv=(${curCol},${curRow}) srvXY=(${Math.round(this._serverPos?.x ?? -1)},${Math.round(this._serverPos?.y ?? -1)}) prevDecl=(${Math.round(this._lastDeclX ?? -1)},${Math.round(this._lastDeclY ?? -1)})`); } catch {}
           this._lastDeclX = back.x; this._lastDeclY = back.y;
           // THE SERVER'S RAW POSITION, FOR THE ONE MEASUREMENT THAT SETTLES THE MOVEMENT MODEL.
           // Every claim in this file about how far the server moves per accepted packet has been
