@@ -943,10 +943,12 @@ export class M59Client {
           if (!p) return;
           // TTL: discard a position that is 200ms stale.
           if (Date.now() - p.at > USER_MOVE_MIN_INTERVAL_MS + 200) return;
-          this._lastUserMoveAt = Date.now();
-          this.send(BP.REQ_MOVE, u16b(p.y), u16b(p.x), u8b(p.speed), u32(objId(p.room || 0)));
+          // Re-enter moveTo: the window has closed (the timer waited
+          // USER_MOVE_MIN_INTERVAL_MS - elapsed), so the throttle passes.
+          // This goes through the full send tail (recordSeen, trail,
+          // _firstUserMoveAt) rather than a raw send.
+          this.moveTo(p.x, p.y, p.speed, p.room);
         }, delay);
-        this._pendingFlushTimer.unref?.();
       }
       return false;
     }
