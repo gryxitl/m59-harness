@@ -852,10 +852,18 @@ export const INTENTS = {
     // within 1.5 squares of it, and no room change ⇒ mark it dead.
     // The `near` requirement distinguishes "we never got there" (wants
     // a repath) from "it didn't work" (wants a blacklist).
-    if (_att.count >= 30 && (_att.near ?? 0) >= 3 && _att.roomNum === _curRoomNum && !isDead(portal)) {
-      dead.push({ col: portal.col, row: portal.row, at: now3 });
-      ctx.session._deadPortals = dead;
-      delete _attempts[_pid];
+    // DITHERING VERDICT: the mover's fan is active (dithering detected), which
+    // means the character is oscillating between two squares and will never
+    // reach the portal. Mark the portal dead immediately rather than waiting
+    // for the 30-tick counter, so the decider can try a different portal.
+    const _dithering = ctx.session?._mover?._fanIndex != null;
+    if ((_att.count >= 30 && (_att.near ?? 0) >= 3 && _att.roomNum === _curRoomNum) ||
+        (_dithering && _att.count >= 10 && _att.roomNum === _curRoomNum)) {
+      if (!isDead(portal)) {
+        dead.push({ col: portal.col, row: portal.row, at: now3 });
+        ctx.session._deadPortals = dead;
+        delete _attempts[_pid];
+      }
     }
     // Walk toward the portal (one step per SEND LAW via the actuator —
     // act.step defaults to 250ms gaps (4/s) which trips speedhack detection
