@@ -19,53 +19,40 @@
 // quote depends on whether you are asking 'how much ground does a packet buy' or 'how much does
 // the fleet appear to progress', and picking the flattering one without saying so is the error
 // this file exists to avoid.
-import { readFileSync } from 'node:fs';
+import { createReadStream } from 'node:fs';
+import { createInterface } from 'node:readline';
 
 const file = process.argv[2] ?? 'substrate/keeper-t3.log';
 const KOD = 64;
 const CLIENT_SQUARES_PER_PACKET = 2.5;   // MOVEUNITS per MOVE_DELAY, reported per MOVE_INTERVAL
 const TRANSITION_CUTOFF = 600;           // units; above this it is a room change, not a stride
 
-let txt;
-try { txt = readFileSync(file, 'utf8'); }
-catch (e) { console.error(`cannot read ${file}: ${e.message}`); process.exit(1); }
-
-// THE CURRENT SESSION ONLY. A keeper log spans every restart it has survived, and the mover's
-// send counter restarts at 1 with each one. Measuring across sessions mixes code versions — which
-// is precisely how a rate figure came to be quoted against a baseline produced by different
-// software, and how '634 packets' was reported for a session that had sent 40.
-const _starts = [...txt.matchAll(/\[keeper\] \S+ starting on port/g)];
-if (_starts.length > 1) {
-  const before = txt.length;
-  txt = txt.slice(_starts[_starts.length - 1].index);
-  console.log(`(window: the current session only — ${_starts.length} sessions in the file, ${before - txt.length} bytes of earlier code excluded)`);
-}
-
-// `at=` IS THE POSITION THAT WENT ON THE WIRE, and it is the only one that can measure ground.
-// This file first read `from=`, which is the mover's SIM position: the sim jumps to wherever the
-// last declaration aimed, so consecutive `from` values differ by roughly the STRIDE rather than by
-// the ground covered, and the figure came out at 2.24 squares per packet for a character that was
-// standing still. Older logs have no `at=` at all, in which case there is nothing to measure and
-// this says so rather than falling back to the wrong field and printing a plausible number.
+// STREAM: logs now exceed the V8 string limit (~512 MB). Read line by line.
 const sends = [];
-for (const m of txt.matchAll(/\[move-sent\] n=(\d+) at=([-\d.]+),([-\d.]+) aim=([-\d.]+),([-\d.]+) from=([-\d.]+),([-\d.]+)/g)) {
-  const [, n, tx, ty, ax, ay, fx, fy] = m;
-  sends.push({ n: Number(n), at: [Number(tx), Number(ty)], aim: [Number(ax), Number(ay)], from: [Number(fx), Number(fy)] });
+let _lastStartLine = 0;
+let _totalStarts = 0;
+const _re = /\[move-sent\] n=(\d+) site=(\S+) at=([-\d.]+),([-\d.]+) aim=([-\d.]+),([-\d.]+) from=([-\d.]+),([-\d.]+)/;
+const _startRe = /\[keeper\] \S+ starting on port/;
+const rl = createInterface({ input: createReadStream(file, { encoding: 'utf8' }) });
+for await (const line of rl) {
+  if (_startRe.test(line)) { _lastStartLine = sends.length; _totalStarts++; }
+  const m = line.match(_re);
+  if (m) {
+    sends.push({ n: Number(m[1]), site: m[2], at: [Number(m[3]), Number(m[4])], aim: [Number(m[5]), Number(m[6])], from: [Number(m[7]), Number(m[8])] });
+  }
 }
-if (!sends.length && /\[move-sent\]/.test(txt)) {
-  console.log(file + ': [move-sent] lines exist but carry no at= field.');
-  console.log('That field is the declared position, and it is the only one that measures ground.');
+if (_totalStarts > 1) {
+  const kept = sends.length - _lastStartLine;
+  sends.length = _lastStartLine;
+  console.log(`(window: the current session only — ${_totalStarts} sessions in the file, ${kept} sends from earlier sessions excluded)`);
+}
+
+if (!sends.length) {
+  console.log(`${file}: no [move-sent] lines with at= field.`);
   console.log('Re-run against a log written by the current mover. Do not substitute the sim');
   console.log('position for it: a rate computed from the sim is a rate of the estimate, not of');
   console.log('the character, which is how 2.24 squares per packet got reported for a mover');
   console.log('that was not moving at all.');
-  process.exit(0);
-}
-if (!sends.length) {
-  console.log(`${file}: no [move-sent] lines.`);
-  console.log('This instrument postdates the log text it replaces. The historical figure of');
-  console.log('"244,021 sends" is a count of the STRING `moveTo sent`, which is one of nine send');
-  console.log('sites and nothing else — it is not a packet count. Do not compare against it.');
   process.exit(0);
 }
 
@@ -82,11 +69,18 @@ console.log(`  packets            ${sends.length}`);
 console.log(`  room transitions   ${transitions.length} (over ${TRANSITION_CUTOFF} units — 'from' is in the old room)`);
 console.log(`  STRIDE (declared position vs where we were): median ${medAll.toFixed(0)} units = ${(medAll / KOD).toFixed(2)} squares = ${(medAll / KOD / CLIENT_SQUARES_PER_PACKET).toFixed(2)}x the client's 2.5-square stride`);
 console.log(`  STRIDE, walking only    ${medWalk.toFixed(0)} units = ${(medWalk / KOD).toFixed(2)} squares = ${(medWalk / KOD / CLIENT_SQUARES_PER_PACKET).toFixed(2)}x the client's stride`);
-// THE HONEST LABEL. Stride is what a packet OFFERS; ground is what the character GOT, and the
-// log does not carry the server's position finely enough to compute the second. Reporting a
-// stride under the name 'squares per packet' is what made every figure tonight read well while the
-// fleet stood still, so the quantity gets its real name and the missing one gets named too.
 console.log(`  packets per stride: ${(KOD / (medWalk || 1)).toFixed(2)}  (stride, NOT ground — see above)`);
+console.log(`  ground per packet is NOT derivable from this log: the server position is`);
+console.log(`  logged to square precision only. To measure ground, read the mover's own`);
+console.log(`  [move-sent] at= against a position source that is not the sim.`);
+// Per-site breakdown
+const bySite = {};
+for (const s of sends) { (bySite[s.site] ??= []).push(Math.hypot(s.aim[0] - s.from[0], s.aim[1] - s.from[1])); }
+for (const [site, ds] of Object.entries(bySite).sort((a, b) => b[1].length - a[1].length)) {
+  const sorted = [...ds].sort((a, b) => a - b);
+  const m2 = sorted.length ? sorted[Math.floor(sorted.length / 2)] : NaN;
+  console.log(`  site=${site}: ${ds.length} packets, median stride ${m2.toFixed(0)}u = ${(m2 / KOD).toFixed(2)} sq`);
+}
 console.log(`  ground per packet is NOT derivable from this log: the server position is`);
 console.log(`  logged to square precision only. To measure ground, read the mover's own`);
 console.log(`  [move-sent] at= against a position source that is not the sim.`);
@@ -102,6 +96,7 @@ for (let i = 1; i < sends.length; i++) {
   cur = same ? cur + 1 : 1;
   runs.push(cur);
 }
-const longest = runs.length ? Math.max(...runs) : 0;
+let longest = 0;
+for (const r of runs) if (r > longest) longest = r;
 console.log(`  longest run declaring an identical aim: ${longest} packets`);
 console.log(`    (the defect this work started from was 790 of 879 sends on one identical aim)`);
