@@ -84,16 +84,23 @@ export function huntRoomsAtOrBelow(level, ceiling, minLevel) {
   for (const [num, entries] of Object.entries(spawns.rooms ?? {})) {
     const roomNum = parseInt(num);
     if (DANGEROUS_SPIDER_ROOMS.has(roomNum)) continue;
-    // Collect all qualifying entries and take the one closest to the
-    // character's level (a room can have multiple huntable entries at
-    // different levels; the closest is the safest target).
+    // Collect all qualifying entries. Prefer prey STRICTLY ABOVE the character's
+    // level (AdvancementCheck rolls only when victim level > own level, so prey
+    // at or below pays nothing). Among above-level prey, pick the highest (most
+    // XP). If no above-level prey exists, fall back to closest-to-own-level.
     let best = null;
+    let bestAbove = null;
     for (const e of entries) {
       if (e.huntable && e.level != null && e.level <= maxLevel && e.level >= min) {
-        if (!best || Math.abs(e.level - level) < Math.abs(best.level - level)) best = e;
+        if (e.level > level) {
+          if (!bestAbove || e.level > bestAbove.level) bestAbove = e;
+        } else if (!best || Math.abs(e.level - level) < Math.abs(best.level - level)) {
+          best = e;
+        }
       }
     }
-    if (best) out.push({ room: roomNum, creature: best.creature, level: best.level });
+    const chosen = bestAbove ?? best;
+    if (chosen) out.push({ room: roomNum, creature: chosen.creature, level: chosen.level });
   }
   return out;
 }
