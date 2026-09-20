@@ -446,10 +446,9 @@ async function feed(row) {
     // The invariant. An errand may never leave a character unattended, whatever went
     // wrong — this file exists partly because three other errands did exactly that.
     if (!DRY) {
-      const back = await call('autopilot', {
-        agent: row.agent, action: 'start', mode: was?.mode || 'farm',
-        hunt: was?.policy?.hunt, assigned_room: was?.policy?.assignedRoom ?? null,
-      }).catch(() => null);
+      const args = { agent: row.agent, action: 'start', mode: was?.mode || 'farm', hunt: was?.policy?.hunt };
+      if (was?.policy?.assignedRoom != null) args.assigned_room = was.policy.assignedRoom;
+      const back = await call('autopilot', args).catch(() => null);
       if (!back) console.log(`  ${who}: COULD NOT RESTART ITS KEEPER`);
     }
   }

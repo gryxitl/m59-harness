@@ -955,12 +955,14 @@ async function outfit(row) {
     // Put the orders back exactly as they were, including the strategy and the room
     // assignment -- an errand must not become a re-tasking.
     if (was?.running) {
-      await call('autopilot', {
+      const args = {
         agent: row.agent, action: 'start', mode: was.mode, hunt: was.policy?.hunt,
         strategy: was.policy?.strategy, flee_below: was.policy?.fleeBelow,
         rest_below: was.policy?.restBelow, max_carry: was.policy?.maxCarry,
-        roam: was.policy?.roam, assigned_room: was.policy?.assignedRoom ?? null,
-      }).catch(() => {});
+        roam: was.policy?.roam,
+      };
+      if (was.policy?.assignedRoom != null) args.assigned_room = was.policy.assignedRoom;
+      await call('autopilot', args).catch(() => {});
     }
   }
 }
