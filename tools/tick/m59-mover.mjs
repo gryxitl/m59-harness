@@ -1730,12 +1730,18 @@ export class Mover {
           ? Math.hypot(myProtoX - _fanFromProto.x, myProtoY - _fanFromProto.y)
           : 0;
         const _progressClear = _fanProgress > KOD_FINENESS * 2;
-        if ((aimClear || _progressClear) && headingWalkable && fanHasHistory) {
+        // TIMEOUT RELEASE: if the fan has been active for > 5s without
+        // progress, release it. The character is dithering (net 0), and
+        // the fan is not helping. Release so the character can try a
+        // new approach (re-plan, blink, etc.).
+        const _fanAge = this._fanFiredAt ? Date.now() - this._fanFiredAt : 0;
+        const _timeoutClear = _fanAge > 5000;
+        if ((aimClear || _progressClear || _timeoutClear) && headingWalkable && fanHasHistory) {
           this._fanIndex = null;
           this._fanTarget = null;
           this._fanFrom = null;
           this._fanSentAt = null;
-          try { _trace(`[movedbg] fan released: ${_progressClear ? 'progress' : 'clear'} (${Math.round(_fanProgress / KOD_FINENESS)} sq from fan start)`); } catch {}
+          try { _trace(`[movedbg] fan released: ${_timeoutClear ? 'timeout' : _progressClear ? 'progress' : 'clear'} (${Math.round(_fanProgress / KOD_FINENESS)} sq, age=${Math.round(_fanAge)}ms)`); } catch {}
         }
       }
     }
