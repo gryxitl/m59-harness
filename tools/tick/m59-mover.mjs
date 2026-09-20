@@ -1730,18 +1730,12 @@ export class Mover {
           ? Math.hypot(myProtoX - _fanFromProto.x, myProtoY - _fanFromProto.y)
           : 0;
         const _progressClear = _fanProgress > KOD_FINENESS * 2;
-        // TIMEOUT RELEASE: if the fan has been active for > 5s without
-        // progress, release it. The character is dithering (net 0), and
-        // the fan is not helping. Release so the character can try a
-        // new approach (re-plan, blink, etc.).
-        const _fanAge = this._fanFiredAt ? Date.now() - this._fanFiredAt : 0;
-        const _timeoutClear = _fanAge > 5000;
-        if ((aimClear || _progressClear || _timeoutClear) && headingWalkable && fanHasHistory) {
+        if ((aimClear || _progressClear) && headingWalkable && fanHasHistory) {
           this._fanIndex = null;
           this._fanTarget = null;
           this._fanFrom = null;
           this._fanSentAt = null;
-          try { _trace(`[movedbg] fan released: ${_timeoutClear ? 'timeout' : _progressClear ? 'progress' : 'clear'} (${Math.round(_fanProgress / KOD_FINENESS)} sq, age=${Math.round(_fanAge)}ms)`); } catch {}
+          try { _trace(`[movedbg] fan released: ${_progressClear ? 'progress' : 'clear'} (${Math.round(_fanProgress / KOD_FINENESS)} sq from fan start)`); } catch {}
         }
       }
     }
@@ -2765,19 +2759,14 @@ export class Mover {
           // instinct as move.c's `x = last_x` at a coarser level: when in doubt, the position
           // you are allowed to be at is the one you were just at.
           const back = this._roundBackward(moved, { x: aimX, y: aimY });
-          this._submitMove(s, c, () => c.moveTo(back.x, back.y, speed, c.room?.id ?? 0));
+          const _sent = this._submitMove(s, c, () => c.moveTo(back.x, back.y, speed, c.room?.id ?? 0));
           if (process.env.M59_MOVE_DEBUG !== '0')
             try { console.error(`[movedbg] ${this.logName} vel-tick declare=(${Math.round(moved.x)},${Math.round(moved.y)}) ground=${moved.moved.toFixed(0)} stopped=${moved.stopped ?? 'clear'} run=${runNow} stride=${strideNow} idx=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} me=(${me.col},${me.row}) srv=(${curCol},${curRow}) srvXY=(${Math.round(this._serverPos?.x ?? -1)},${Math.round(this._serverPos?.y ?? -1)}) prevDecl=(${Math.round(this._lastDeclX ?? -1)},${Math.round(this._lastDeclY ?? -1)})`); } catch {}
           this._lastDeclX = back.x; this._lastDeclY = back.y;
-          // THE SERVER'S RAW POSITION, FOR THE ONE MEASUREMENT THAT SETTLES THE MOVEMENT MODEL.
-          // Every claim in this file about how far the server moves per accepted packet has been
-          // an assumption, because the log only ever carried the server's position to SQUARE
-          // precision — and a 160-unit acceptance and a 64-unit step both land in a neighbouring
-          // square, so the two models were indistinguishable in the evidence. The whole
-          // step-vs-velocity argument has therefore been conducted without the fact that decides
-          // it. This records it.
           this._serverPos = this.session?._pose?.server ?? null;
-          this._recordSend(aimX, aimY, myProtoX, myProtoY, back.x, back.y, 'stride-declaration');
+          if (_sent) {
+            this._recordSend(aimX, aimY, myProtoX, myProtoY, back.x, back.y, 'stride-declaration');
+          }
           // SIM ADVANCE DIAGNOSTIC — read-only, prints what the Pose believes before and
           // after the report that is supposed to move it. Added because `me=(30,38)` was
           // logged on four consecutive sends while the declaration moved 320 units each
