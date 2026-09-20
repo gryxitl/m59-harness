@@ -82,20 +82,26 @@ Add a `heldRank` gate so patrol/recovery micro-walks don't overwrite the router'
 - `m59-decide-test.mjs`: 105 passed, 0 failed
 - Locomotion was never the problem: ~4.36 sq/s in clean windows, `cadence={under1s=0 minGap≈1000}` throughout
 
-### Root Cause: Errands Erasing assignedRoom
+### Root Cause: Autopilot Constructor Null Overriding Roster
 
-`m59-feed.mjs` and `m59-outfit.mjs` called `autopilot {action:'start', assigned_room: was?.policy?.assignedRoom ?? null}` in their `finally` blocks. When the roster's `assignedRoom` was null (already cleared), the null was written back via `rememberAutopilot`, making the cleared placement sticky forever.
+The `Autopilot` constructor (`m59-autopilot.mjs:1221`) defaults `assignedRoom` to `null`. When the `autopilot` tool handler spread `p.policy` into `rememberAutopilot`, the constructor's `null` overrode the roster value, erasing placement on every start call.
 
-### Fix (e37b624)
-1. `rememberAutopilot` now merges the new policy over the previous instead of replacing it wholesale
-2. Errands only pass `assigned_room` when non-null
+The `rememberAutopilot` merge (61ad36a) did NOT prevent this: `config.policy` carried the constructor's `null`, and `{...prevPolicy, ...config.policy}` let the `null` win.
+
+### Fix (22e3298)
+1. `rememberAutopilot` merges the new policy over the previous (absent keys preserved)
+2. The `:7314` seed filters out null-valued keys from `p.policy` unless the caller explicitly set them
+3. An explicit `assigned_room: null` still clears; the constructor's `null` does not
 
 ### Confirmed Working
-- `assignedRoom` values stable after 3+ min (t1=534, t2=535, t3=575, t5=603)
+- `assignedRoom` values stable: t1=534, t2=535, t3=575, t5=603
 - Kills resumed: 00:53:49 and 01:03:35 (baby spider, West Merchant Way)
 - Movement healthy: ground=1.40 sq/s, path non-null, stuck=0
+- Two consecutive curl calls with `{mode:'tick', hunt:'giant rat', useGOAP:true}` leave 603 intact
 
 ### Open
+- t4 (Lee) has no `assignedRoom` — never had one; will hunt wherever it stands
 - `broker-default.log` is truncated on every broker start; crash stacks exist only in `/tmp/keep/`
 - 2 cliff-guard test failures in `m59-mover-test.mjs` (pre-existing)
 - `m59-hoptest.mjs` has never been run
+- `unconfirmed=29` / `drops=108` climbing at last heartbeat (envelope-refusal pattern)
