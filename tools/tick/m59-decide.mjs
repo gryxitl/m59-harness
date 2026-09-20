@@ -2862,6 +2862,13 @@ function fleeExits(session, ws) {
                   if (_cb == null) return; // vitals not ready
                   const { charLevel, band: _band, ceiling: _ceiling } = _cb;
                   const alt = nearestHuntRoom(roomNum, charLevel, _ceiling, charLevel + 1, roomNum);
+                  if (!alt) {
+                    const _hts2 = session?._huntTriedSet;
+                    const _avoidSize = _hts2 ? _hts2.size : 0;
+                    onDecision?.({ ticks, goal: 'hunt', action: null,
+                      what: `no target 30s in room ${roomNum}; nearestHuntRoom=null (avoid=${_avoidSize}, cb=${_cb ? 'ok' : 'null'})`, sent: false });
+                    return;
+                  }
                   if (alt && alt.room !== roomNum) {
                     session._huntWaitStart = now;
                     if (router && router.dest == null) {
