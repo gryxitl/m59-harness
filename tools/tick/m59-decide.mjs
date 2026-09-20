@@ -2745,7 +2745,7 @@ function fleeExits(session, ws) {
             // The room may hold nothing in band right now, but re-routing to a
             // farther room is a policy loop, not a movement failure. Hold the
             // room for the cooldown duration and let the spawn table reset.
-            session._huntTried = { room: resolved, at: Date.now() };
+            if (session._huntTried?.room !== resolved) session._huntTried = { room: resolved, at: Date.now() };
             // Clear the travel-time hold so the next re-pick (after cooldown)
             // is free. A room that empties later must be abandonable.
             if (session?._huntDestHold) delete session._huntDestHold;
