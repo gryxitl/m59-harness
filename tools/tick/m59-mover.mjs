@@ -1720,12 +1720,22 @@ export class Mover {
         // no counter read as 'no history' is a mover that never releases, which is the failure this
         // whole goal is about. Comparing against the tick's start time needs no cooperation.
         const fanHasHistory = this._fanFiredAt == null || this._fanFiredAt < this._tickStartedAt;
-        if (aimClear && headingWalkable && fanHasHistory) {
+        // PROGRESS RELEASE: the fan exists to escape a corner. If the character
+        // has moved > 2 squares from the fan's start position, the corner was
+        // rounded even if the direct path to the aim is still blocked (narrow
+        // rooms like Sweet Grass Prairies where the aim is across a wall).
+        const _fanFromProto = this._fanFrom
+          ? { x: this._fanFrom.x, y: this._fanFrom.y } : null;
+        const _fanProgress = _fanFromProto
+          ? Math.hypot(myProtoX - _fanFromProto.x, myProtoY - _fanFromProto.y)
+          : 0;
+        const _progressClear = _fanProgress > KOD_FINENESS * 2;
+        if ((aimClear || _progressClear) && headingWalkable && fanHasHistory) {
           this._fanIndex = null;
           this._fanTarget = null;
           this._fanFrom = null;
           this._fanSentAt = null;
-          try { _trace(`[movedbg] fan released: direct path to aim clear (${Math.round(rel.moved)} units clear)`); } catch {}
+          try { _trace(`[movedbg] fan released: ${_progressClear ? 'progress' : 'clear'} (${Math.round(_fanProgress / KOD_FINENESS)} sq from fan start)`); } catch {}
         }
       }
     }
