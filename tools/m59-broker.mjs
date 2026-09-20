@@ -1410,9 +1410,10 @@ function rememberAutopilot(agent, config) {
   // ONLY SAVE IF THE POLICY ACTUALLY CHANGED. This prevents the log spam and the
   // infinite loop that was preventing the keepers from starting.
   const prevPolicy = e.autopilot?.policy ?? {};
-  const changed = JSON.stringify(prevPolicy) !== JSON.stringify(config.policy);
+  const mergedPolicy = { ...prevPolicy, ...config.policy };
+  const changed = JSON.stringify(prevPolicy) !== JSON.stringify(mergedPolicy);
   if (changed) {
-    e.autopilot = config;
+    e.autopilot = { ...config, policy: mergedPolicy };
     saveFleetState();
   }
 }
