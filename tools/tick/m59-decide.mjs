@@ -2761,7 +2761,8 @@ function fleeExits(session, ws) {
               for (const [r, t] of _hts) { if (t < _oldestT) { _oldest = r; _oldestT = t; } }
               if (_oldest != null) _hts.delete(_oldest);
             }
-            _hts.set(resolved, _now);
+            const _existing = _hts.get(resolved);
+            if (_existing == null || _now - _existing > 300000) _hts.set(resolved, _now);
             // Clear the travel-time hold so the next re-pick (after cooldown)
             // is free. A room that empties later must be abandonable.
             if (session?._huntDestHold) delete session._huntDestHold;
