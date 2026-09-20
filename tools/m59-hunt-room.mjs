@@ -112,7 +112,7 @@ export function huntRoomsAtOrBelow(level, ceiling, minLevel) {
  * @param {number} level - the character's level
  * @returns {{room: number, creature: string, level: number, hops: number, path: number[]}|null}
  */
-export function nearestHuntRoom(fromRoom, level, ceiling, minLevel, excludeRoom = null) {
+export function nearestHuntRoom(fromRoom, level, ceiling, minLevel, excludeRoom = null, avoidRooms = null) {
   // Convert objId to map num if needed.
   const mapNum = objIdToNum(fromRoom) ?? fromRoom;
   let candidates = huntRoomsAtOrBelow(level, ceiling, minLevel);
@@ -125,6 +125,17 @@ export function nearestHuntRoom(fromRoom, level, ceiling, minLevel, excludeRoom 
     candidates = huntRoomsAtOrBelow(level, ceiling, 1);
   }
   if (!candidates.length) return null;
+
+  // Filter out avoidRooms BEFORE the slice. The toCheck slice is the first
+  // 3-5 candidates from an Object.entries-ordered list; excluding inside the
+  // loop strands qualifying rooms outside the top slice. If the filter
+  // empties the list, return null (stay put) BEFORE the minLevel=1 fallback
+  // which would aim a low-level character at over-ceiling mobs.
+  if (avoidRooms && avoidRooms.length > 0) {
+    const _avoid = new Set(avoidRooms);
+    candidates = candidates.filter(c => !_avoid.has(c.room));
+    if (!candidates.length) return null;
+  }
 
   const map = loadMap();
   if (!map) return null;

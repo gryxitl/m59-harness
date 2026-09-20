@@ -2599,8 +2599,11 @@ function fleeExits(session, ws) {
               }
             }
             if (!hunt) {
-              const _triedExcl = session?._huntTried && Date.now() - session._huntTried.at < 300000 ? session._huntTried.room : undefined;
-              hunt = nearestHuntRoom(resolved, charLevel, ceiling, charLevel + 1, session._pokeRelocate ? roomNum : _triedExcl);
+              const _hts = session?._huntTriedSet;
+              const _avoid = _hts
+                ? [..._hts.keys()].filter(r => r !== resolved && _hts.get(r) != null && Date.now() - _hts.get(r) < 300000)
+                : null;
+              hunt = nearestHuntRoom(resolved, charLevel, ceiling, charLevel + 1, session._pokeRelocate ? roomNum : null, _avoid && _avoid.length ? _avoid : null);
               if (session._pokeRelocate) session._pokeRelocate = false;
               // Stamp the re-pick floor when a NEW hunt room is picked (the
               // nearestHuntRoom path and the assigned fallback path, not the held
@@ -2740,12 +2743,25 @@ function fleeExits(session, ws) {
           // in a random direction to break the stuck state and increase the
           // chance of a target spawning.
           if (hunt && hunt.room === resolved) {
-            // Arrived at the hunt room: stamp the attempt so the 30s relocate
-            // and nearestHuntRoom cannot immediately re-pick a different room.
-            // The room may hold nothing in band right now, but re-routing to a
-            // farther room is a policy loop, not a movement failure. Hold the
-            // room for the cooldown duration and let the spawn table reset.
-            if (session._huntTried?.room !== resolved) session._huntTried = { room: resolved, at: Date.now() };
+            // Arrived at the hunt room: record the attempt in a bounded set
+            // (max 10 rooms, 5-min TTL per room) so the 30s relocate and
+            // nearestHuntRoom cannot immediately re-pick a recently-tried
+            // room. A single-room stamp can't break a 3-room cycle
+            // (534→535→545→535): arriving at 535 overwrites the 534 record,
+            // and when the cycle returns to 534 nothing suppresses it.
+            // The set cools down rooms against the cycle.
+            if (!session._huntTriedSet) session._huntTriedSet = new Map();
+            const _hts = session._huntTriedSet;
+            // Evict expired entries (5-min TTL).
+            const _now = Date.now();
+            for (const [r, t] of _hts) { if (_now - t > 300000) _hts.delete(r); }
+            // Evict oldest if over 10 entries.
+            if (_hts.size > 10) {
+              let _oldest = null, _oldestT = Infinity;
+              for (const [r, t] of _hts) { if (t < _oldestT) { _oldest = r; _oldestT = t; } }
+              if (_oldest != null) _hts.delete(_oldest);
+            }
+            _hts.set(resolved, _now);
             // Clear the travel-time hold so the next re-pick (after cooldown)
             // is free. A room that empties later must be abandonable.
             if (session?._huntDestHold) delete session._huntDestHold;
@@ -2830,17 +2846,16 @@ function fleeExits(session, ws) {
               session._huntWaitStart = now; // reset the timer
               const roomNum = resolveRoomNum(frame?.room ?? {}, session?.world?.map ?? null) ?? frame?.room?.num ?? frame?.room?.id ?? null;
               if (roomNum != null) {
-                // HUNT ROOM STICKY: if the current room is the _huntTried room
-                // (stamped on arrival, not cleared) and the 5-minute cooldown
-                // hasn't elapsed, do not re-target. The room may hold nothing
-                // in band right now, but re-routing to a farther room is a
-                // policy loop, not a movement failure. Hold the room and let
-                // the spawn table reset.
-                const _tried = session?._huntTried;
-                if (_tried && _tried.room === roomNum && Date.now() - _tried.at < 300000) {
+                // HUNT ROOM STICKY: if the current room is in the _huntTriedSet
+                // (bounded set, 5-min TTL per room) and the cooldown hasn't
+                // elapsed, do not re-target. A single-room stamp can't break
+                // a 3-room cycle; the set cools down rooms against it.
+                const _hts = session?._huntTriedSet;
+                const _triedAt = _hts?.get(roomNum);
+                if (_triedAt != null && Date.now() - _triedAt < 300000) {
                   // Sticky: do not re-target. The 30s timer is already reset.
                   onDecision?.({ ticks, goal: 'hunt', action: null,
-                    what: `hunt room sticky (room ${roomNum}, ${Math.round((Date.now() - _tried.at) / 1000)}s since arrival)`, sent: false });
+                    what: `hunt room sticky (room ${roomNum}, ${Math.round((Date.now() - _triedAt) / 1000)}s since arrival)`, sent: false });
                 } else {
                   const _cb = characterBand(client, session?.policy ?? policy, ws.armed === true);
                   if (_cb == null) return; // vitals not ready
