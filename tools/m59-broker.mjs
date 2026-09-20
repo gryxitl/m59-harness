@@ -1410,9 +1410,10 @@ function rememberAutopilot(agent, config) {
   // ONLY SAVE IF THE POLICY ACTUALLY CHANGED. This prevents the log spam and the
   // infinite loop that was preventing the keepers from starting.
   const prevPolicy = e.autopilot?.policy ?? {};
-  const changed = JSON.stringify(prevPolicy) !== JSON.stringify(config.policy);
+  const mergedPolicy = { ...prevPolicy, ...config.policy };
+  const changed = JSON.stringify(prevPolicy) !== JSON.stringify(mergedPolicy);
   if (changed) {
-    e.autopilot = config;
+    e.autopilot = { ...config, policy: mergedPolicy };
     saveFleetState();
   }
 }
@@ -7310,7 +7311,13 @@ const TOOLS = [
         return { started: false, reason: 'farm mode needs something to hunt — pass hunt with a creature name' };
       // Persist the instruction, not the running object: on the far side of a
       // restart the keeper is rebuilt from these fields alone.
-      rememberAutopilot(a.agent, { mode: p.mode, policy: { ...(fleetState.get(a.agent)?.autopilot?.policy ?? {}), ...p.policy } });
+      // Seed from the roster so keys the caller did not set (like assignedRoom,
+      // which the Autopilot constructor defaults to null) are preserved.
+      const _explicit = new Set(Object.keys(a).filter(k => k !== 'agent' && k !== 'action'));
+      const _filtered = Object.fromEntries(
+        Object.entries(p.policy).filter(([k, v]) => v !== null || _explicit.has(k.replace(/([A-Z])/g, '_$1').toLowerCase()))
+      );
+      rememberAutopilot(a.agent, { mode: p.mode, policy: { ...(fleetState.get(a.agent)?.autopilot?.policy ?? {}), ..._filtered } });
       const started = p.start();
       return retired ? { ...started, retired } : started;
     },
