@@ -10568,7 +10568,7 @@ const TOOLS = [
           const p = autopilotIfAny(o.agent);
           if (!p) continue;
           p.policy.assignedRoom = o.room;
-          rememberAutopilot(o.agent, { mode: p.mode, policy: { ...p.policy } });
+          rememberAutopilot(o.agent, { mode: p.mode, policy: { ...(fleetState.get(o.agent)?.autopilot?.policy ?? {}), ...p.policy } });
           if (a.travel && o.moves) {
             const s = session(o.agent);
             // `travelJob` rather than a hand-rolled `startJob`: this one did claim the
