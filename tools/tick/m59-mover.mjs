@@ -2600,6 +2600,10 @@ export class Mover {
     const rejects = { fine: 0, embedded: 0, edge: 0, void: 0 };
     const rejectLog = [];
     for (const [nc, nr] of ordered1) {
+      // Skip edges the server has refused (banned by _noteRefusedStep).
+      const _refKey = `${myRow},${myCol}>${nr},${nc}`;
+      const _refVal = this._refusedSteps?.get(_refKey);
+      if (_refVal && _refVal.until > Date.now()) { continue; }
       // The FINE grid is the authoritative collision model. When the two
       // grids disagree (fine says walkable, coarse says not), trust the
       // FINE grid — the coarse grid is a 1-byte-per-square projection of
