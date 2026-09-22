@@ -3278,7 +3278,7 @@ export class Mover {
     // it has not yet turned.
     if (far > this.pathIdx) this.pathIdx = far;
     if (process.env.M59_MOVE_DEBUG !== '0')
-      try { const _ad = Math.hypot(aim.x - fromX, aim.y - fromY); console.error(`[route-dbg] ${this.logName} far=${far} aimDist=${_ad.toFixed(0)} budget=${budget} pathLen=${this.path.length}`); } catch {}
+      try { const _ad = Math.hypot(aim.x - fromX, aim.y - fromY); console.error(`[route-dbg] ${this.logName} far=${far} aimDist=${_ad.toFixed(0)} budget=${budget} pathLen=${this.path.length} pos=${far + 1 >= this.path.length ? 'end' : 'mid'}`); } catch {}
     return aim;
   }
 
