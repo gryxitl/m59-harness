@@ -2729,13 +2729,14 @@ export class Mover {
       // outrun the clock and trip the speedhack counter (user.kod: +1 per packet, -1 per
       // second, threshold 2).
       const speed = runNow ? 36 : 18;
+      const _dt = Math.min(MOVE_INTERVAL_MS, Math.max(100, Date.now() - this._lastReportAt));
       const moved = this._integrateToward(geo, myProtoX, myProtoY, aimX, aimY, strideNow, {
         // move.c:266-268. dt is the elapsed time since the last report, capped at one
         // MOVE_INTERVAL so a stalled tick cannot buy a longer stride than a second of walking
         // is worth. Without the cap, a 10s stall would integrate 10 seconds of movement and
         // declare a teleport — legal by the letter of the trace, and exactly the sort of
         // position the server would rubber-band.
-        dt: Math.min(MOVE_INTERVAL_MS, Math.max(100, Date.now() - this._lastReportAt)),
+        dt: _dt,
         numSteps: STEPS_PER_MOVE,
         // RADIUS-FREE, deliberately, and this is the one place the choice is load-bearing in
         // both directions. At the full player radius (32) the trace clips any wall within a
@@ -2769,7 +2770,7 @@ export class Mover {
           const back = this._roundBackward(moved, { x: aimX, y: aimY });
           const _sent = this._submitMove(s, c, () => c.moveTo(back.x, back.y, speed, c.room?.id ?? 0));
           if (process.env.M59_MOVE_DEBUG !== '0')
-            try { console.error(`[movedbg] ${this.logName} vel-tick declare=(${Math.round(moved.x)},${Math.round(moved.y)}) ground=${moved.moved.toFixed(0)} stopped=${moved.stopped ?? 'clear'} run=${runNow} stride=${strideNow} idx=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} dl=${this._routeDl?.toFixed(0) ?? 'null'} spare=${this._routeSpare?.toFixed(0) ?? 'null'} me=(${me.col},${me.row}) srv=(${curCol},${curRow}) srvXY=(${Math.round(this._serverPos?.x ?? -1)},${Math.round(this._serverPos?.y ?? -1)}) prevDecl=(${Math.round(this._lastDeclX ?? -1)},${Math.round(this._lastDeclY ?? -1)})`); } catch {}
+            try { console.error(`[movedbg] ${this.logName} vel-tick declare=(${Math.round(moved.x)},${Math.round(moved.y)}) ground=${moved.moved.toFixed(0)} dt=${_dt} stopped=${moved.stopped ?? 'clear'} run=${runNow} stride=${strideNow} idx=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} me=(${me.col},${me.row}) srv=(${curCol},${curRow}) srvXY=(${Math.round(this._serverPos?.x ?? -1)},${Math.round(this._serverPos?.y ?? -1)}) prevDecl=(${Math.round(this._lastDeclX ?? -1)},${Math.round(this._lastDeclY ?? -1)})`); } catch {}
           this._lastDeclX = back.x; this._lastDeclY = back.y;
           this._serverPos = this.session?._pose?.server ?? null;
           if (_sent) {
