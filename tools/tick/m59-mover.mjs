@@ -2769,7 +2769,7 @@ export class Mover {
           const back = this._roundBackward(moved, { x: aimX, y: aimY });
           const _sent = this._submitMove(s, c, () => c.moveTo(back.x, back.y, speed, c.room?.id ?? 0));
           if (process.env.M59_MOVE_DEBUG !== '0')
-            try { console.error(`[movedbg] ${this.logName} vel-tick declare=(${Math.round(moved.x)},${Math.round(moved.y)}) ground=${moved.moved.toFixed(0)} stopped=${moved.stopped ?? 'clear'} run=${runNow} stride=${strideNow} idx=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} me=(${me.col},${me.row}) srv=(${curCol},${curRow}) srvXY=(${Math.round(this._serverPos?.x ?? -1)},${Math.round(this._serverPos?.y ?? -1)}) prevDecl=(${Math.round(this._lastDeclX ?? -1)},${Math.round(this._lastDeclY ?? -1)})`); } catch {}
+            try { console.error(`[movedbg] ${this.logName} vel-tick declare=(${Math.round(moved.x)},${Math.round(moved.y)}) ground=${moved.moved.toFixed(0)} stopped=${moved.stopped ?? 'clear'} run=${runNow} stride=${strideNow} idx=${this.path ? this.pathIdx + '/' + this.path.length : 'null'} dl=${this._routeDl?.toFixed(0) ?? 'null'} spare=${this._routeSpare?.toFixed(0) ?? 'null'} me=(${me.col},${me.row}) srv=(${curCol},${curRow}) srvXY=(${Math.round(this._serverPos?.x ?? -1)},${Math.round(this._serverPos?.y ?? -1)}) prevDecl=(${Math.round(this._lastDeclX ?? -1)},${Math.round(this._lastDeclY ?? -1)})`); } catch {}
           this._lastDeclX = back.x; this._lastDeclY = back.y;
           this._serverPos = this.session?._pose?.server ?? null;
           if (_sent) {
@@ -3257,6 +3257,7 @@ export class Mover {
       const _goal = this.path[this.path.length - 1];
       const _to_goal = Math.hypot(_goal.x - fromX, _goal.y - fromY);
       const _spare = Math.min(budget, _to_goal) - _dl;
+      this._routeDl = _dl; this._routeSpare = _spare;
       if (_spare > 0 && geo?.traceFineMoveClient) {
         const _ex = last.x + (_dx / _dl) * _spare;
         const _ey = last.y + (_dy / _dl) * _spare;
