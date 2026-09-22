@@ -1451,7 +1451,7 @@ export class Mover {
       if (this.path && this.pathIdx < this.path.length) {
         const _v = s.client?.vitals?.()?.vigor?.value ?? 0;
         const _r = s?.policy?.allowRun !== false && _v >= RUN_VIGOR_FLOOR;
-        const _ahead = this._routeAhead(_g, myProtoX, myProtoY, _r ? RUN_STRIDE_PROTO : WALK_STRIDE_PROTO);
+        const _ahead = this._routeAhead(_g, myProtoX, myProtoY, _r ? RUN_STRIDE_PROTO : WALK_STRIDE_PROTO, 'aim');
         if (process.env.M59_SIM_TRACE === '1') {
           const _off = Math.hypot(myProtoX - srvX, myProtoY - srvY);
           if (_off > 64) console.error(`[pose-srv] ${this.logName} offset=${_off.toFixed(0)}u pose=(${myProtoX.toFixed(0)},${myProtoY.toFixed(0)}) srv=(${srvX.toFixed(0)},${srvY.toFixed(0)})`);
@@ -2231,7 +2231,7 @@ export class Mover {
       const _g = this.session?.world?.geometry;
       const _v0 = s.client?.vitals?.()?.vigor?.value ?? 0;
       const _run0 = s?.policy?.allowRun !== false && _v0 >= RUN_VIGOR_FLOOR;
-      ahead = this._routeAhead(_g, myProtoX, myProtoY, _run0 ? RUN_STRIDE_PROTO : WALK_STRIDE_PROTO);
+      ahead = this._routeAhead(_g, myProtoX, myProtoY, _run0 ? RUN_STRIDE_PROTO : WALK_STRIDE_PROTO, 'gate');
     }
     // RAW-MOVE DOOR PUSH: if we are CLOSE to the dest (within 4 squares) and the dest is
     // FINE-UNREACHABLE (a door alcove, a walled gap — the fine model says no path), do a
@@ -3128,7 +3128,7 @@ export class Mover {
   // the wall anyway — it is there for CORRECTNESS: halting a heading at a wall is safe and
   // still wrong, and it spends the tick grinding a corner at the escape fan's speed instead
   // of aiming at the waypoint the route actually goes through.
-  _routeAhead(geo, fromX, fromY, budget) {
+  _routeAhead(geo, fromX, fromY, budget, callsite) {
     if (!this.path || this.pathIdx >= this.path.length) return null;
     let far = -1;
     for (let i = this.pathIdx; i < this.path.length; i++) {
@@ -3278,7 +3278,7 @@ export class Mover {
     // it has not yet turned.
     if (far > this.pathIdx) this.pathIdx = far;
     if (process.env.M59_MOVE_DEBUG !== '0')
-      try { const _ad = Math.hypot(aim.x - fromX, aim.y - fromY); console.error(`[route-dbg] ${this.logName} far=${far} aimDist=${_ad.toFixed(0)} budget=${budget} pathLen=${this.path.length} pos=${far + 1 >= this.path.length ? 'end' : 'mid'}`); } catch {}
+      try { const _ad = Math.hypot(aim.x - fromX, aim.y - fromY); console.error(`[route-dbg] ${this.logName} cs=${callsite ?? '?'} far=${far} aimDist=${_ad.toFixed(0)} budget=${budget} pathLen=${this.path.length} pos=${far + 1 >= this.path.length ? 'end' : 'mid'}`); } catch {}
     return aim;
   }
 
