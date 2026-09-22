@@ -635,6 +635,7 @@ export class Mover {
     this._simY = null;
     this._simAt = 0;
     this._lastWpKey = null;
+    this._walledAim = null;
     try { this.session?._pose?.reset(); } catch {}
   }
 
@@ -1426,6 +1427,8 @@ export class Mover {
     const holdWp = this.path ? this.path[this.pathIdx] : null;
     let aimX = holdWp ? holdWp.x : this.destProto.x;
     let aimY = holdWp ? holdWp.y : this.destProto.y;
+    const _walledAim = this._walledAim;
+    this._walledAim = null;
     // LOOK DOWN THE ROUTE, HERE, ABOVE THE STRIDE CLAMP. Where this call sits is the whole
     // finding, so it is written out rather than implied:
     //
@@ -1454,6 +1457,7 @@ export class Mover {
           if (_off > 64) console.error(`[pose-srv] ${this.logName} offset=${_off.toFixed(0)}u pose=(${myProtoX.toFixed(0)},${myProtoY.toFixed(0)}) srv=(${srvX.toFixed(0)},${srvY.toFixed(0)})`);
         }
         if (_ahead) { aimX = _ahead.x; aimY = _ahead.y; }
+        if (_walledAim) { aimX = _walledAim.x; aimY = _walledAim.y; }
       }
     }
     // OFFICIAL STRIDE, NO HOLD GATE. The server never carries (each packet IS
@@ -2787,7 +2791,18 @@ export class Mover {
           // A stride stopped by a wall is not progress made, and stuckTicks is the counter
           // that decides whether the escape fan engages. Counting a walled stride as progress
           // is how a mover sits in a corner forever believing it is on its way.
-          if (moved.stopped) this.stuckTicks++; else this._noteServerStatic(-1, -1);
+          if (moved.stopped) {
+            this.stuckTicks++;
+            // Re-aim: rotate the heading 90° so the next tick slides along the wall
+            // instead of re-halting at the same spot. The heading is (aimX-myProtoX,
+            // aimY-myProtoY); the perpendicular is (-(aimY-myProtoY), aimX-myProtoX).
+            const hx = aimX - myProtoX, hy = aimY - myProtoY;
+            const hl = Math.hypot(hx, hy) || 1;
+            this._walledAim = { x: myProtoX + (-hy / hl) * strideNow, y: myProtoY + (hx / hl) * strideNow };
+          } else {
+            this._noteServerStatic(-1, -1);
+            this._walledAim = null;
+          }
         }
         return { state: 'moving', velocity: true, speed, stopped: moved.stopped };
       }
