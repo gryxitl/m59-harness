@@ -196,7 +196,7 @@ export function dithered(window, nowMs, winMs) {
   if (nowMs - first.t < winMs - 2000) return false;
   const last = window[window.length - 1];
   const net = Math.max(Math.abs(last.col - first.col), Math.abs(last.row - first.row));
-  return net < 3 && (last.sends ?? 0) > (first.sends ?? 0);
+  return net <= 1 && (last.sends ?? 0) > (first.sends ?? 0);
 }
 
 // THE CLEARANCE A PLAYER KEEPS FROM A WALL, in the units our trace takes them.
