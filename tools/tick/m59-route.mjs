@@ -111,7 +111,7 @@ const APPROACH_SEARCH_RADIUS = Number(process.env.M59_ROUTE_APPROACH_RADIUS || 4
 // long enough that a slow walk around a wall is not misread, short enough that an
 // hour-long pin becomes ~a minute of retry-then-escape.
 const PROGRESS_WINDOW_MS = Number(process.env.M59_ROUTE_PROGRESS_WINDOW_MS || 20000);
-const PROGRESS_MIN_NET = Number(process.env.M59_ROUTE_PROGRESS_MIN_NET || 3);
+const PROGRESS_MIN_NET = Number(process.env.M59_ROUTE_PROGRESS_MIN_NET || 2);
 const OSCILLATION_MAX = Number(process.env.M59_ROUTE_OSCILLATION_MAX || 3);
 
 const sign = (n) => (n > 0 ? 1 : n < 0 ? -1 : 0);
