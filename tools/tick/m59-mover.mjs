@@ -196,7 +196,7 @@ export function dithered(window, nowMs, winMs) {
   if (nowMs - first.t < winMs - 2000) return false;
   const last = window[window.length - 1];
   const net = Math.max(Math.abs(last.col - first.col), Math.abs(last.row - first.row));
-  return net <= 1 && (last.sends ?? 0) > (first.sends ?? 0);
+  return net < 3 && (last.sends ?? 0) > (first.sends ?? 0);
 }
 
 // THE CLEARANCE A PLAYER KEEPS FROM A WALL, in the units our trace takes them.
@@ -2799,11 +2799,16 @@ export class Mover {
           if (moved.stopped) {
             this.stuckTicks++;
             // Re-aim: rotate the heading 90° so the next tick slides along the wall
-            // instead of re-halting at the same spot. The heading is (aimX-myProtoX,
-            // aimY-myProtoY); the perpendicular is (-(aimY-myProtoY), aimX-myProtoX).
-            const hx = aimX - myProtoX, hy = aimY - myProtoY;
-            const hl = Math.hypot(hx, hy) || 1;
-            this._walledAim = { x: myProtoX + (-hy / hl) * strideNow, y: myProtoY + (hx / hl) * strideNow };
+            // instead of re-halting at the same spot. Bounded: once stuckTicks >= 3
+            // hands the tick to the escape fan, _walledAim is cleared so it cannot
+            // re-save itself forever on a fresh position.
+            if (this.stuckTicks < 3) {
+              const hx = aimX - myProtoX, hy = aimY - myProtoY;
+              const hl = Math.hypot(hx, hy) || 1;
+              this._walledAim = { x: myProtoX + (-hy / hl) * strideNow, y: myProtoY + (hx / hl) * strideNow };
+            } else {
+              this._walledAim = null;
+            }
           } else {
             this._noteServerStatic(-1, -1);
             this._walledAim = null;
@@ -2868,8 +2873,7 @@ export class Mover {
       // total across eight minutes. The mover treated every refusal as a fresh plan and
       // re-chose the same step, because the bake rates that square walkable by every
       // predicate it has. It is not wrong about the geometry; it cannot see a body.
-      if (this._lastDecl && this._lastDecl.to === stepCol + ',' + stepRow
-          && this._lastDecl.from === curCol + ',' + curRow) {
+      if (this._lastDecl && this._lastDecl.to === stepCol + ',' + stepRow) {
         this._declRepeats = (this._declRepeats ?? 0) + 1;
         if (this._declRepeats >= 2) {
           this._noteRefusedStep(stepCol, stepRow, curCol, curRow);
