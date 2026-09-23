@@ -2186,7 +2186,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
           const meNum = client?.room?.num ?? session?.world?.room?.num;
           if (map && meNum != null) {
             let bestInn = null, bestD = Infinity;
-            for (const [num, r] of Object.entries(map)) {
+            for (const [num, r] of Object.entries(map.rooms ?? map)) {
               if (!/Inn/i.test(r.cls ?? '')) continue;
               const d = Math.abs(Number(num) - Number(meNum));
               if (d < bestD) { bestD = d; bestInn = Number(num); }
