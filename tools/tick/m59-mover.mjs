@@ -2845,7 +2845,7 @@ export class Mover {
     if (this._movementGateOk(enrProtoX, enrProtoY, myProtoX, myProtoY, serverPX2, serverPY2)) {
       // PHASE 1: un-gate from session.walkTo. Same rationale as the waypoint
       // branch — the step is fine-model-validated, send it raw.
-      if (this._claimMoveSlot()) Promise.resolve(s.client.moveTo(enrProtoX, enrProtoY, 18, s.client.room?.id ?? 0))
+      if (this._claimMoveSlot()) Promise.resolve(s.client.moveTo(enrProtoX, enrProtoY, runNow ? 36 : 18, s.client.room?.id ?? 0))
         .then(() => { if (process.env.M59_MOVE_DEBUG !== '0')
           console.error(`[movedbg] ${this.logName} gateOK step=(${stepCol},${stepRow}) me=(${me.col},${me.row}) wp=(${wpCol},${wpRow}) idx=${this.pathIdx}/${this.path ? this.path.length : 'null'} stuck=${this.stuckTicks} srv=(${curCol},${curRow}) moveTo sent`); })
         .catch(e => { if (process.env.M59_MOVE_DEBUG !== '0')
