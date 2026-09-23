@@ -2177,13 +2177,12 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       // nearest inn first. Resting in a wilderness room recovers vigor
       // much slower than at an inn.
       if (active?.goal === 'post_death_rest') {
-        const roomCls = client?.room?.cls ?? '';
+        const meNum = client?.room?.num ?? session?.world?.room?.num;
+        const map = loadMap();
+        const roomCls = (map?.rooms ?? map)?.[meNum]?.cls ?? client?.room?.cls ?? '';
         const inInn = /Inn/i.test(roomCls);
         if (!inInn) {
           // Find the nearest inn from the map.
-          const map = loadMap();
-          const me = session._pose?.current?.() ?? client?.self;
-          const meNum = client?.room?.num ?? session?.world?.room?.num;
           if (map && meNum != null) {
             let bestInn = null, bestD = Infinity;
             for (const [num, r] of Object.entries(map.rooms ?? map)) {
