@@ -3017,7 +3017,7 @@ function fleeExits(session, ws) {
       }
       // No wieldable weapon (broken or absent): fall through to conjure/buy.
       const now5 = now();
-      if (canConjure && ws.has_mana === true && (ws._vigor == null || ws._vigor >= 30) && now5 - (session?._lastCreateWeaponAt ?? 0) > 30000) {
+      if (canConjure && ws.has_mana === true && ws._vigor != null && ws._vigor >= 30 && now5 - (session?._lastCreateWeaponAt ?? 0) > 30000) {
         if (session) session._lastCreateWeaponAt = now5;
         try { if (session) session._castingUntil = now5 + 5000; } catch {}
         const r = intend('cast create weapon', frame, act, { client, session, ws });
@@ -3076,7 +3076,7 @@ function fleeExits(session, ws) {
       // Cooldown so a slow conjuration doesn't cast every tick.
       const now5 = now();
       const canConjure = spellNamed(client, 'create weapon') != null;
-      if (canConjure && (ws._vigor == null || ws._vigor >= 30) && now5 - (session?._lastCreateWeaponAt ?? 0) > 30000) {
+      if (canConjure && ws._vigor != null && ws._vigor >= 30 && now5 - (session?._lastCreateWeaponAt ?? 0) > 30000) {
         if (session) session._lastCreateWeaponAt = now5;
         try { if (session) session._castingUntil = now5 + 5000; } catch {}
         actionName = 'cast create weapon';
