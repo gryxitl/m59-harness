@@ -56,6 +56,8 @@ import { trustedBuyer } from '../m59-skills.mjs';
 // onEvent callback, so `client.on(...)` does not exist).
 const brokenBySession = new WeakMap();  // session -> Set of broken weapon ids
 const BROKEN_TEXT = /can'?t use .*--it'?s broken/i;  // player.kod:127
+const TOO_TIRED_TEXT = /too tired to cast/i;  // spell.kod:604 CanPayManaVigor
+const CAST_REFUSE_BACKOFF_MS = 60000;  // rest-length window before retrying a refused cast
 
 // The set of broken weapon ids for a session (created on first use).
 function brokenSetFor(session = null, client = null) {
@@ -3017,7 +3019,22 @@ function fleeExits(session, ws) {
       }
       // No wieldable weapon (broken or absent): fall through to conjure/buy.
       const now5 = now();
-      if (canConjure && ws.has_mana === true && ws._vigor != null && ws._vigor >= 50 && now5 - (session?._lastCreateWeaponAt ?? 0) > 30000) {
+      // REFUSAL-DRIVEN BACKOFF: the server's bar for create weapon is piVigor > 2
+      // (creaweap.kod inherits viSpellExertion=2), so a fixed floor can't predict it.
+      // When the server refuses with "too tired", back off for a rest-length window
+      // instead of re-firing ~1/s. The event ring carries the refusal text.
+      if (session && now5 < (session._castRefusedUntil ?? 0)) {
+        // Already in backoff; don't extend.
+      } else if (client?.events) {
+        for (const ev of client.events) {
+          if (ev.kind !== 'message') continue;
+          if (ev.at && now5 - ev.at > 60000) continue;
+          if (!TOO_TIRED_TEXT.test(String(ev.text ?? ''))) continue;
+          session._castRefusedUntil = now5 + CAST_REFUSE_BACKOFF_MS;
+          break;
+        }
+      }
+      if (canConjure && ws.has_mana === true && ws._vigor != null && ws._vigor >= 30 && now5 >= (session?._castRefusedUntil ?? 0) && now5 - (session?._lastCreateWeaponAt ?? 0) > 30000) {
         if (session) session._lastCreateWeaponAt = now5;
         try { if (session) session._castingUntil = now5 + 5000; } catch {}
         const r = intend('cast create weapon', frame, act, { client, session, ws });
@@ -3076,7 +3093,7 @@ function fleeExits(session, ws) {
       // Cooldown so a slow conjuration doesn't cast every tick.
       const now5 = now();
       const canConjure = spellNamed(client, 'create weapon') != null;
-      if (canConjure && ws._vigor != null && ws._vigor >= 50 && now5 - (session?._lastCreateWeaponAt ?? 0) > 30000) {
+      if (canConjure && ws._vigor != null && ws._vigor >= 30 && now5 >= (session?._castRefusedUntil ?? 0) && now5 - (session?._lastCreateWeaponAt ?? 0) > 30000) {
         if (session) session._lastCreateWeaponAt = now5;
         try { if (session) session._castingUntil = now5 + 5000; } catch {}
         actionName = 'cast create weapon';
