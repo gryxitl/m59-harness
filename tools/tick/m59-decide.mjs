@@ -3159,7 +3159,7 @@ export const DEFAULT_GOALS = [
       // any vigor; rest happens on arrival. (Without this, the
       // rest/stand/step flap both stalls the run AND trips the stuck
       // detector into abandoning it.)
-      if (ws._travelMode === true) return false;
+      if (ws._moving === true) return false;
       const v = ws._vigor;
       // ABSOLUTE thresholds, deliberately: rest recovers only to ~80
       // regardless of max vigor (food carries it to the max — 200 for
