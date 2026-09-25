@@ -2176,7 +2176,7 @@ export function makeDecider({ session, policy = {}, goals = [], onDecision = nul
       // INN CHECK: if post_death_rest and not in an inn, travel to the
       // nearest inn first. Resting in a wilderness room recovers vigor
       // much slower than at an inn.
-      if (active?.goal === 'post_death_rest') {
+      if (active?.goal === 'post_death_rest' || active?.goal === 'vigor_low') {
         const meNum = client?.room?.num ?? session?.world?.room?.num;
         const map = loadMap();
         const roomCls = (map?.rooms ?? map)?.[meNum]?.cls ?? client?.room?.cls ?? '';
