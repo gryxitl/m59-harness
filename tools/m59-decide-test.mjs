@@ -17,7 +17,7 @@ const ok = (what, cond, detail) => {
 };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-function world({ hp = 20, maxHp = 20, vigor = 80, pack = [], equipped = [],
+function world({ hp = 20, maxHp = 20, vigor = 80, mana = 18, pack = [], equipped = [],
                  objects = new Map(), spells = [] } = {}) {
   const me = { col: 5, row: 5, x: 352, y: 352, predicted: false };
   const sent = [];
@@ -25,7 +25,7 @@ function world({ hp = 20, maxHp = 20, vigor = 80, pack = [], equipped = [],
     state: 'game', selfId: 1, evSeq: 0, me: { name: 'Tester' },
     room: { id: 7, num: 7, objects: new Map([[1, me], ...objects]) },
     self: me, spells,
-    vitals: () => ({ health: { value: hp, max: maxHp }, vigor: { value: vigor } }),
+    vitals: () => ({ health: { value: hp, max: maxHp }, vigor: { value: vigor }, mana: { value: mana } }),
     inventory: pack,
     equipment: () => ({ known: true, equipped }),
     rsc: { get: () => null },
@@ -678,6 +678,68 @@ console.log('\nTIER BAND: lv25 character vs lv30 mob (floor=30, ceiling=37)');
   const tib2 = ws2?._targetLevel != null && ws2?._threatCeiling != null ? ws2._targetLevel <= ws2._threatCeiling : null;
   ok('lv25 mob is in band for lv25 character (floor=25, ceiling=31)',
      tib2 === true, `target_in_band=${tib2}`);
+}
+
+console.log('\nrefusal-driven backoff for refused create-weapon casts');
+{
+  // The armed cast gate is reached when pickWieldableWeapon returns null (the
+  // mace is broken). The broken set is populated by the equip intent on the
+  // first tick, so two decide calls: the first breaks the mace, the second
+  // reaches the cast gate. vigor 40 passes the >=30 gate; mana 18 passes has_mana.
+  const mk = (events) => {
+    const w = world({ pack: [{ id: 9, name: 'mace' }], spells: [{ name: 'create weapon' }], vigor: 40 });
+    w.client.events = events;
+    w.session._lastEquipId = 9;
+    const decide = makeDecider({ session: w.session, goals: DEFAULT_GOALS });
+    const act = new Actuator(w.session);
+    const frame = { in_game: true, objects: w.session.client.room.objects };
+    decide(frame, act, null);
+    return { w, decide, act, frame };
+  };
+  const BROKEN = { kind: 'message', text: "You can't use the mace--it's broken", at: Date.now() };
+  const REFUSE = (at = Date.now()) => ({ kind: 'message', text: 'You are too tired to cast create weapon!', at });
+
+  // Control: no refusal ⇒ the cast goes out.
+  {
+    const { w, decide, act, frame } = mk([BROKEN]);
+    await sleep(5);
+    decide(frame, act, null);  // second tick: mace broken, cast gate reached
+    await sleep(5);
+    ok('no refusal: an unarmed caster sends the cast', w.sent.filter(x => x[0] === 'cast').length === 1, `sent=${JSON.stringify(w.sent)}`);
+  }
+  // Fresh refusal ⇒ the cast is suppressed (backoff armed).
+  {
+    const { w, decide, act, frame } = mk([BROKEN, REFUSE()]);
+    await sleep(5);
+    decide(frame, act, null);
+    await sleep(5);
+    ok('fresh refusal: the cast is suppressed', w.sent.filter(x => x[0] === 'cast').length === 0, `sent=${JSON.stringify(w.sent)}`);
+    ok('and the backoff deadline is armed', w.session._castRefusedUntil > Date.now() - 1000, `until=${w.session._castRefusedUntil}`);
+  }
+  // Back-dated refusal (61s old, past the 60s window) ⇒ the cast resumes.
+  {
+    const { w, decide, act, frame } = mk([BROKEN, REFUSE(Date.now() - 61000)]);
+    await sleep(5);
+    decide(frame, act, null);
+    await sleep(5);
+    ok('back-dated refusal (past the window): the cast resumes', w.sent.filter(x => x[0] === 'cast').length === 1, `sent=${JSON.stringify(w.sent)}`);
+  }
+  // Missing `at` ⇒ not permanently blocked (no NaN deadline).
+  {
+    const { w, decide, act, frame } = mk([BROKEN, { kind: 'message', text: 'You are too tired to cast create weapon!' }]);
+    await sleep(5);
+    decide(frame, act, null);
+    await sleep(5);
+    ok('missing at: the cast is not permanently blocked', w.sent.filter(x => x[0] === 'cast').length === 1, `sent=${JSON.stringify(w.sent)}`);
+  }
+  // `create food` refusal ⇒ does not arm the create-weapon backoff.
+  {
+    const { w, decide, act, frame } = mk([BROKEN, { kind: 'message', text: 'You are too tired to cast create food!', at: Date.now() }]);
+    await sleep(5);
+    decide(frame, act, null);
+    await sleep(5);
+    ok('create food refusal: does not arm the create-weapon backoff', w.sent.filter(x => x[0] === 'cast').length === 1, `sent=${JSON.stringify(w.sent)}`);
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

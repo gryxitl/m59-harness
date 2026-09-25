@@ -56,7 +56,7 @@ import { trustedBuyer } from '../m59-skills.mjs';
 // onEvent callback, so `client.on(...)` does not exist).
 const brokenBySession = new WeakMap();  // session -> Set of broken weapon ids
 const BROKEN_TEXT = /can'?t use .*--it'?s broken/i;  // player.kod:127
-const TOO_TIRED_TEXT = /too tired to cast/i;  // spell.kod:604 CanPayManaVigor
+const TOO_TIRED_TEXT = /too tired to cast create weapon/i;  // spell.kod:604; template "You are too tired to cast %s!"
 const CAST_REFUSE_BACKOFF_MS = 60000;  // rest-length window before retrying a refused cast
 
 // The set of broken weapon ids for a session (created on first use).
@@ -108,6 +108,27 @@ function scanBrokenFromEvents(client, session = null) {
       set.add(id);
       console.error(`[broken] ${session?.name ?? client.me?.name ?? 'keeper'}: ${name} is broken (id ${id}) — condemned, will not retry`);
     }
+  }
+}
+
+// REFUSAL-DRIVEN BACKOFF for create weapon. The server's bar is piVigor > 2
+// (creaweap.kod inherits viSpellExertion=2), so a fixed floor can't predict it.
+// When the server refuses with "too tired to cast create weapon", back off the
+// cast for a rest-length window anchored to the refusal's timestamp, instead of
+// re-firing ~1/s. Called from BOTH armed cast branches (the _packWeapon path and
+// the equip-fallthrough path) — the branches are exclusive, so a guard that only
+// sees one branch's scan is inert on the other.
+function scanCastRefusal(client, session = null) {
+  if (!client?.events || !session) return;
+  let last = 0;
+  for (const ev of client.events) {
+    if (ev.kind !== 'message' || !ev.at) continue;   // no at ⇒ no anchorable deadline
+    if (!TOO_TIRED_TEXT.test(String(ev.text ?? ''))) continue;
+    if (ev.at > last) last = ev.at;                  // newest refusal wins
+  }
+  if (last > (session._castRefusalSeenAt ?? 0) && last + CAST_REFUSE_BACKOFF_MS > Date.now()) {
+    session._castRefusalSeenAt = last;
+    session._castRefusedUntil = last + CAST_REFUSE_BACKOFF_MS;
   }
 }
 
@@ -3019,21 +3040,7 @@ function fleeExits(session, ws) {
       }
       // No wieldable weapon (broken or absent): fall through to conjure/buy.
       const now5 = now();
-      // REFUSAL-DRIVEN BACKOFF: the server's bar for create weapon is piVigor > 2
-      // (creaweap.kod inherits viSpellExertion=2), so a fixed floor can't predict it.
-      // When the server refuses with "too tired", back off for a rest-length window
-      // instead of re-firing ~1/s. The event ring carries the refusal text.
-      if (session && now5 < (session._castRefusedUntil ?? 0)) {
-        // Already in backoff; don't extend.
-      } else if (client?.events) {
-        for (const ev of client.events) {
-          if (ev.kind !== 'message') continue;
-          if (ev.at && now5 - ev.at > 60000) continue;
-          if (!TOO_TIRED_TEXT.test(String(ev.text ?? ''))) continue;
-          session._castRefusedUntil = now5 + CAST_REFUSE_BACKOFF_MS;
-          break;
-        }
-      }
+      scanCastRefusal(client, session);
       if (canConjure && ws.has_mana === true && ws._vigor != null && ws._vigor >= 30 && now5 >= (session?._castRefusedUntil ?? 0) && now5 - (session?._lastCreateWeaponAt ?? 0) > 30000) {
         if (session) session._lastCreateWeaponAt = now5;
         try { if (session) session._castingUntil = now5 + 5000; } catch {}
@@ -3092,6 +3099,7 @@ function fleeExits(session, ws) {
       // the created weapon lands in the pack and equip picks it up next pass.
       // Cooldown so a slow conjuration doesn't cast every tick.
       const now5 = now();
+      scanCastRefusal(client, session);
       const canConjure = spellNamed(client, 'create weapon') != null;
       if (canConjure && ws._vigor != null && ws._vigor >= 30 && now5 >= (session?._castRefusedUntil ?? 0) && now5 - (session?._lastCreateWeaponAt ?? 0) > 30000) {
         if (session) session._lastCreateWeaponAt = now5;
