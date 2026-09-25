@@ -1,5 +1,7 @@
 # M59-Harness Architecture
 
+> **Note (2026-09-01):** The tick keeper (`m59-tick.mjs` + `m59-decide.mjs`) is now the live path for this fleet. The legacy keeper (`m59-autopilot.mjs`) is still in the codebase and is used by other fleets in parallel. See [The Tick Keeper](#the-tick-keeper) below for the current architecture.
+
 ## System Diagram
 
 ```
@@ -167,3 +169,74 @@ start-broker.sh
               log → substrate/broker-<fleet>.log
               survives terminal; does NOT survive reboot
 ```
+
+## The Tick Keeper
+
+> **This is the current live path for this fleet.** The legacy keeper (`m59-autopilot.mjs`) is still in the codebase and is used by other fleets in parallel.
+
+The tick keeper is a real-time 10Hz loop that drives each character. It was built to fix the architectural defect of the legacy keeper: **how often the agent looks at the world is decided by how long it spent not looking.**
+
+### The Loop
+
+```
+every 100ms, never blocking:
+  frame  = sensor.read()        // free — but POSITION IN IT MAY BE STALE
+  intent = decide(frame)        // pure, synchronous, no awaits
+  actuate(intent)               // enqueue one command; do not await
+```
+
+### The Five Rules
+
+1. **A tick never awaits an actuation.** A `decide()` returning a promise is reported and NOT awaited.
+2. **The sensor never sends.** Built on `snapshot()`/`perception()`, never `view()`.
+3. **Effects are observed, not returned.** The actuator reports what it SENT.
+4. **The position is polled, not pushed.** The server does not push our own position. `confirmPosition()` is the only way to know where we are.
+5. **The watchdog is independent.** A 500ms timer reads health live and can interrupt a blocked pass.
+
+### Key Components
+
+| Component | File | Role |
+|-----------|------|------|
+| **Tick driver** | `m59-tick.mjs` | The 10Hz loop |
+| **Decision** | `m59-decide.mjs` | Pure, synchronous decision function |
+| **ControllerMover** | `m59-controller-mover.mjs` | Movement with airlock, room stamp, force-adopt |
+| **CharacterController** | `m59-controller.mjs` | Fine-grained movement (walk/run) |
+| **Sensor** | `m59-sensor.mjs` | Reads the world state |
+| **Actuator** | `m59-act/*.mjs` | Action primitives (attack, cast, equip, flee, rest, step, travel-to) |
+
+### The Airlock
+
+When the room changes, **all movement stops** until the server confirms the new position via `BP_ROOM_CONTENTS`. This makes the order-of-operations bug impossible by construction.
+
+```
+1. Character walks to staging square
+2. Server teleports to new room
+3. Server sends BP_PLAYER (new room ID, old position)
+4. **Airlock engages**: all movement stops
+5. Server sends BP_ROOM_CONTENTS (new position)
+6. Client sets _lastContentsRoom to new room
+7. **Airlock releases**: ControllerMover force-adopts new position (syncFrom), resumes movement
+```
+
+### Room Stamp Guard
+
+Every path and position is stamped with the room it was created in. If the room changes, stale paths/positions are dropped/refused.
+
+### Speed Parity
+
+- **Walk**: 18 units/s (combat, precision)
+- **Run**: 36 units/s (travel, hunt, flee)
+
+`setRun(true)` is called for all goals except `_fight`, `healthy`, `vigor_low`, `idle_rest`.
+
+### What's Different from the Legacy Keeper
+
+| | Legacy Keeper | Tick Keeper |
+|---|---|---|
+| **Loop** | `pass()` every ~1s (blocking) | 10Hz loop (non-blocking) |
+| **Position** | Pushed (assumed) | Polled (confirmed) |
+| **Movement** | Legacy mover | ControllerMover (airlock, room stamp) |
+| **Speed** | Walk only | Walk + Run (setRun) |
+| **Room transitions** | No airlock | Airlock (all movement stops) |
+| **Watchdog** | 500ms timer | 500ms timer (same) |
+| **Decision** | Ladder (priority order) | Pure function (synchronous) |

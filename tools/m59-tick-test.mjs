@@ -6,7 +6,7 @@
 // Every one of these pins a rule that is easy to undo by accident, and each undoing
 // puts the fleet back in the model this replaced: a blocking script whose sense rate is
 // decided by how long its last action took.
-import { Sensor, Actuator, TickLoop } from './m59-tick.mjs';
+import { Sensor, Actuator, TickLoop } from './tick/m59-tick.mjs';
 
 let pass = 0, fail = 0;
 const ok = (what, cond, detail) => {
@@ -178,7 +178,7 @@ console.log('\na throwing decide does not kill the loop');
 console.log('\nthe legacy driver is untouched');
 {
   const src = await import('node:fs').then(fs =>
-    fs.readFileSync(new URL('./m59-tick.mjs', import.meta.url), 'utf8'));
+    fs.readFileSync(new URL('./tick/m59-tick.mjs', import.meta.url), 'utf8'));
   // The prose discusses the old model at length; what matters is that nothing IMPORTS
   // it. Testing for the string alone would forbid explaining what this replaced.
   ok('nothing here imports the autopilot',
@@ -236,13 +236,42 @@ console.log('\nposition recovery fires even when the self id is lost');
   loop._lastPosRecovery = 0;
   loop.tick();
   ok('roomContents re-requested when the self id is lost', roomCalls >= 1, `calls=${roomCalls}`);
-  // A position-less frame with NO room at all (not yet in a room) does not spam recovery.
+  // A position-less frame with NO room identifiers still recovers: the character is
+  // in-game, and the server needs the room contents re-requested to re-establish
+  // the self reference. The recovery is throttled to 3s, so it does not spam.
   roomCalls = 0;
   session.client.room = { id: null, num: null, objects: new Map() };
   loop._lastPosRecovery = 0;
   loop.tick();
-  ok('no recovery when there is no room', roomCalls === 0, `calls=${roomCalls}`);
+  ok('recovery fires when in-game with no room identifiers (throttled)', roomCalls >= 1, `calls=${roomCalls}`);
   loop.stop();
+}
+
+console.log('\nstep() never steps into a void (unless allowVoid)');
+{
+  const s = fakeSession();
+  s.world = { geometry: { collisionReady: true, standable: () => false } };
+  const a = new Actuator(s);
+  const rec = a.step(6, 5);
+  ok('floorless target is refused', rec.ok === false, JSON.stringify(rec.why ?? rec));
+  ok('nothing submitted', s.submitted.length === 0, `${s.submitted.length}`);
+  const rec2 = a.step(6, 5, { allowVoid: true });
+  ok('allowVoid opts out (deliberate exits)', rec2.ok === null, JSON.stringify(rec2.why ?? rec2));
+  ok('the deliberate step submits', s.submitted.length === 1, `${s.submitted.length}`);
+}
+
+console.log('\nstep() never climbs steeply (unless allowVoid)');
+{
+  const s = fakeSession();
+  s.world = { geometry: {
+    collisionReady: true,
+    standable: () => true,
+    traceFineMoveClient: () => ({ blocked: true, reason: 'step_too_high' }),
+  } };
+  const a = new Actuator(s);
+  const rec = a.step(6, 5);
+  ok('cliff step is refused', rec.ok === false, JSON.stringify(rec.why ?? rec));
+  ok('nothing submitted', s.submitted.length === 0, `${s.submitted.length}`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

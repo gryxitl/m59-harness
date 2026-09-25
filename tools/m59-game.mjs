@@ -440,22 +440,23 @@ function monsterLevelByName(map, name) {
 // for. A move should report that it moved, and what is worth knowing on arrival:
 // is anything here hostile, is there loot, who else is standing about. Call `look`
 // when the answer is yes.
-const arrivalReport = (s) => {
-  const v = s.view();
+const arrivalReport = async (s) => {
+  const v = await s.view();
   const has = (o, verb) => Array.isArray(o.can) && o.can.includes(verb);
+  const objects = Array.isArray(v.objects) ? v.objects : [];
   return {
     room: v.room,
     you: v.you,
     vitals: v.vitals,
     here: {
-      attackable: v.objects.filter(o => has(o, 'attack') && !o.is_player).length,
-      players: v.objects.filter(o => o.is_player).length,
-      on_the_floor: v.objects.filter(o => has(o, 'get')).length,
-      merchants: v.objects.filter(o => has(o, 'buy')).length,
-      other: v.objects.filter(o => !has(o, 'attack') && !has(o, 'get') && !has(o, 'buy') && !o.is_player).length,
+      attackable: objects.filter(o => has(o, 'attack') && !o.is_player).length,
+      players: objects.filter(o => o.is_player).length,
+      on_the_floor: objects.filter(o => has(o, 'get')).length,
+      merchants: objects.filter(o => has(o, 'buy')).length,
+      other: objects.filter(o => !has(o, 'attack') && !has(o, 'get') && !has(o, 'buy') && !o.is_player).length,
       scenery: v.scenery?.total ?? 0,
     },
-    exits: v.exits.length,
+    exits: Array.isArray(v.exits) ? v.exits.length : 0,
     note: 'arrival summary — call look for the full contents, or look with minimap:true for the picture',
   };
 };

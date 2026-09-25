@@ -263,7 +263,7 @@ const BANK_ROOMS = (CATALOGUE?.merchants ?? [])
 async function goTo(agent, room, tries = 3) {
   let why = null;
   for (let i = 0; i < tries; i++) {
-    const t = await call('travel', { agent, to: room, max_hops: 20 })
+    const t = await call('travel', { agent, to: room, max_hops: 20 }, 180_000)
                     .catch(e => ({ arrived: false, why: e.message }));
     if (t.arrived) return { ok: true, why: null };
     const stuck = (t.log || []).filter(h => !h.ok).slice(-1)[0];
@@ -947,7 +947,7 @@ async function outfit(row) {
     // steps over a character we are driving, which is the guard this was decomposed for.
     const owned = await armOwnership(brokerDriver(null, call), {
       agent: row.agent, by: OWNER, kind: 'arm', label: `arming ${who}`,
-      leaseMs: 120_000, heartbeatMs: 60_000, run: body,
+      leaseMs: 300_000, heartbeatMs: 120_000, run: body,
     });
     if (!owned.ran) return `${who}: skipped -- ${owned.refused}`;
     return owned.result;
@@ -955,12 +955,14 @@ async function outfit(row) {
     // Put the orders back exactly as they were, including the strategy and the room
     // assignment -- an errand must not become a re-tasking.
     if (was?.running) {
-      await call('autopilot', {
+      const args = {
         agent: row.agent, action: 'start', mode: was.mode, hunt: was.policy?.hunt,
         strategy: was.policy?.strategy, flee_below: was.policy?.fleeBelow,
         rest_below: was.policy?.restBelow, max_carry: was.policy?.maxCarry,
-        roam: was.policy?.roam, assigned_room: was.policy?.assignedRoom ?? null,
-      }).catch(() => {});
+        roam: was.policy?.roam,
+      };
+      if (was.policy?.assignedRoom != null) args.assigned_room = was.policy.assignedRoom;
+      await call('autopilot', args).catch(() => {});
     }
   }
 }

@@ -101,5 +101,5 @@ flee.pre     = ['has_target'];
 // -- the planner believed one flee ended the encounter, and when it had not, the goal
 // looked achieved while the character was still being chased. The planner re-evaluates
 // from the real room every pass and will simply plan another step.
-flee.effects = ['flee_danger'];
+flee.effects = ['flee_danger', 'flee_room'];
 flee.atomic  = 'flee';

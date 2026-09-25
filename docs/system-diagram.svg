@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#555"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="900" fill="#1a1a2e"/>
+  <text x="600" y="30" text-anchor="middle" fill="#fff" font-size="18" font-weight="bold">M59 Harness Architecture</text>
+
+  <!-- Broker box -->
+  <rect x="40" y="50" width="200" height="60" rx="8" fill="#16213e" stroke="#0f3460" stroke-width="2"/>
+  <text x="140" y="75" text-anchor="middle" fill="#e94560" font-weight="bold">Broker (8901)</text>
+  <text x="140" y="95" text-anchor="middle" fill="#aaa" font-size="10">manages 5 keepers</text>
+
+  <!-- Keeper box -->
+  <rect x="300" y="50" width="200" height="60" rx="8" fill="#16213e" stroke="#0f3460" stroke-width="2"/>
+  <text x="400" y="75" text-anchor="middle" fill="#e94560" font-weight="bold">Keeper (per character)</text>
+  <text x="400" y="95" text-anchor="middle" fill="#aaa" font-size="10">tick loop 10Hz</text>
+
+  <!-- Arrow broker -> keeper -->
+  <line x1="240" y1="80" x2="300" y2="880" stroke="#5555" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- World State box -->
+  <rect x="560" y="50" width="200" height="80" rx="8" fill="#16213e" stroke="#0f3460" stroke-width="2"/>
+  <text x="660" y="70" text-anchor="middle" fill="#4fc3f7" font-weight="bold">World State</text>
+  <text x="660" y="88" text-anchor="middle" fill="#aaa" font-size="10">hp, maxHp, vigor, mana</text>
+  <text x="660" y="102" text-anchor="middle" fill="#aaa" font-size="10">in_underworld, has_target</text>
+  <text x="660" y="116" text-anchor="middle" fill="#aaa" font-size="10">target_in_band, in_reach, mob_near</text>
+
+  <!-- Arrow keeper -> world state -->
+  <line x1="500" y1="80" x2="560" y2="80" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- GOAP check diamond -->
+  <polygon points="840,90 900,50 960,90 900,130" fill="#16213e" stroke="#0f3460" stroke-width="2"/>
+  <text x="900" y="85" text-anchor="middle" fill="#e94560" font-weight="bold">useGOAP?</text>
+  <text x="900" y="100" text-anchor="middle" fill="#aaa" font-size="10">per-character flag</text>
+
+  <!-- Arrow world state -> GOAP check -->
+  <line x1="760" y1="90" x2="840" y2="90" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- GOAP Planner box (yes path) -->
+  <rect x="980" y="30" width="180" height="50" rx="8" fill="#1b5e20" stroke="#4caf50" stroke-width="2"/>
+  <text x="1070" y="50" text-anchor="middle" fill="#4caf50" font-weight="bold">GOAP Planner</text>
+  <text x="1070" y="68" text-anchor="middle" fill="#aaa" font-size="10">A* over precond/effects</text>
+
+  <!-- Decider box (no path) -->
+  <rect x="980" y="110" width="180" height="50" rx="8" fill="#4a2c69" stroke="#9b59b6" stroke-width="2"/>
+  <text x="1070" y="130" text-anchor="middle" fill="#9b59b6" font-weight="bold">Decider Ladder</text>
+  <text x="1070" y="148" text-anchor="middle" fill="#aaa" font-size="10">priority list (fallback)</text>
+
+  <!-- Arrow GOAP check -> planner (yes) -->
+  <line x1="960" y1="70" x2="980" y2="55" stroke="#4caf50" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="975" y="55" fill="#4caf50" font-size="10">yes</text>
+
+  <!-- Arrow GOAP check -> decider (no) -->
+  <line x1="960" y1="110" x2="980" y2="135" stroke="#9b59b6" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="975" y="135" fill="#9b59b6" font-size="10">no</text>
+
+  <!-- Actions box -->
+  <rect x="560" y="180" width="200" height="50" rx="8" fill="#16213e" stroke="#0f3460" stroke-width="2"/>
+  <text x="660" y="200" text-anchor="middle" fill="#4fc3f7" font-weight="bold">Actions</text>
+  <text x="660" y="218" text-anchor="middle" fill="#aaa" font-size="10">m59-act/*.mjs</text>
+
+  <!-- Arrows planner/decider -> actions -->
+  <line x1="1070" y1="80" x2="760" y2="205" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="1070" y1="135" x2="760" y2="205" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Mover box -->
+  <rect x="560" y="260" width="200" height="50" rx="8" fill="#16213e" stroke="#0f3460" stroke-width="2"/>
+  <text x="660" y="280" text-anchor="middle" fill="#4fc3f7" font-weight="bold">Mover</text>
+  <text x="660" y="298" text-anchor="middle" fill="#aaa" font-size="10">m59-mover.mjs</text>
+
+  <!-- Arrow actions -> mover -->
+
+  <line x1="660" y1="230" x2="660" y2="260" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- NavGeom box -->
+  <rect x="300" y="260" width="200" height="50" rx="8" fill="#16213e" stroke="#0f3460" stroke-width="2"/>
+  <text x="400" y="280" text-anchor="middle" fill="#4fc3f7" font-weight="bold">NavGeom</text>
+  <text x="400" y="298" text-anchor="middle" fill="#aaa" font-size="10">m59-navgeom.mjs (A*)</text>
+
+  <!-- Arrow mover -> navgeom -->
+  <line x1="560" y1="285" x2="500" y2="285" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Client box -->
+  <rect x="560" y="340" width="200" height="50" rx="8" fill="#16213e" stroke="#0f3460" stroke-width="2"/>
+  <text x="660" y="360" text-anchor="middle" fill="#4fc3f7" font-weight="bold">Client</text>
+  <text x="660" y="378" text-anchor="middle" fill="#aaa" font-size="10">m59-client.mjs</text>
+
+  <!-- Arrow mover -> client -->
+  <line x1="660" y1="310" x2="660" y2="340" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Game Server box -->
+  <rect x="560" y="420" width="200" height="50" rx="8" fill="#2d1b69" stroke="#7c4dff" stroke-width="2"/>
+  <text x="660" y="440" text-anchor="middle" fill="#7c4dff" font-weight="bold">Game Server</text>
+  <text x="660" y="458" text-anchor="middle" fill="#aaa" font-size="10">76.214.42.186:5959</text>
+
+  <!-- Arrow client -> server (bidirectional) -->
+  <line x1="660" y1="390" x2="660" y2="420" stroke="#7c4dff" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="680" y="405" fill="#7c4dff" font-size="10">BP packets</text>
+
+  <!-- Hunt Selection box -->
+  <rect x="820" y="260" width="200" height="50" rx="8" fill="#16213e" stroke="#0f3460" stroke-width="2"/>
+  <text x="920" y="280" text-anchor="middle" fill="#4fc3f7" font-weight="bold">Hunt Selection</text>
+  <text x="920" y="298" text-anchor="middle" fill="#aaa" font-size="10">m59-hunt-room.mjs</text>
+
+  <!-- Arrow decider -> hunt selection -->
+  <line x1="1070" y1="160" x2="920" y2="260" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Spawns data box -->
+  <rect x="820" y="340" width="200" height="50" rx="8" fill="#16213e" stroke="#0f3460" stroke-width="2"/>
+  <text x="920" y="360" text-anchor="middle" fill="#4fc3f7" font-weight="bold">Spawns Data</text>
+  <text x="920" y="378" text-anchor="middle" fill="#aaa" font-size="10">compendium/data/spawns.json</text>
+
+  <!-- Arrow hunt -> spawns -->
+  <line x1="920" y1="310" x2="920" y2="340" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- GOAP Goals box -->
+  <rect x="40" y="180" width="200" height="130" rx="8" fill="#1b5e20" stroke="#4caf50" stroke-width="2"/>
+  <text x="140" y="200" text-anchor="middle" fill="#4caf50" font-weight="bold">GOAP Goals</text>
+  <text x="140" y="220" text-anchor="middle" fill="#aaa" font-size="10">survive (top-level)</text>
+  <text x="140" y="236" text-anchor="middle" fill="#aaa" font-size="10">escape_underworld</text>
+  <text x="140" y="252" text-anchor="middle" fill="#aaa" font-size="10">disengage (flee)</text>
+  <text x="140" y="268" text-anchor="middle" fill="#aaa" font-size="10">rest_full (hp+vigor)</text>
+  <text x="140" y="284" text-anchor="middle" fill="#aaa" font-size="10">fight, hunt, equip</text>
+  <text x="140" y="300" text-anchor="middle" fill="#aaa" font-size="10">travel_to_hunt_room</text>
+
+  <!-- Arrow GOAP goals -> planner -->
+  <line x1="240" y1="245" x2="980" y2="55" stroke="#4caf50" stroke-width="1" stroke-dasharray="4,4" marker-end="url(#arrow)"/>
+
+  <!-- Decider Ladder box -->
+  <rect x="40" y="340" width="200" height="130" rx="8" fill="#4a2c69" stroke="#9b59b6" stroke-width="2"/>
+  <text x="140" y="360" text-anchor="middle" fill="#9b59b6" font-weight="bold">Decider Ladder</text>
+  <text x="140" y="380" text-anchor="middle" fill="#aaa" font-size="10">1. !in_underworld</text>
+  <text x="140" y="396" text-anchor="middle" fill="#aaa" font-size="10">2. flee_danger</text>
+  <text x="140" y="412" text-anchor="middle" fill="#aaa" font-size="10">3. flee_hurt</text>
+  <text x="140" y="428" text-anchor="middle" fill="#aaa" font-size="10">4. post_death_rest</text>
+  <text x="140" y="444" text-anchor="middle" fill="#aaa" font-size="10">5. healthy</text>
+  <text x="140" y="460" text-anchor="middle" fill="#aaa" font-size="10">6. vigor_low</text>
+  <text x="140" y="476" text-anchor="middle" fill="#aaa" font-size="10">7. _fight, 8. hunt</text>
+
+  <!-- Arrow decider ladder -> decider box -->
+  <line x1="240" y1="405" x2="980" y2="135" stroke="#9b59b6" stroke-width="1" stroke-dasharray="4,4" marker-end="url(#arrow)"/>
+
+  <!-- Legend -->
+  <rect x="40" y="520" width="200" height="100" rx="8" fill="#0f3460" stroke="#16213e" stroke-width="1"/>
+  <text x="140" y="540" text-anchor="middle" fill="#fff" font-weight="bold">Legend</text>
+  <rect x="55" y="550" width="12" height="12" fill="#1b5e20" stroke="#4caf50" stroke-width="1"/>
+  <text x="75" y="561" fill="#aaa" font-size="10">GOAP (active)</text>
+  <rect x="55" y="570" width="12" height="12" fill="#4a2c69" stroke="#9b59b6" stroke-width="1"/>
+  <text x="75" y="581" fill="#aaa" font-size="10">Decider (fallback)</text>
+  <rect x="55" y="590" width="12" height="12" fill="#2d1b69" stroke="#7c4dff" stroke-width="1"/>
+  <text x="75" y="601" fill="#aaa" font-size="10">External (server)</text>
+  <rect x="55" y="610" width="12" height="12" fill="#16213e" stroke="#0f3460" stroke-width="1"/>
+  <text x="75" y="621" fill="#aaa" font-size="10">Internal module</text>
+
+  <!-- Key insight box -->
+  <rect x="300" y="520" width="460" height="100" rx="8" fill="#2d1b69" stroke="#7c4dff" stroke-width="2"/>
+  <text x="530" y="545" text-anchor="middle" fill="#7c4dff" font-weight="bold">Key Insight</text>
+  <text x="530" y="565" text-anchor="middle" fill="#fff" font-size="11">The GOAP planner is ENABLED for all 5 characters (useGOAP=true).</text>
+  <text x="530" y="585" text-anchor="middle" fill="#fff" font-size="11">The decider ladder is the FALLBACK when the GOAP planner fails.</text>
+  <text x="530" y="605" text-anchor="middle" fill="#aaa" font-size="10">The "planner contract violated" was a false positive (Manhattan vs Euclidean).</text>
+
+  <!-- Data flow arrows -->
+  <text x="600" y="700" text-anchor="middle" fill="#aaa" font-size="11">Data Flow: Server → Client → World State → GOAP Planner → Actions → Mover → Client → Server</text>
+</svg>

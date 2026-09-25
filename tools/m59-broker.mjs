@@ -34,7 +34,7 @@ import http from 'node:http';
 import os from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, unlinkSync, realpathSync, openSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, unlinkSync, realpathSync, openSync, writeSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { M59Client, KOD_FINENESS, BPNAME } from './m59-client.mjs';
@@ -42,7 +42,7 @@ import { loadResources } from './m59-rsc.mjs';
 import { describeObject, affordances, OF, blocksMovement, prepareActTarget } from './m59-parse.mjs';
 import { World, spreadEdges, boundedSilentGo, boundedRegionEntry,
          doorSettleMs, remainingDoorSettle } from './m59-world.mjs';
-import { loadMap, movementMapReadiness, resolveRoom, forgetInferredExit, findPath, buildReverseEdges }
+import { loadMap, movementMapReadiness, resolveRoom, forgetInferredExit, findPath, buildReverseEdges, passableExits }
   from './m59-map.mjs';
 // UNION OF BOTH SIDES. Ours added loadRoo/buildAllRoomGeometry for the keeper split;
 // upstream added clientToProtocol for its collision work. Same module, both needed.
@@ -128,6 +128,14 @@ import { COMMANDER_SCHEMA, COMMERCE_SCHEMA, COMMANDER_FACULTIES,
          resolveCommerceInventoryOrigins, tradeFingerprint } from './m59-rts-command.mjs';
 import { joinSessionOnce, sessionReadiness } from './m59-session-readiness.mjs';
 import './m59-navgeom.mjs';   // installs the height model + lenient fine path onto RoomGeometry
+// A rejected promise in an async request handler is not caught by a try/catch
+// further down the function; it surfaces as unhandledRejection and, without a
+// handler, Node 15+ exits the process and all five characters log out.
+// Log the stack (not just the message — bare rejections stringify to
+// [object Object]) so the next crash is attributable.
+process.on('unhandledRejection', (e) => {
+  console.error(`[broker] unhandledRejection: ${e?.stack ?? e?.message ?? e}`);
+});
 
 const HOST = process.env.M59_HOST || '127.0.0.1';
 const PORT = Number(process.env.M59_PORT || 5959);
@@ -766,9 +774,10 @@ async function spawnKeeper(agent, index, credentials) {
   const logFd = openSync(`substrate/keeper-${agent}.log`, 'a');
   const child = spawn(process.execPath,
     [join(HERE, 'm59-keeper-process.mjs'), '--agent', agent, '--port', String(port), '--fleet', FLEET ?? 'default'],
-    { stdio: ['ignore', logFd, logFd], cwd: process.cwd() });
+    { stdio: ['ignore', logFd, logFd], cwd: process.cwd(), env: { ...(process.env ?? {}), M59_MOVER_TRACE: process.env?.M59_MOVER_TRACE ?? '0' } });
   // NOT detached: keepers die when the broker exits.
   keeperProcesses.set(agent, { pid: child.pid, port, startedAt: Date.now() });
+  try { writeSync(logFd, Buffer.from(`${new Date().toISOString().slice(0,24)} [session-marker] spawn pid=${child.pid} fleet=${FLEET ?? 'default'}\n`)); } catch {}
   console.error(`[keeper] spawned ${agent} pid=${child.pid} port=${port}`);
   // Wait for the keeper to be ready
   for (let i = 0; i < 30; i++) {
@@ -845,6 +854,34 @@ class KeeperProxy {
     this._stateAt = 0;
     this._stateTtl = 2000;
     this._world = null;
+    // THERE IS NO FLIGHT RECORDER HERE, AND THAT MUST READ AS ABSENT, NOT AS A STUB.
+    //
+    // `makeKeeperProxy` wraps this object in a Proxy whose get-trap answers every unknown
+    // property with `(...args) => null` (see the trap's own comment). That returns a
+    // FUNCTION, which is truthy, so anything that reads `s.recorder` and asks a question of
+    // it gets a plausible-looking object that is nothing:
+    //
+    //   const rec = sessions.get(a.agent)?.recorder;   // -> () => null, truthy
+    //   rec?.line('call', ...)                         // -> TypeError: rec?.line is not a
+    //                                                  //    function
+    //
+    // That is not a hypothetical: it is how a SUCCESSFUL background travel reported an
+    // error. The journey was handed to the keeper, the tool returned, and the recording line
+    // on the way out threw — so the caller was told a walk it ordered had failed. The
+    // `recording` tool fails the same way one property later, on `r.buf.length`.
+    //
+    // Declaring the property is enough: the trap checks `prop in target` first, so an owned
+    // `null` wins and `rec?.line(...)` short-circuits instead of calling a stub. Deliberately
+    // narrow — the trap still answers everything else as before, because 90 call sites in
+    // this file read a session and none of them was written to expect a new failure mode.
+    //
+    // THE TRAP ITSELF IS THE BUG AND IS STILL THERE. Any missing method on a proxy silently
+    // returns null instead of failing: a typo becomes `null` where a caller expected a
+    // result, which is indistinguishable from "asked and got nothing". It is also why
+    // `travelJob` surfaced as "Cannot read properties of null (reading 'promise')" rather
+    // than the plain truth, `s.travelJob is not a function`. Worth removing; not worth
+    // removing in the middle of a live fleet with 90 callers and no test for the trap.
+    this.recorder = null;
     this.pacer = { submit: async () => { throw new Error('keeper-backed: pacer is in the keeper process'); } };
     this.movementGeneration = 0;
     this._client = null;
@@ -901,7 +938,19 @@ class KeeperProxy {
   get world() {
     const s = this._state;
     if (!s?.room) return null;
-    return { room: { name: s.room.name, num: s.room.num, id: s.room.num } };
+    const roomNum = s.room.num;
+    return {
+      room: { name: s.room.name, num: roomNum, id: roomNum },
+      exits: () => {
+        try { return passableExits(worldMap, roomNum); } catch { return []; }
+      },
+      route: (dest) => {
+        try {
+          const p = findPath(worldMap, roomNum, Number(dest));
+          return p?.found ? p : null;
+        } catch { return null; }
+      },
+    };
   }
   set world(v) { this._world = v; }
 
@@ -946,7 +995,106 @@ class KeeperProxy {
     // still understands this. They disagreed once and every journey silently failed.
     return keeperAction(this.name, this._index, 'travel', { to: toRoomNum, toRoomNum, ...opts });
   }
+
+  // THE TRAVEL JOB SLOT, FOR A CHARACTER WE DO NOT DRIVE IN-PROCESS.
+  //
+  // `Session.travelJob` (m59-game.mjs:1182) claims a job slot and stands the keeper inert
+  // for the walk. Neither half of that transfers here, and pretending otherwise is what
+  // broke travel for every keeper-backed agent: the router belongs to the KEEPER process,
+  // which owns the tick loop, so the broker has no loop to stand down and no hold that
+  // could survive being wrong.
+  //
+  // WHAT THIS ONE DOES INSTEAD, AND WHY IT IS NOT WEAKER.
+  //
+  // It records the order, refuses a SECOND ORDER FROM THE SAME CALLER while one is live,
+  // and resolves when the character ARRIVES or the keeper REFUSES. It does not try to own
+  // the character for the duration of the walk, because it cannot: the keeper goes on
+  // hunting, resting and taking safe spots throughout, and `router.to()` — the single
+  // authority on where a character is going — overwrites `dest` for whoever asks last
+  // (m59-route.mjs:165). A broker-side slot that outlives that fact is a claim about the
+  // world the world is not obliged to honour.
+  //
+  // THE FIRST VERSION OF THIS HELD THE SLOT FOR THE WHOLE TIMEOUT, AND THAT WAS A BUG I
+  // SHIPPED AND FOUND LIVE. `maxHops: 25` bought a 37-minute slot. The rejoin path
+  // (see the `apply` caller) re-issues an assigned room at startup through this same
+  // method, so every character came back from a broker restart un-orderable for half an
+  // hour, and the operator's travel was refused by a walk they never asked for — with the
+  // destination rendered as "undefined", because that caller passes `where: o.room_name`
+  // and the room name is not always known. Refusing a human for the convenience of a
+  // background assignment is backwards. So an operator call takes the slot over, and the
+  // superseded job resolves as superseded rather than hanging.
+  //
+  // Returns the SAME SHAPE as Session.travelJob — an object with a `.promise` — so the
+  // travel tool has ONE code path. A tool that had to branch on which kind of session it
+  // held is how the foreground arm ended up calling a method that does not exist and
+  // reporting "Cannot read properties of null (reading 'promise')".
+  travelJob(dest, { where = `room ${dest}`, maxHops = 25, timeoutMs = 0, takeover = false } = {}) {
+    const prior = this._travelJob;
+    if (prior && !prior.done && !takeover) {
+      throw new Error(`${this.name} is already walking to ${prior.where ?? `room ${prior.dest}`}`
+        + ' — cancel_movement first, pass takeover:true to send it somewhere else instead,'
+        + ' or use another character');
+    }
+    // A TAKE-OVER ENDS THE OLD JOURNEY EXPLICITLY. Its own waiter is still polling, and
+    // without this it would keep reporting progress for a walk that has been re-pointed,
+    // then resolve as if it had arrived.
+    if (prior && !prior.done) prior.superseded = true;
+    const job = { kind: 'travel', label: `walk to ${where}`, where, dest,
+                  startedAt: Date.now(), done: false, superseded: false };
+    this._travelJob = job;
+    job.promise = (async () => {
+      const r = await this.travel(dest, { maxHops });
+      // A REFUSAL IS NOT A JOURNEY. Release the slot at once so the operator can re-order
+      // instead of waiting out a timeout on a walk that never started. This is the case
+      // that matters most: `router.to()` refuses a hazard room and says why, and that
+      // answer is the whole point of the call.
+      if (r?.error || r?.sent === false) return r;
+      const budget = timeoutMs || Math.min(num(maxHops, 25) * 90000, 900000) + 120000;
+      return this._awaitArrival(dest, budget, job).then(out => ({ ...r, ...out }));
+    })().finally(() => { job.done = true; job.finishedAt = Date.now(); });
+    // Nobody is obliged to await it — background travel and the rejoin path do not — so
+    // absorb the rejection here or a failed journey becomes an unhandled rejection and
+    // takes the broker, and every session in it, down with it.
+    job.promise.catch(() => {});
+    return job;
+  }
+
+  // POLL THE KEEPER FOR ARRIVAL. The keeper's room is the only authority: the proxy's
+  // own `_state` carries a TTL and would report the room the character left seconds ago.
+  // The keeper refreshes its server-side cache every 2s (keeper-process.mjs:1477), so a
+  // 1.5s poll cannot step over a room and cannot miss an arrival by more than one poll.
+  async _awaitArrival(dest, budgetMs, job) {
+    const deadline = Date.now() + budgetMs;
+    const want = Number(dest);
+    let lastRoom = this._state?.room?.num ?? null;
+    const visited = [];
+    while (Date.now() < deadline) {
+      // SUPERSEDED: an operator re-pointed this character, or the keeper restarted. Say so
+      // rather than reporting success for a walk somebody stopped.
+      if (job.superseded || this._travelJob !== job) {
+        return { arrived: false, superseded: true, path: visited };
+      }
+      const s = await keeperState(this.name, this._index);
+      const room = s?.room?.num ?? null;
+      if (room != null && room !== lastRoom) {
+        lastRoom = room;
+        visited.push({ at: Date.now(), room, name: s?.room?.name ?? null });
+        if (visited.length > 40) visited.shift();
+        if (room === want) return { arrived: true, hops: visited.length, path: visited };
+      }
+      await new Promise(res => setTimeout(res, 1500));
+    }
+    return { arrived: false, timedOut: true, hops: visited.length,
+             last_room: lastRoom, path: visited };
+  }
+
   async cancelMovement(token) {
+    // RELEASE THE TRAVEL SLOT AS WELL AS THE MOVEMENT. The keeper cancels the walk, but
+    // the job slot lives here, and _awaitArrival only lets go when the job object is no
+    // longer the live one. Without this line a cancelled character stays "already
+    // walking to X" for the whole timeout, and every later travel is refused by a busy
+    // guard for a journey that ended two minutes ago.
+    if (this._travelJob && !this._travelJob.done) this._travelJob.cancelled = true;
     return keeperAction(this.name, this._index, 'cancel', {});
   }
 
@@ -954,6 +1102,8 @@ class KeeperProxy {
   async autopilot(action, args = {}) {
     if (action === 'start') return keeperAction(this.name, this._index, 'pass', {});
     if (action === 'stop') return keeperAction(this.name, this._index, 'cancel', {});
+    if (action === 'inert') return keeperAction(this.name, this._index, 'inert', { why: args.why });
+    if (action === 'revive') return keeperAction(this.name, this._index, 'revive', {});
     if (action === 'status') return this._refreshState();
     return { error: `unknown autopilot action: ${action}` };
   }
@@ -994,7 +1144,7 @@ class KeeperProxy {
       faculties: {}, activity: this.activity(),
       town_service: null, committed: null, watchdog: null,
       did: { kills: 0, deaths_in_safe_spot: 0, deaths_in_proven_safe_spot: 0 },
-      stalled: this.live ? false : 'keeper unreachable',
+      stalled: this.live ? (this._state?.stalled ?? false) : 'keeper unreachable',
       time: null, coordination: null, last_death: null,
       safe_spot: this.activity() === 'holding safe spot',
       goap: g.plan ? { goal: g.plan.goal ?? null, action: g.action ?? null, plan: g.plan.names ?? [], ws: g.plan.ws ?? null, target: g.plan.target ?? null } : { goal: g.goal ?? null, action: g.action ?? null, plan: [], target: g.target ?? null },
@@ -1208,7 +1358,21 @@ function saveFleetState() {
       }
       const kept = [];
       for (const [agent, entry] of Object.entries(now)) {
-        if (agent in next || forgotten.has(agent)) continue;
+        if (agent in next || forgotten.has(agent)) {
+          // PRESERVE FIELDS THAT ARE IN THE DISK ENTRY BUT NOT IN THE IN-MEMORY ONE.
+          // A restart loads only what it needs (autopilot) into the in-memory Map;
+          // credentials, host, port and other fields live on disk. Without this merge
+          // the first saveFleetState after a restart silently drops them (t2 lost its
+          // credentials on the 2026-09-02 restart cycle: the in-memory entry had only
+          // `autopilot`, and the write replaced the whole entry).
+          if (agent in next) {
+            const mem = next[agent];
+            for (const k of Object.keys(entry)) {
+              if (!(k in mem)) mem[k] = entry[k];
+            }
+          }
+          continue;
+        }
         next[agent] = entry;
         kept.push(agent);
       }
@@ -1242,8 +1406,16 @@ function rememberAutopilot(agent, config) {
   }
   // Preserve useGOAP — it's set in the fleet file but not in the in-memory policy.
   if (e.autopilot?.policy?.useGOAP && !config.policy?.useGOAP) config.policy.useGOAP = true;
-  e.autopilot = config;
-  saveFleetState();
+  
+  // ONLY SAVE IF THE POLICY ACTUALLY CHANGED. This prevents the log spam and the
+  // infinite loop that was preventing the keepers from starting.
+  const prevPolicy = e.autopilot?.policy ?? {};
+  const mergedPolicy = { ...prevPolicy, ...config.policy };
+  const changed = JSON.stringify(prevPolicy) !== JSON.stringify(mergedPolicy);
+  if (changed) {
+    e.autopilot = { ...config, policy: mergedPolicy };
+    saveFleetState();
+  }
 }
 // The ONE way an entry leaves the file. Recorded rather than inferred, because the save
 // now carries forward anything it did not expect to be missing — without this, `forget`
@@ -1753,8 +1925,9 @@ async function reconcileFleet() {
             signal: AbortSignal.timeout(30000),
           });
         } catch (e) {
-          // Keeper process is dead — respawn it
-          console.error(`[rejoin] ${agent} keeper not reachable, respawning`);
+          // Keeper process is dead — respawn it. Log the error type to
+          // distinguish AbortError (slow but alive) from ECONNREFUSED (dead).
+          console.error(`[rejoin] ${agent} keeper not reachable (${e?.name ?? 'unknown'}: ${e?.message ?? '?'}), respawning`);
           const ok = await spawnKeeper(agent, index, credentials);
           if (!ok) throw new Error('keeper respawn failed');
         }
@@ -2884,6 +3057,42 @@ async function factionSpeech(s, text) {
   return c.eventsSince(before).filter(event => event.text).map(event => event.text);
 }
 
+// HOP COUNT FOR A CHARACTER WE MAY OR MAY NOT DRIVE IN-PROCESS.
+//
+// `s.world.route()` was the only way this tool could ask how long a trip is, and
+// `KeeperProxy.world` is a summary object — `{ room: { name, num, id } }` — with no
+// methods on it at all. So for every keeper-backed agent this line threw, which meant
+// background travel reported `isError` AFTER the journey had already been handed to the
+// keeper: the character was walking and the caller was told it failed. Foreground travel
+// threw one line later for the same reason and never started anything.
+//
+// Ask the map directly instead. `findPath(map, from, to)` needs only the two room
+// NUMBERS, both of which a proxy already has — the destination from the caller and the
+// current room from the keeper's state — so it works for a Session and a KeeperProxy
+// without either one having to grow a World.
+//
+// IT RETURNS AN OBJECT WITH `.hops`, NOT AN ARRAY. `s.world.route(dest)?.length` was
+// therefore wrong even for a real Session, where it evaluated to `undefined` on every
+// successful route: the field silently lied for the in-process characters too. Read
+// `.hops.length`, which is what m59-game.mjs:7191 does.
+//
+// A hop count is a courtesy, not a promise: the keeper re-plans on arrival and may take a
+// different road, so `null` on failure is correct and must not stop the walk. The search
+// is expensive on its FIRST call per pair (~4s, the lazy reverse-edge build) and free
+// afterwards; the broker pre-builds that at startup (see the `[routes]` line), so on a
+// running broker this is sub-millisecond and cannot stall a keeper's HTTP.
+function plannedHops(s, dest) {
+  try {
+    const from = s?.world?.room?.num ?? s?._state?.room?.num ?? null;
+    if (from == null) return null;
+    const p = findPath(worldMap, from, Number(dest));
+    return p?.found ? (p.hops?.length ?? null) : null;
+  } catch {
+    // Never let a routing estimate break a journey that is already underway.
+    return null;
+  }
+}
+
 const TOOLS = [
   {
     name: 'join',
@@ -3128,19 +3337,31 @@ const TOOLS = [
       // Both the slot and the keeper hold now live on `Session.travelJob`, because this
       // tool having its own private copy of them is precisely why every other caller in
       // the file had neither. ONE definition, two ways to wait for it.
+      // AN EXPLICIT TRAVEL CALL IS AN OPERATOR ORDER AND OUTRANKS A BACKGROUND ONE.
+      //
+      // The slot exists to stop two callers driving one character, not to let a stale
+      // background assignment veto the human who is talking to us. `router.to()` — the
+      // keeper's own authority — re-points on request regardless of what the broker thinks
+      // is in flight, so refusing here does not prevent a redirection, it only hides one.
+      // The superseded journey resolves as `superseded` so whoever issued it learns.
+      //
+      // `runErrands` STAYS ON THIS CALL SITE EVEN THOUGH A PROXY IGNORES IT. It is a real
+      // feature — bank the takings and stock up before a long trip — and the in-process
+      // `Session` characters use the same call. Dropping it to keep the proxy's signature
+      // tidy quietly switched errands off for those characters, which is exactly the kind
+      // of silent behaviour loss m59-resumetravel-test exists to catch, and did.
       const startTravel = () => s.travelJob(dest, {
-        where: where.name, maxHops: num(a.max_hops, 25), controlToken: a.control_token,
+        where: where.name, maxHops: num(a.max_hops, 25), takeover: true,
         runErrands: a.run_errands !== false,
       });
 
       if (a.background) {
         startTravel();
-        const hops = s.world.route(dest)?.length ?? null;
-        return { started: true, destination: where, hops,
+        return { started: true, destination: where, hops: plannedHops(s, dest),
                  note: 'walking now; poll `fleet` or `status` — do not re-issue while busy' };
       }
       const r = await startTravel().promise;
-      return { destination: { num: dest, name: worldMap.rooms[dest].name }, ...r, now: arrivalReport(s) };
+      return { destination: { num: dest, name: worldMap.rooms[dest].name }, ...r, now: await arrivalReport(s) };
     },
   },
   {
@@ -3185,7 +3406,7 @@ const TOOLS = [
         candidates = exits.filter(e => e.kind === 'portal' && (a.portal === true || e.id === Number(a.portal)));
       if (!candidates.length) return { left: false, reason: 'no such exit from here', exits };
       const r = await s.leaveViaAny(candidates);
-      return { ...r, now: arrivalReport(s) };
+      return { ...r, now: await arrivalReport(s) };
     },
   },
   {
@@ -6680,10 +6901,11 @@ const TOOLS = [
       // AND `stop` NOW MEANS INERT unless somebody asks for the other thing. Every caller
       // of this — the errands, the supply hold, the pilot claim, the supervisor — wanted
       // "stop driving", and was getting "stop looking" as well. See Autopilot.goInert.
+      const isKeeper = s instanceof KeeperProxy;
       if (a.action === 'stop')
-        return p.stop(a.why ?? 'asked to stop, no reason given', { hard: !!a.hard });
-      if (a.action === 'inert') return p.goInert(a.why ?? 'asked to go inert, no reason given');
-      if (a.action === 'revive') { p.revive(a.why ?? 'asked to revive'); return p.status(); }
+        return isKeeper ? s.autopilot('stop', { why: a.why }) : p.stop(a.why ?? 'asked to stop, no reason given', { hard: !!a.hard });
+      if (a.action === 'inert') return isKeeper ? s.autopilot('inert', { why: a.why }) : p.goInert(a.why ?? 'asked to go inert, no reason given');
+      if (a.action === 'revive') { if (isKeeper) return s.autopilot('revive', {}); p.revive(a.why ?? 'asked to revive'); return p.status(); }
       // OWNING PART OF A CHARACTER. The survival floor is refused unless the roster has
       // consented to yield it, so a bot cannot take it by omission — see PROTECTED_FACULTIES.
       if (a.action === 'claim')
@@ -7089,7 +7311,13 @@ const TOOLS = [
         return { started: false, reason: 'farm mode needs something to hunt — pass hunt with a creature name' };
       // Persist the instruction, not the running object: on the far side of a
       // restart the keeper is rebuilt from these fields alone.
-      rememberAutopilot(a.agent, { mode: p.mode, policy: { ...p.policy } });
+      // Seed from the roster so keys the caller did not set (like assignedRoom,
+      // which the Autopilot constructor defaults to null) are preserved.
+      const _explicit = new Set(Object.keys(a).filter(k => k !== 'agent' && k !== 'action'));
+      const _filtered = Object.fromEntries(
+        Object.entries(p.policy).filter(([k, v]) => v !== null || _explicit.has(k.replace(/([A-Z])/g, '_$1').toLowerCase()))
+      );
+      rememberAutopilot(a.agent, { mode: p.mode, policy: { ...(fleetState.get(a.agent)?.autopilot?.policy ?? {}), ..._filtered } });
       const started = p.start();
       return retired ? { ...started, retired } : started;
     },
@@ -7688,17 +7916,26 @@ const TOOLS = [
     }, required: ['agent'] },
     run: async (a) => {
       const s = session(a.agent), c = s.need();
-      await s.pacer.submit('read', () => c.stats(1));
-      await s.pacer.submit('read', () => c.stats(2));
-      // Ask for these even when brief. `brief` shortens the OUTPUT — it is there
-      // because the name lists run to hundreds of entries — but skipping the
-      // request meant brief reported whatever happened to be cached, and the
-      // server does not push the skill list at login. So a character with 19
-      // skills reported "skills_known: 0", which is not a shorter truth, it is a
-      // wrong one.
-      await s.pacer.submit('read', () => c.requestSpells());
-      await s.pacer.submit('read', () => c.requestSkills());
-      await new Promise(r => setTimeout(r, 700));
+      // Keeper-backed sessions have no in-process pacer — the pacer (and the
+      // stats/spells/skills requests) live in the KEEPER process. Submitting here
+      // threw 'keeper-backed: pacer is in the keeper process', which is why this
+      // tool failed for every keeper-backed character. The keeper's /state already
+      // carries vitals (hp/vigor/mana), spells and skills, so for those we read the
+      // cached state (via the emulated client) instead of submitting. Attributes are
+      // not in /state, so they read empty for keeper-backed — a keeper-side extension.
+      if (!(s instanceof KeeperProxy)) {
+        await s.pacer.submit('read', () => c.stats(1));
+        await s.pacer.submit('read', () => c.stats(2));
+        // Ask for these even when brief. `brief` shortens the OUTPUT — it is there
+        // because the name lists run to hundreds of entries — but skipping the
+        // request meant brief reported whatever happened to be cached, and the
+        // server does not push the skill list at login. So a character with 19
+        // skills reported "skills_known: 0", which is not a shorter truth, it is a
+        // wrong one.
+        await s.pacer.submit('read', () => c.requestSpells());
+        await s.pacer.submit('read', () => c.requestSkills());
+        await new Promise(r => setTimeout(r, 700));
+      }
 
       // Attributes are reported against their real ceiling. kod bounds each to
       // (1, MAXIMUM_STAT) on the way out (player.kod:6371), so a character whose
@@ -7731,7 +7968,8 @@ const TOOLS = [
       if (!vitals.vigor)
         notes.push('no vigor reading arrived — vigor gates running and some skill costs');
 
-      return { ...s.snapshot('status'), where: s.world.room
+      return { ...await s.snapshot('status'),
+                 where: s.world.room
                  ? { num: s.world.room.num, name: s.world.room.name } : null,
                level_note: vitals.health
                  ? `max_health ${vitals.health.max} is what the game treats as your level`
@@ -8133,10 +8371,12 @@ const TOOLS = [
         // that boundary so an old percentage can hide a button, never authorize an
         // errand. A failed preflight refuses just this character.
         try {
-          await s.pacer.submit('read', () => c.stats(2));
-          await abilities.ensureAbilities(s, {
-            kinds: 'both', force: true, maxAgeMs: ABILITY_MAX_AGE_MS,
-          });
+          if (!(s instanceof KeeperProxy)) {
+            await s.pacer.submit('read', () => c.stats(2));
+            await abilities.ensureAbilities(s, {
+              kinds: 'both', force: true, maxAgeMs: ABILITY_MAX_AGE_MS,
+            });
+          }
         } catch (error) {
           results.push({ agent, character: c.me?.name, queued: false,
                          reason: `could not refresh advancement: ${error.message}` });
@@ -9430,7 +9670,7 @@ const TOOLS = [
         const dest = resolveRoom(worldMap, a.then_travel_to);
         if (dest != null) log.push({ step: 'onward', ...(await s.travelExclusive(dest, { maxHops: 18 }).catch(e => ({ arrived: false, reason: e.message }))) });
       }
-      return { left: out, log, now: arrivalReport(s),
+      return { left: out, log, now: await arrivalReport(s),
                note: out ? 'one-way — you cannot walk back into Raza'
                          : 'still inside; the portal is in the Grand Museum at (11,2) and needs two touches' };
     },
@@ -10335,7 +10575,7 @@ const TOOLS = [
           const p = autopilotIfAny(o.agent);
           if (!p) continue;
           p.policy.assignedRoom = o.room;
-          rememberAutopilot(o.agent, { mode: p.mode, policy: { ...p.policy } });
+          rememberAutopilot(o.agent, { mode: p.mode, policy: { ...(fleetState.get(o.agent)?.autopilot?.policy ?? {}), ...p.policy } });
           if (a.travel && o.moves) {
             const s = session(o.agent);
             // `travelJob` rather than a hand-rolled `startJob`: this one did claim the
@@ -12303,7 +12543,11 @@ function serveDashboard(port) {
         // runtime room id does not match the world map's numbering), so look the room up
         // by name first and keep the match for the dimension lookup below.
         let rooFile = null;
-        const byName = roomName ? Object.values(worldMap?.rooms ?? {}).find(r => r.name === roomName) : null;
+        // When multiple rooms share the same name (e.g. two "Deep in the Forest
+        // of Farol"), disambiguate by room number: prefer the name-matched room
+        // whose num matches the caller's roomNum. Fall back to the first match.
+        const nameMatches = roomName ? Object.values(worldMap?.rooms ?? {}).filter(r => r.name === roomName) : [];
+        const byName = nameMatches.find(r => r.num === roomNum) ?? nameMatches[0] ?? null;
         if (roomName && roomRooLookup?.size) rooFile = roomRooLookup.get(roomName);
         if (!rooFile && byName?.roo?.file) rooFile = byName.roo.file;
         const roo = worldMap?.rooms?.[roomNum]?.roo;
@@ -12450,8 +12694,13 @@ function serveDashboard(port) {
         if (!rv.target && h?.goap?.target) rv.target = h.goap.target;
       }
       const { renderRoom3D } = await import('./m59-room3d.mjs');
+      let html;
+      try { html = renderRoom3D(who, rv, h); } catch (e) {
+        res.writeHead(500, { 'content-type': 'text/plain' });
+        return res.end(`room3d render failed: ${e?.message ?? e}`);
+      }
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-      return res.end(renderRoom3D(who, rv, h));
+      return res.end(html);
     }
     if (url.pathname.startsWith('/room3d-data/')) {
       const who = decodeURIComponent(url.pathname.slice('/room3d-data/'.length).split('/')[0] || '');
@@ -12465,9 +12714,12 @@ function serveDashboard(port) {
       if (!rv) {
         for (const [name, s] of sessions) {
           if (s instanceof KeeperProxy && (s._state?.character === who)) {
-            rv = await s.roomView();
-            fromKeeper = !!rv;
-            break;
+            try {
+              rv = await s.roomView();
+              if (rv) { fromKeeper = true; break; }
+            } catch {
+              // Keeper is mid-restart or unreachable; try the next session.
+            }
           }
         }
       }
@@ -12510,8 +12762,12 @@ function serveDashboard(port) {
       if (fromKeeper) {
         for (const [name, s] of sessions) {
           if (s instanceof KeeperProxy && (s._state?.character === who)) {
-            path3dOut = await s.path3d();
-            break;
+            try {
+              path3dOut = await s.path3d();
+              if (path3dOut !== undefined) break;
+            } catch {
+              // Keeper is mid-restart or unreachable; try the next session.
+            }
           }
         }
       }

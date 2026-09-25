@@ -1,0 +1,1798 @@
+{
+ "at": 1788899115172,
+ "agent": "t4",
+ "rows": [
+  {
+   "room": 106,
+   "declared": 1,
+   "dir": "0,1",
+   "from": {
+    "x": 416,
+    "y": 224,
+    "col": 6,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 7,
+    "row": 3
+   },
+   "after": {
+    "x": 480,
+    "y": 224,
+    "col": 7,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 1,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 2,
+   "dir": "0,1",
+   "from": {
+    "x": 480,
+    "y": 224,
+    "col": 7,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 9,
+    "row": 3
+   },
+   "after": {
+    "x": 608,
+    "y": 224,
+    "col": 9,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 2,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 3,
+   "dir": "0,1",
+   "from": {
+    "x": 608,
+    "y": 224,
+    "col": 9,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 12,
+    "row": 3
+   },
+   "after": {
+    "x": 800,
+    "y": 224,
+    "col": 12,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 3,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 4,
+   "dir": "0,1",
+   "from": {
+    "x": 800,
+    "y": 224,
+    "col": 12,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 16,
+    "row": 3
+   },
+   "after": {
+    "x": 1056,
+    "y": 224,
+    "col": 16,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 4,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 5,
+   "dir": "0,1",
+   "from": {
+    "x": 1056,
+    "y": 224,
+    "col": 16,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 21,
+    "row": 3
+   },
+   "after": {
+    "x": 1376,
+    "y": 224,
+    "col": 21,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 5,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 1,
+   "dir": "0,-1",
+   "from": {
+    "x": 1376,
+    "y": 224,
+    "col": 21,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 20,
+    "row": 3
+   },
+   "after": {
+    "x": 1312,
+    "y": 224,
+    "col": 20,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 1,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 2,
+   "dir": "0,-1",
+   "from": {
+    "x": 1312,
+    "y": 224,
+    "col": 20,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 18,
+    "row": 3
+   },
+   "after": {
+    "x": 1184,
+    "y": 224,
+    "col": 18,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 2,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 3,
+   "dir": "0,-1",
+   "from": {
+    "x": 1184,
+    "y": 224,
+    "col": 18,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 15,
+    "row": 3
+   },
+   "after": {
+    "x": 992,
+    "y": 224,
+    "col": 15,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 3,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 4,
+   "dir": "0,-1",
+   "from": {
+    "x": 992,
+    "y": 224,
+    "col": 15,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 11,
+    "row": 3
+   },
+   "after": {
+    "x": 736,
+    "y": 224,
+    "col": 11,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 4,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 5,
+   "dir": "0,-1",
+   "from": {
+    "x": 736,
+    "y": 224,
+    "col": 11,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 3
+   },
+   "after": {
+    "x": 416,
+    "y": 224,
+    "col": 6,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 5,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 1,
+   "dir": "1,0",
+   "from": {
+    "x": 416,
+    "y": 224,
+    "col": 6,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 4
+   },
+   "after": {
+    "x": 416,
+    "y": 288,
+    "col": 6,
+    "row": 4
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 1,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 2,
+   "dir": "1,0",
+   "from": {
+    "x": 416,
+    "y": 288,
+    "col": 6,
+    "row": 4,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 6
+   },
+   "after": {
+    "x": 416,
+    "y": 416,
+    "col": 6,
+    "row": 6
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 2,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 3,
+   "dir": "1,0",
+   "from": {
+    "x": 416,
+    "y": 416,
+    "col": 6,
+    "row": 6,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 9
+   },
+   "after": {
+    "x": 416,
+    "y": 608,
+    "col": 6,
+    "row": 9
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 3,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 4,
+   "dir": "1,0",
+   "from": {
+    "x": 416,
+    "y": 608,
+    "col": 6,
+    "row": 9,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 13
+   },
+   "after": {
+    "x": 416,
+    "y": 864,
+    "col": 6,
+    "row": 13
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 4,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 5,
+   "dir": "1,0",
+   "from": {
+    "x": 416,
+    "y": 864,
+    "col": 6,
+    "row": 13,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 18
+   },
+   "after": {
+    "x": 416,
+    "y": 1184,
+    "col": 6,
+    "row": 18
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 5,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 1,
+   "dir": "-1,0",
+   "from": {
+    "x": 416,
+    "y": 1184,
+    "col": 6,
+    "row": 18,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 17
+   },
+   "after": {
+    "x": 416,
+    "y": 1120,
+    "col": 6,
+    "row": 17
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 1,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 2,
+   "dir": "-1,0",
+   "from": {
+    "x": 416,
+    "y": 1120,
+    "col": 6,
+    "row": 17,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 15
+   },
+   "after": {
+    "x": 416,
+    "y": 992,
+    "col": 6,
+    "row": 15
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 2,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 3,
+   "dir": "-1,0",
+   "from": {
+    "x": 416,
+    "y": 992,
+    "col": 6,
+    "row": 15,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 12
+   },
+   "after": {
+    "x": 416,
+    "y": 800,
+    "col": 6,
+    "row": 12
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 3,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 4,
+   "dir": "-1,0",
+   "from": {
+    "x": 416,
+    "y": 800,
+    "col": 6,
+    "row": 12,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 8
+   },
+   "after": {
+    "x": 416,
+    "y": 544,
+    "col": 6,
+    "row": 8
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 4,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 5,
+   "dir": "-1,0",
+   "from": {
+    "x": 416,
+    "y": 544,
+    "col": 6,
+    "row": 8,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 3
+   },
+   "after": {
+    "x": 416,
+    "y": 224,
+    "col": 6,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 5,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 1,
+   "dir": "1,1",
+   "from": {
+    "x": 416,
+    "y": 224,
+    "col": 6,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 7,
+    "row": 4
+   },
+   "after": {
+    "x": 480,
+    "y": 288,
+    "col": 7,
+    "row": 4
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 1.4142135623730951,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 2,
+   "dir": "1,1",
+   "from": {
+    "x": 480,
+    "y": 288,
+    "col": 7,
+    "row": 4,
+    "room": 734
+   },
+   "asked": {
+    "col": 9,
+    "row": 6
+   },
+   "after": {
+    "x": 608,
+    "y": 416,
+    "col": 9,
+    "row": 6
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 2.8284271247461903,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 3,
+   "dir": "1,1",
+   "from": {
+    "x": 608,
+    "y": 416,
+    "col": 9,
+    "row": 6,
+    "room": 734
+   },
+   "asked": {
+    "col": 12,
+    "row": 9
+   },
+   "after": {
+    "x": 800,
+    "y": 608,
+    "col": 12,
+    "row": 9
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 4.242640687119286,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 4,
+   "dir": "1,1",
+   "from": {
+    "x": 800,
+    "y": 608,
+    "col": 12,
+    "row": 9,
+    "room": 734
+   },
+   "asked": {
+    "col": 16,
+    "row": 13
+   },
+   "after": {
+    "x": 1056,
+    "y": 864,
+    "col": 16,
+    "row": 13
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 5.656854249492381,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 5,
+   "dir": "1,1",
+   "from": {
+    "x": 1056,
+    "y": 864,
+    "col": 16,
+    "row": 13,
+    "room": 734
+   },
+   "asked": {
+    "col": 21,
+    "row": 18
+   },
+   "after": {
+    "x": 1376,
+    "y": 1184,
+    "col": 21,
+    "row": 18
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 7.0710678118654755,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 1,
+   "dir": "1,-1",
+   "from": {
+    "x": 1376,
+    "y": 1184,
+    "col": 21,
+    "row": 18,
+    "room": 734
+   },
+   "asked": {
+    "col": 20,
+    "row": 19
+   },
+   "after": {
+    "x": 1312,
+    "y": 1248,
+    "col": 20,
+    "row": 19
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 1.4142135623730951,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 1,
+   "dir": "-1,1",
+   "from": {
+    "x": 1312,
+    "y": 1248,
+    "col": 20,
+    "row": 19,
+    "room": 734
+   },
+   "asked": {
+    "col": 21,
+    "row": 18
+   },
+   "after": {
+    "x": 1376,
+    "y": 1184,
+    "col": 21,
+    "row": 18
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 1.4142135623730951,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 1,
+   "dir": "-1,-1",
+   "from": {
+    "x": 1376,
+    "y": 1184,
+    "col": 21,
+    "row": 18,
+    "room": 734
+   },
+   "asked": {
+    "col": 20,
+    "row": 17
+   },
+   "after": {
+    "x": 1312,
+    "y": 1120,
+    "col": 20,
+    "row": 17
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 1.4142135623730951,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 2,
+   "dir": "-1,-1",
+   "from": {
+    "x": 1312,
+    "y": 1120,
+    "col": 20,
+    "row": 17,
+    "room": 734
+   },
+   "asked": {
+    "col": 18,
+    "row": 15
+   },
+   "after": {
+    "x": 1184,
+    "y": 992,
+    "col": 18,
+    "row": 15
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 2.8284271247461903,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 3,
+   "dir": "-1,-1",
+   "from": {
+    "x": 1184,
+    "y": 992,
+    "col": 18,
+    "row": 15,
+    "room": 734
+   },
+   "asked": {
+    "col": 15,
+    "row": 12
+   },
+   "after": {
+    "x": 992,
+    "y": 800,
+    "col": 15,
+    "row": 12
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 4.242640687119286,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 4,
+   "dir": "-1,-1",
+   "from": {
+    "x": 992,
+    "y": 800,
+    "col": 15,
+    "row": 12,
+    "room": 734
+   },
+   "asked": {
+    "col": 11,
+    "row": 8
+   },
+   "after": {
+    "x": 736,
+    "y": 544,
+    "col": 11,
+    "row": 8
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 5.656854249492381,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 5,
+   "dir": "-1,-1",
+   "from": {
+    "x": 736,
+    "y": 544,
+    "col": 11,
+    "row": 8,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 3
+   },
+   "after": {
+    "x": 416,
+    "y": 224,
+    "col": 6,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 7.0710678118654755,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 1,
+   "dir": "0,1",
+   "from": {
+    "x": 416,
+    "y": 224,
+    "col": 6,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 7,
+    "row": 3
+   },
+   "after": {
+    "x": 480,
+    "y": 224,
+    "col": 7,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 1,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 2,
+   "dir": "0,1",
+   "from": {
+    "x": 480,
+    "y": 224,
+    "col": 7,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 9,
+    "row": 3
+   },
+   "after": {
+    "x": 608,
+    "y": 224,
+    "col": 9,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 2,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 3,
+   "dir": "0,1",
+   "from": {
+    "x": 608,
+    "y": 224,
+    "col": 9,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 12,
+    "row": 3
+   },
+   "after": {
+    "x": 800,
+    "y": 224,
+    "col": 12,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 3,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 4,
+   "dir": "0,1",
+   "from": {
+    "x": 800,
+    "y": 224,
+    "col": 12,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 16,
+    "row": 3
+   },
+   "after": {
+    "x": 1056,
+    "y": 224,
+    "col": 16,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 4,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 5,
+   "dir": "0,1",
+   "from": {
+    "x": 1056,
+    "y": 224,
+    "col": 16,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 21,
+    "row": 3
+   },
+   "after": {
+    "x": 1376,
+    "y": 224,
+    "col": 21,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 5,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 1,
+   "dir": "0,-1",
+   "from": {
+    "x": 1376,
+    "y": 224,
+    "col": 21,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 20,
+    "row": 3
+   },
+   "after": {
+    "x": 1312,
+    "y": 224,
+    "col": 20,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 1,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 2,
+   "dir": "0,-1",
+   "from": {
+    "x": 1312,
+    "y": 224,
+    "col": 20,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 18,
+    "row": 3
+   },
+   "after": {
+    "x": 1184,
+    "y": 224,
+    "col": 18,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 2,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 3,
+   "dir": "0,-1",
+   "from": {
+    "x": 1184,
+    "y": 224,
+    "col": 18,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 15,
+    "row": 3
+   },
+   "after": {
+    "x": 992,
+    "y": 224,
+    "col": 15,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 3,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 4,
+   "dir": "0,-1",
+   "from": {
+    "x": 992,
+    "y": 224,
+    "col": 15,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 11,
+    "row": 3
+   },
+   "after": {
+    "x": 736,
+    "y": 224,
+    "col": 11,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 4,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 5,
+   "dir": "0,-1",
+   "from": {
+    "x": 736,
+    "y": 224,
+    "col": 11,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 3
+   },
+   "after": {
+    "x": 416,
+    "y": 224,
+    "col": 6,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 5,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 1,
+   "dir": "1,0",
+   "from": {
+    "x": 416,
+    "y": 224,
+    "col": 6,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 4
+   },
+   "after": {
+    "x": 416,
+    "y": 288,
+    "col": 6,
+    "row": 4
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 1,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 2,
+   "dir": "1,0",
+   "from": {
+    "x": 416,
+    "y": 288,
+    "col": 6,
+    "row": 4,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 6
+   },
+   "after": {
+    "x": 416,
+    "y": 416,
+    "col": 6,
+    "row": 6
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 2,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 3,
+   "dir": "1,0",
+   "from": {
+    "x": 416,
+    "y": 416,
+    "col": 6,
+    "row": 6,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 9
+   },
+   "after": {
+    "x": 416,
+    "y": 608,
+    "col": 6,
+    "row": 9
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 3,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 4,
+   "dir": "1,0",
+   "from": {
+    "x": 416,
+    "y": 608,
+    "col": 6,
+    "row": 9,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 13
+   },
+   "after": {
+    "x": 416,
+    "y": 864,
+    "col": 6,
+    "row": 13
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 4,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 5,
+   "dir": "1,0",
+   "from": {
+    "x": 416,
+    "y": 864,
+    "col": 6,
+    "row": 13,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 18
+   },
+   "after": {
+    "x": 416,
+    "y": 1184,
+    "col": 6,
+    "row": 18
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 5,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 1,
+   "dir": "-1,0",
+   "from": {
+    "x": 416,
+    "y": 1184,
+    "col": 6,
+    "row": 18,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 17
+   },
+   "after": {
+    "x": 416,
+    "y": 1120,
+    "col": 6,
+    "row": 17
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 1,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 2,
+   "dir": "-1,0",
+   "from": {
+    "x": 416,
+    "y": 1120,
+    "col": 6,
+    "row": 17,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 15
+   },
+   "after": {
+    "x": 416,
+    "y": 992,
+    "col": 6,
+    "row": 15
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 2,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 3,
+   "dir": "-1,0",
+   "from": {
+    "x": 416,
+    "y": 992,
+    "col": 6,
+    "row": 15,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 12
+   },
+   "after": {
+    "x": 416,
+    "y": 800,
+    "col": 6,
+    "row": 12
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 3,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 4,
+   "dir": "-1,0",
+   "from": {
+    "x": 416,
+    "y": 800,
+    "col": 6,
+    "row": 12,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 8
+   },
+   "after": {
+    "x": 416,
+    "y": 544,
+    "col": 6,
+    "row": 8
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 4,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 5,
+   "dir": "-1,0",
+   "from": {
+    "x": 416,
+    "y": 544,
+    "col": 6,
+    "row": 8,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 3
+   },
+   "after": {
+    "x": 416,
+    "y": 224,
+    "col": 6,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 5,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 1,
+   "dir": "1,1",
+   "from": {
+    "x": 416,
+    "y": 224,
+    "col": 6,
+    "row": 3,
+    "room": 734
+   },
+   "asked": {
+    "col": 7,
+    "row": 4
+   },
+   "after": {
+    "x": 480,
+    "y": 288,
+    "col": 7,
+    "row": 4
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 1.4142135623730951,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 2,
+   "dir": "1,1",
+   "from": {
+    "x": 480,
+    "y": 288,
+    "col": 7,
+    "row": 4,
+    "room": 734
+   },
+   "asked": {
+    "col": 9,
+    "row": 6
+   },
+   "after": {
+    "x": 608,
+    "y": 416,
+    "col": 9,
+    "row": 6
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 2.8284271247461903,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 3,
+   "dir": "1,1",
+   "from": {
+    "x": 608,
+    "y": 416,
+    "col": 9,
+    "row": 6,
+    "room": 734
+   },
+   "asked": {
+    "col": 12,
+    "row": 9
+   },
+   "after": {
+    "x": 800,
+    "y": 608,
+    "col": 12,
+    "row": 9
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 4.242640687119286,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 4,
+   "dir": "1,1",
+   "from": {
+    "x": 800,
+    "y": 608,
+    "col": 12,
+    "row": 9,
+    "room": 734
+   },
+   "asked": {
+    "col": 16,
+    "row": 13
+   },
+   "after": {
+    "x": 1056,
+    "y": 864,
+    "col": 16,
+    "row": 13
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 5.656854249492381,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 5,
+   "dir": "1,1",
+   "from": {
+    "x": 1056,
+    "y": 864,
+    "col": 16,
+    "row": 13,
+    "room": 734
+   },
+   "asked": {
+    "col": 21,
+    "row": 18
+   },
+   "after": {
+    "x": 1376,
+    "y": 1184,
+    "col": 21,
+    "row": 18
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 7.0710678118654755,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 1,
+   "dir": "1,-1",
+   "from": {
+    "x": 1376,
+    "y": 1184,
+    "col": 21,
+    "row": 18,
+    "room": 734
+   },
+   "asked": {
+    "col": 20,
+    "row": 19
+   },
+   "after": {
+    "x": 1312,
+    "y": 1248,
+    "col": 20,
+    "row": 19
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 1.4142135623730951,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 1,
+   "dir": "-1,1",
+   "from": {
+    "x": 1312,
+    "y": 1248,
+    "col": 20,
+    "row": 19,
+    "room": 734
+   },
+   "asked": {
+    "col": 21,
+    "row": 18
+   },
+   "after": {
+    "x": 1376,
+    "y": 1184,
+    "col": 21,
+    "row": 18
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 1.4142135623730951,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 1,
+   "dir": "-1,-1",
+   "from": {
+    "x": 1376,
+    "y": 1184,
+    "col": 21,
+    "row": 18,
+    "room": 734
+   },
+   "asked": {
+    "col": 20,
+    "row": 17
+   },
+   "after": {
+    "x": 1312,
+    "y": 1120,
+    "col": 20,
+    "row": 17
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 1.4142135623730951,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 2,
+   "dir": "-1,-1",
+   "from": {
+    "x": 1312,
+    "y": 1120,
+    "col": 20,
+    "row": 17,
+    "room": 734
+   },
+   "asked": {
+    "col": 18,
+    "row": 15
+   },
+   "after": {
+    "x": 1184,
+    "y": 992,
+    "col": 18,
+    "row": 15
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 2.8284271247461903,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 3,
+   "dir": "-1,-1",
+   "from": {
+    "x": 1184,
+    "y": 992,
+    "col": 18,
+    "row": 15,
+    "room": 734
+   },
+   "asked": {
+    "col": 15,
+    "row": 12
+   },
+   "after": {
+    "x": 992,
+    "y": 800,
+    "col": 15,
+    "row": 12
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 4.242640687119286,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 4,
+   "dir": "-1,-1",
+   "from": {
+    "x": 992,
+    "y": 800,
+    "col": 15,
+    "row": 12,
+    "room": 734
+   },
+   "asked": {
+    "col": 11,
+    "row": 8
+   },
+   "after": {
+    "x": 736,
+    "y": 544,
+    "col": 11,
+    "row": 8
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 5.656854249492381,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  },
+  {
+   "room": 106,
+   "declared": 5,
+   "dir": "-1,-1",
+   "from": {
+    "x": 736,
+    "y": 544,
+    "col": 11,
+    "row": 8,
+    "room": 734
+   },
+   "asked": {
+    "col": 6,
+    "row": 3
+   },
+   "after": {
+    "x": 416,
+    "y": 224,
+    "col": 6,
+    "row": 3
+   },
+   "moved": true,
+   "arrived": true,
+   "ground": 7.0710678118654755,
+   "threw": null,
+   "room_before": 734,
+   "room_after": null
+  }
+ ]
+}

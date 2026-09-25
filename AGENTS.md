@@ -107,6 +107,29 @@ Variants: `--checkpoint` (snapshot only), `--keep-server`, `--label "..."`,
 `--list`, `--restore <id>`. Restore refuses while the server is up. Report where
 the checkpoints went; do not delete old ones unasked.
 
+## A restart destroys the only record of what the fleet did
+
+`substrate/keeper-<name>.log` is written **in place**. There is no rotation and no
+archive. `m59-service.mjs restart` truncates it, and everything the characters did up to
+that moment is gone — including the evidence for whatever you are currently debugging.
+
+```bash
+cp substrate/keeper-*.log /tmp/ && node tools/m59-service.mjs restart --fleet -
+```
+
+This is not a style note. Four restarts during one debugging session destroyed the
+measurements that justified two of the three fixes shipped from it; they are written
+down as reported observations in `docs/HANDOFF-LOCOMOTION.md` rather than as checkable
+numbers, because they cannot be checked any more.
+
+**Volume, if you are grepping:** one keeper log held 649,627 `[movedbg]` lines against
+40,643 `[move-sent]`. The signal is 6% of the file. `M59_MOVE_DEBUG=0` silences the
+per-tick chatter; `move-sent` is the per-packet record and the only faithful speed
+instrument: read `at=` for what we declared and `srv=` for where the server says we are,
+and **not** `aim=`, which is the route destination at three of four call sites and not a
+packet. Reading `aim=` as a packet makes every send look like a 12-square lunge past the
+envelope limit. See `docs/MOVEMENT-ENVELOPE.md` for the full field table.
+
 ## Tell the user, do not work around
 
 - **Steam cannot be automated.** It will not install a game the user does not own
@@ -125,6 +148,24 @@ the checkpoints went; do not delete old ones unasked.
   proves nothing can be built. If the daemon is down, ask the user to start
   Docker Desktop rather than starting it yourself.
 
+## Movement rate and stride — read this first
+
+**`docs/MOVEMENT-ENVELOPE.md` before touching mover rate, stride, or speed.** We spent weeks on this
+and most of the time was spent on measurement bugs of our own. The short version:
+
+- **The server caps move PACKETS at ~1/second** (`user.kod:2907` `@UserMove`; sending faster is what
+  it logs as a speedhack). `USER_MOVE_MIN_INTERVAL_MS = 1050` is correct and is not the problem.
+- **Distance per packet is the only lever, and it is loose: 5 squares per packet lands 284/284.**
+  Measured by `tools/m59-range-probe.mjs`. `WALK_STRIDE_PROTO = 160` (2.5 squares) is half the
+  envelope the server grants, and the comment claiming it was "verified" against `UserMove` is false
+  — that function has no stride constant.
+- **Never send speed 36 below 10 vigor.** The server silently puts you back on your own square and
+  logs only a Debug line, which is indistinguishable from a refused stride. The mover currently
+  chooses 36 without checking.
+- **The fleet is at 0.07 squares/s and it is NOT a locomotion bug** — `path=null` with thousands of
+  sends means the decider cannot hold a destination. Fix that before changing any stride.
+- **We cannot read the server's log.** The fleet plays `76.214.42.186:5959`, not a local blakserv.
+
 ## Traps
 
 - **`create automated` makes a character with ZERO in every attribute.** They are
@@ -141,16 +182,27 @@ the checkpoints went; do not delete old ones unasked.
   the real one plays on. Use `tools/m59-mcp-attach.mjs`, which holds no state.
 - **Never call the `leave` tool** on a fleet anyone cares about — it drops the
   roster, and the roster is the only record of the passwords.
-- **`substrate/fleet-accounts.json` is the only copy of the account passwords.**
-  Gitignored. Never commit it, never print it into a shared transcript, never
-  delete it.
+- **The rosters are the only copy of the account passwords — and there are two of
+  them.** `substrate/fleet-state.json` (the unnamed fleet) and
+  `substrate/fleet-state.json`'s named equivalents under `substrate/fleets/<name>.json`
+  hold the credentials of **every character the broker has ever joined**, because
+  `rememberJoin()` (m59-broker.mjs:1242) copies the whole credential object — password
+  included — into the roster and saves it. `substrate/fleet-accounts.json` holds only
+  what `m59-makefleet.mjs` created. **The broker never reads that file to log anyone in.**
+  Backing up only `fleet-accounts.json` — which is what this document used to tell you to
+  do, and what lost a fleet once — leaves the actually-playing characters unbacked.
+  There is no password reset, no email on the account, and no way to ask the server; lose
+  the file and the characters are not deleted, just permanently unreachable.
+  `node tools/m59-backup.mjs --credentials-only` covers all of it and has done since it
+  was written. Gitignored: never commit any of them, never print their contents into a
+  shared transcript, never delete them.
 - **`[Channel] Flush` defaults to `No`**, and with it off every server log stays
   at 0 bytes for ever — which looks exactly like a hook not firing. The container
   turns it on; a native build may not have.
-- **Hunt bands are scaled by level.** `floor(level/2)` when armed, `floor(level/4)`
-  when unarmed. Ceiling = level + band. A lv21 character has ceiling 31, so lv30
+- **Hunt bands are scaled by level.** `floor(level/4)` when armed, `floor(level/8)`
+  when unarmed. Ceiling = level + band. A lv25 character has ceiling 31 (armed), so lv30
   giant rats are "in band" — but they are still too tough, and each death drops
-  max HP by 1–2, starting a death spiral. Baby spiders (lv25) in the Deep Woods
+  max HP by exactly 1, starting a death spiral. Baby spiders (lv25) in the Deep Woods
   (rooms 534, 535, 545, 554, 568, 574, 575, 593, 603) are the safe target for
   lv20–24. Giant rats (lv30) in the Sewers (room 377/600) are the target for
   lv25+. See `docs/GOAP-HANDOFF.md` § "Scaled hunt bands" for the full table.

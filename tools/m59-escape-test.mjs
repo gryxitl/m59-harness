@@ -351,6 +351,10 @@ function safeSpot({ resting = false, deaf = false, hits = 3 } = {}) {
     stats: async () => {},
     async waitFor() { return { events: [], timedOut: true }; },
     roomContents() {},
+    // `fight` faces the target before it swings (an attack on something behind you
+    // is refused with a message about view). The mock has no facing to do — a no-op
+    // stands in, and pushes nothing to `log` so the log-index assertions hold.
+    async face() {},
     stand() { log.push('stand'); if (!deaf) resting = false; },
   };
 

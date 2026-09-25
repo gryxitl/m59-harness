@@ -21,9 +21,9 @@
 // withdraw line while a tick is somehow blocked.
 import { readFileSync, existsSync } from 'node:fs';
 import { Session } from './m59-session.mjs';
-import { TickLoop } from './m59-tick.mjs';
-import { makeDecider, DEFAULT_GOALS, intend, INTENTS } from './m59-decide.mjs';
-import { Router, routeIntent } from './m59-route.mjs';
+import { TickLoop } from './tick/m59-tick.mjs';
+import { makeDecider, DEFAULT_GOALS, intend, INTENTS } from './tick/m59-decide.mjs';
+import { Router, routeIntent } from './tick/m59-route.mjs';
 import { fleetName, stateFileFor } from './m59-fleetpath.mjs';
 import * as watchdog from './m59-watchdog.mjs';
 import { safetyFor } from './m59-skills.mjs';

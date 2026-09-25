@@ -99,6 +99,14 @@ export const BP = {
 };
 export const BPNAME = Object.fromEntries(Object.entries(BP).map(([k, v]) => [v, k]));
 
+// The speedhack budget, named. user.kod gives the server ~1 UserMove/second
+// (piMovesCounter +1 per packet, -1 per second, trip above 2 with a snap-back to the
+// The server's contract is one BP_REQ_MOVE per second (user.kod:2937). 1000ms matches
+// MOVE_CAP_MS (m59-mover.mjs:338) and the official client's cadence law (move.c:57).
+// The old 1050 was a 5% slack that dropped ~40% of sends (measured: 799 drops/hour
+// against 1202 sends) because the mover's 1000ms slot opened 50ms before the client's gate.
+export const USER_MOVE_MIN_INTERVAL_MS = 1000;
+
 // BP_USERCOMMAND sub-opcodes, include/proto.h:222. A whole second command space
 // reached through one opcode, holding the things the real client's slash commands
 // do — resting, safety toggling, banking, guild administration.
@@ -895,6 +903,60 @@ export class M59Client {
     if (!Number.isInteger(x) || x < 0 || x > 0xffff
         || !Number.isInteger(y) || y < 0 || y > 0xffff)
       throw new RangeError(`movement coordinates must be unsigned 16-bit integers, got (${x},${y})`);
+    // SPEEDHACK LAW (user.kod): the server budgets ~1 UserMove/second
+    // (piMovesCounter +1/packet, -1/sec, trip at >2 with a snap-back to the
+    // pre-stride square — the accept-jump/snap-back rubber band). Bursts from
+    // overlapping senders (mover + escape/flee/poke/manual) used to trip it
+    // every few seconds. Drop UserMoves within 1050ms of the last (5% under
+    // budget so the counter drains); movement is latest-wins, the next tick
+    // re-fires. Returns false when dropped (callers generally ignore it;
+    // the mover has its own cap so it can skip send bookkeeping too).
+    const nowMs = Date.now();
+    if (nowMs - (this._lastUserMoveAt ?? 0) < USER_MOVE_MIN_INTERVAL_MS) {
+      // LATEST-WINS: hold the newest move and re-issue when the window closes.
+      // A refused move is not a dead move — it is the position the character
+      // wants to be at, and the server's 1/s law is a timing constraint, not
+      // a rejection of the position. Dropping it meant the character sat one
+      // stride behind the mover's declaration for up to 1000ms, which is the
+      // entire rate deficit. Replacing a pending move is safe: movement is
+      // latest-wins (the next tick re-fires), so the oldest pending move is
+      // the least useful.
+      const hadPending = this._pendingUserMove != null;
+      this._pendingUserMove = { x, y, speed, room, at: nowMs };
+      this._droppedUserMoves = (this._droppedUserMoves ?? 0) + 1;
+      this._droppedUserMovesAt = nowMs;
+      this._lastUserMoveDropAt = nowMs;
+      if (process.env.M59_DROP_TRACE === '1') {
+        const e = new Error('move-drop');
+        const lines = e.stack.split('\n').slice(1, 6);
+        for (const l of lines) console.error(`[move-drop-trace] ${this.user ?? '?'} ${l.trim()}`);
+      }
+      // Arm the flush timer only when nothing is pending. A new pending move
+      // replaces the old one (latest-wins) but does NOT re-arm the timer —
+      // the original arm is still running and will flush the newest position.
+      if (!hadPending) {
+        const delay = Math.max(0, USER_MOVE_MIN_INTERVAL_MS - (nowMs - this._lastUserMoveAt));
+        this._pendingFlushTimer = setTimeout(() => {
+          this._pendingFlushTimer = null;
+          const p = this._pendingUserMove;
+          this._pendingUserMove = null;
+          if (!p) return;
+          // TTL: discard a position that is 200ms stale.
+          if (Date.now() - p.at > USER_MOVE_MIN_INTERVAL_MS + 200) return;
+          // Re-enter moveTo: the window has closed (the timer waited
+          // USER_MOVE_MIN_INTERVAL_MS - elapsed), so the throttle passes.
+          // This goes through the full send tail (recordSeen, trail,
+          // _firstUserMoveAt) rather than a raw send.
+          this.moveTo(p.x, p.y, p.speed, p.room);
+        }, delay);
+      }
+      return false;
+    }
+    this._lastUserMoveAt = nowMs;
+    // When this client first tried to move. The drop RATE needs a window, and the
+    // only honest window is the life of the thing doing the moving — a rate measured
+    // from process start would count time before the character was even in the game.
+    if (this._firstUserMoveAt == null) this._firstUserMoveAt = nowMs;
     this.send(BP.REQ_MOVE, u16b(y), u16b(x), u8b(speed), u32(objId(room || 0)));
     // OUR OWN TRAIL, AT THE RATE WE ACTUALLY WALK IT.
     //
@@ -981,8 +1043,14 @@ export class M59Client {
     const t = String(text);
     let kind = null;
     if (/out of range/i.test(t)) kind = 'out_of_range';
-    else if (/your .* hits /i.test(t) || /^you hit /i.test(t)) kind = 'hit';
+    else if (/^you killed /i.test(t)) kind = 'kill';
+    else if (/has valiantly slain/i.test(t)) kind = 'kill';
+    else if (/your .* (hits|slaps) /i.test(t)) kind = 'hit';
     else if (/your .* misses /i.test(t) || /^you miss /i.test(t)) kind = 'miss';
+    else if (/^the\b.*\b(nips|hits|claws|bites|slaps) you\b/i.test(t)) kind = 'damaged';
+    else if (/^you avoid /i.test(t)) kind = 'damaged';
+    else if (/is (slightly|seriously) wounded/i.test(t)) kind = 'wounded';
+    else if (/^###\s+.+\s+was just killed by/i.test(t)) kind = 'died';
     if (!kind) return;
     if (!Array.isArray(this.combatLog)) this.combatLog = [];
     this.combatLog.push({ at: Date.now(), kind, text: t.slice(0, 120) });
@@ -1278,6 +1346,13 @@ export class M59Client {
       case BP.PLAYER: {
         const p = parsePlayer(body);
         this.selfId = p.id;
+        // selfId just landed (possibly after the contents): sweep identity
+        // flags so the self object is marked even if contents came first.
+        try {
+          for (const o of this.room?.objects?.values?.() ?? []) {
+            o.is_self = (o.id != null && o.id === this.selfId);
+          }
+        } catch {}
         this.room.id = p.roomId;
         this.room.security = p.security;
         this.room.flags = p.roomFlags;
@@ -1307,6 +1382,14 @@ export class M59Client {
         this.room.id = res.roomId;
         this.room.objects = new Map(res.objects.map(o => {
           o.appearanceRevision = ++this.appearanceRevision;
+          // Identity flags at the source: every downstream is_self/is_player
+          // filter (tick target selection, combat fallback) reads these raw
+          // objects. Without them the character can target itself (watched:
+          // "swing at Lee" by Lee) or misread players as mobs.
+          o.is_self = (o.id != null && o.id === this.selfId);
+          o.is_player = !!(o.flags & 0x0004);
+          o.can_attack = !!(o.flags & 0x0008);
+          o.is_enemy = !!(o.flags & 0x02000000);
           return [o.id, o];
         }));
         // SELF-HEAL A STALE selfId. selfId is set only by the BP.PLAYER packet (one per
@@ -1337,6 +1420,9 @@ export class M59Client {
         const res = parseCreate(body);
         if (!this.check('CREATE', res)) break;
         res.object.appearanceRevision = ++this.appearanceRevision;
+          res.object.is_player = !!(res.object.flags & 0x0004);
+          res.object.can_attack = !!(res.object.flags & 0x0008);
+          res.object.is_enemy = !!(res.object.flags & 0x02000000);
         this.room.objects.set(res.object.id, res.object);
         this.emit('appeared', { id: res.object.id, what: describeObject(res.object, this.lookup) });
         break;
@@ -1413,6 +1499,31 @@ export class M59Client {
         if (o && (o.flags & OF.PLAYER))
           this.emit('player-moved', { id: res.id, who: this.rsc.get(o.nameRsc) ?? null,
                                       col: res.col, row: res.row, x: res.x, y: res.y });
+        // MONSTER MOVEMENT, OFF BY DEFAULT. A monster emits one of these several times a
+        // second, which is why the event above is players-only: the 500-entry ring would be
+        // evicted in seconds. But the fact that they arrive at all is the answer to how a
+        // server-placed monster gets animated -- the server does not set a position and leave
+        // it, it STREAMS moves, and the client interpolates the stream.
+        //
+        // This is also the only in-game clock on movement speed that is not us. Every rate
+        // number in this project has been measured from our own sends, which is circular when
+        // the thing under test is our own sends. A monster walking across a room at the rate
+        // the server drives it is a speed the server itself considers normal, and res.x/res.y
+        // are fine coordinates -- sub-square -- already parsed here and thrown away.
+        //
+        // M59_WATCH_MONSTERS=1 logs one line per monster move to stderr. Diagnostics only: it
+        // does not emit an event, so no listener and no ring entry is affected.
+        if (process.env.M59_WATCH_MONSTERS === '1' && o && !(o.flags & OF.PLAYER)
+            && res.x != null && res.y != null) {
+          // id= IS NOT DECORATION. The first version keyed the stream by NAME and every
+          // measurement it produced was garbage: the server has many monsters called 'spider',
+          // so the log interleaved all of them and a per-name 'step' was the distance between
+          // two DIFFERENT spiders. It read as 16 squares/second and 346 teleport-jumps in a
+          // 21x20 room, including col 53 in a room 21 squares wide. Per-object identity is the
+          // minimum needed to say anything at all about motion.
+          console.error(`[monster-move] id=${res.id} who=${this.rsc.get(o.nameRsc) ?? '?'} `
+            + `x=${res.x} y=${res.y} col=${res.col} row=${res.row} t=${Date.now()}`);
+        }
         break;
       }
 
@@ -1640,6 +1751,7 @@ export class M59Client {
 
       case BP.INVENTORY_REMOVE: {
         const res = parseRemove(body);
+        if (!this.check('INVENTORY_REMOVE', res)) break;
         if (res.exact) this.inventory = this.inventory.filter(o => o.id !== res.id);
         break;
       }
@@ -1991,6 +2103,10 @@ export class M59Client {
         const res = parseStringMessage(body, this.lookup);
         if (res.text) {
           this.log(`message: ${res.text}`);
+          if (!this._msgLogStart) this._msgLogStart = Date.now();
+          if (Date.now() - this._msgLogStart < 30000) {
+            console.error(`[msg] ${res.text}`);
+          }
           this._noteCombatOutcome?.(res.text);
           this.emit('message', { text: res.text });
         }
@@ -2177,7 +2293,7 @@ export class M59Client {
   // this client can read the wire at all. So the heartbeat is BP_REQ_INVENTORY:
   // no parameters (sprocket.c:34), no side effects, and its reply is a free
   // refresh of the inventory we keep anyway.
-  startKeepalive(everyMs = 20000) {
+  startKeepalive(everyMs = 5000) {
     this.stopKeepalive();
     this.keepalivePending = 0;
     this.keepaliveTimer = setInterval(() => {

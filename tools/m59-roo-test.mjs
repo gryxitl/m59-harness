@@ -575,9 +575,20 @@ if (!roomsDir) {
     // The neighbour must itself be offered a step toward the hidden cell by the fine grid.
     const p = d4.path(br, bc, hr, hc, { collision: true });
     ok(`fine-fallback routes into hidden cell (${hc},${hr})`, p.found === true, p.reason ?? 'found');
-    // And back out (we can get in AND out — not a trap).
-    const p2 = d4.path(hr, hc, br, bc, { collision: true });
-    ok(`fine-fallback routes out of hidden cell (${hc},${hr})`, p2.found === true, p2.reason ?? 'found');
+    // And back out (we can get in AND out — not a trap). Since 37e4611 the ROUTER's
+    // collision view is deliberately coarse-conservative (generosity there invented roads —
+    // room 27's eight-hop route through a stranded boundary), and the fine tolerance lives
+    // in the MOVER's view: fineWiden. So "not a trap" is tested at the level it is true at:
+    // a body standing on the hidden cell is OFFERED a step toward the coarse-walkable
+    // neighbour by the mover's view, and the mover's own trace (moverStepLands) accepts it.
+    const offered = d4.neighbors(hr, hc, { fine: true, collision: true, fineWiden: true })
+      .some(n => n.row === br && n.col === bc);
+    ok(`mover's view offers a step out of hidden cell (${hc},${hr})`, offered === true,
+       JSON.stringify(d4.neighbors(hr, hc, { fine: true, collision: true, fineWiden: true })));
+    if (offered) {
+      ok(`moverStepLands accepts the step out of hidden cell (${hc},${hr})`,
+         d4.moverStepLands(hr, hc, br, bc) === true);
+    }
   }
   // Regression: a normal route through the room body still works.
   const pnorm = d4.path(10, 10, 20, 20, { collision: true });

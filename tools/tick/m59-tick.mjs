@@ -71,9 +71,9 @@
 //
 // ONE TICK OF STALENESS. The old model blocked to confirm a position before validating
 // the next step against local collision geometry. Here the validator reads the latest
-// PUSHED position, which may be one tick old. That is a deliberate trade and the server
-// is the reason it is safe: it is the collision authority, it silently refuses an
-// illegal move, and a refusal costs a tick rather than a character.
+// PUSHED position, which may be one tick old. The official client does not wait either:
+// it simulates locally and reports at 1/s (clientd3d/move.c), and the server accepts
+// the declared position (server_validate=false for user moves, room.kod).
 
 const DEFAULT_HZ = 10;
 // LIVENESS: the keepalive sends an inventory request every 20s and the server
@@ -91,6 +91,9 @@ const LIVENESS_STALE_MS = 45_000;
 // re-issue that pushed us over the server's 5-packet/s throttle. See docs/packet-throttle.md.
 const FACE_EPS = 5;
 
+import { isGrounded, segHeightOk } from './m59-ground.mjs';
+import { KOD_FINENESS } from '../m59-roo.mjs';
+
 // ---------------------------------------------------------------------------
 // SENSOR -- free, synchronous, sends nothing
 // ---------------------------------------------------------------------------
@@ -106,16 +109,26 @@ export class Sensor {
   read() {
     const s = this.session, c = s?.client;
     const at = Date.now();
-    // HOW LONG SINCE WE LAST LOOKED, in wall clock. NOT for integrating anything -- the
-    // server owns position and pushes it, and keeping our own dead-reckoned copy would
-    // be a second, wrong world. It is here so a decider can tell a healthy cadence from
+    // HOW LONG SINCE WE LAST LOOKED, in wall clock. NOT for integrating anything --
+    // local simulation (our own feet) is authoritative the way the official client
+    // does it; server echoes arrive ~1/s and correct us when they disagree.
+    // It is here so a decider can tell a healthy cadence from
     // a degraded one: a frame that arrives 2s after the last means we were blind for 2s,
     // and some decisions (engaging, committing to a walk) deserve to know that.
     const dt = this.lastAt ? at - this.lastAt : null;
     this.lastAt = at;
     if (!c || s.live !== true || c.state !== 'game')
       return { in_game: false, at, dt_ms: dt };
-    const me = c.self;
+    // SINGLE POSITION TRUTH: feed the Pose the live room-objects self entry
+    // (the server echo) each frame, then read position from the Pose so the
+    // sim/server reconciliation lives in exactly one place.
+    const pose = s._pose;
+    try {
+      const id = c.selfId;
+      const live = (id != null && c.room?.objects?.get) ? c.room.objects.get(id) : null;
+      if (pose) pose.updateServer(live ?? c.self);
+    } catch {}
+    const me = pose ? pose.current() : c.self;
     return {
       at,
       dt_ms: dt,
@@ -178,10 +191,32 @@ export class Actuator {
 
   // -- movement.
   //
-  // `step` is a RAW square request: it goes to the wire as-is, and the server is the
-  // collision authority. Right for a short hop you have already reasoned about.
-  step(col, row, { minGapMs = 250 } = {}) {
+  // `step` is a RAW square request: it goes to the wire as-is, and the server
+  // accepts the declared position (server_validate=false for user moves).
+  // Right for a short hop you have already reasoned about.
+  step(col, row, { minGapMs = 250, allowVoid = false } = {}) {
     const c = this.session.client;
+    // NEVER STEP INTO A VOID (default): the server accepts any declared
+    // position, so the check must happen here, at the last step before the
+    // wire. Deliberate exits (Underworld portals) opt out with allowVoid.
+    // Unknown geometry allows (old behavior). Height uses the same rule:
+    // climbs steeper than the client's limit are refused, walls still pass.
+    if (!allowVoid) {
+      try {
+        const geo = this.session?.world?.geometry;
+        if (isGrounded(geo, row, col) === false) {
+          return { kind: 'move', at: Date.now(), ok: false, why: 'target has no floor' };
+        }
+        const me = c.self;
+        if (me && Number.isFinite(me.x) && Number.isFinite(me.y)) {
+          const tx = col * KOD_FINENESS + KOD_FINENESS / 2;
+          const ty = row * KOD_FINENESS + KOD_FINENESS / 2;
+          if (segHeightOk(geo, me.x, me.y, tx, ty) === false) {
+            return { kind: 'move', at: Date.now(), ok: false, why: 'target climbs too steeply' };
+          }
+        }
+      } catch {}
+    }
     return this._send('move', () => c.moveToSquare(col, row), minGapMs);
   }
 
@@ -204,6 +239,12 @@ export class Actuator {
   walk(col, row, { maxSteps = 1 } = {}) {
     const rec = { kind: 'walk', at: Date.now(), ok: null, to: { col, row } };
     if (this.walking) { rec.ok = false; rec.why = 'a move is already in flight'; return rec; }
+    // DO NOT call the legacy walkTo when the Mover is active (the router has
+    // a destination). The legacy walkTo runs in parallel with the Mover,
+    // causing conflicts (the character walks through walls).
+    if (this.session?._router?.dest != null) {
+      rec.ok = false; rec.why = 'mover active (router has destination)'; return rec;
+    }
     if (typeof this.session.walkTo !== 'function') {
       rec.ok = false; rec.why = 'no walker on this session'; return rec;
     }
@@ -331,6 +372,7 @@ export class TickLoop {
     this.timer = null;
     this.busy = false;
     this._frozen = false;  // set true by the cast override to hold the character still
+    this._frozenAt = null;
     this._livenessFlagged = false;
     this.stats = { ticks: 0, skipped: 0, errors: 0, awaited: 0,
                    longest_decide_ms: 0, lastError: null, stale_sessions: 0 };
@@ -346,16 +388,34 @@ export class TickLoop {
     // stops and nothing notices. The watchdog is un-unref'd so it always runs.
     this._watchdog = setInterval(() => {
       const now = Date.now();
-      if (now - (this._lastTickAt ?? now) > 5000) {
-        console.error(`[tick-watchdog] tick loop silent for ${Math.round((now - this._lastTickAt)/1000)}s (busy=${this.busy}, longest=${this.stats.longest_decide_ms}ms) — forcing recovery`);
-        this._lastTickAt = now;
+      // Read _frozen into a local before the TTL block so the diagnostic
+      // reports the state at the top of the callback, not after the TTL
+      // has cleared it.
+      const frozenAtTop = this._frozen;
+      // TTL: auto-clear _frozen past 60s (inert has no other escape). The blink-cast
+      // path sets _frozen without _frozenAt, so a cast interrupted mid-flight keeps
+      // the flag and the absent timestamp makes the TTL fire. An explicit inert
+      // (loop._inert) is NOT subject to the TTL — it persists until `revive`.
+      if (this._frozen && !this._inert && (!this._frozenAt || now - this._frozenAt > 60000)) {
+        this._frozen = false;
+        this._frozenAt = null;
+        console.error(`[tick-watchdog] _frozen auto-cleared after 60s (inert TTL)`);
+      }
+      // _lastTickAt is stamped in tick() before the busy/frozen guards, so
+      // now - _lastTickAt is already monotonic. No private field needed.
+      const silentMs = now - (this._lastTickAt ?? now);
+      if (silentMs > 5000) {
+        // INSTRUMENT: print busy/skipped/frozen/silent-ms from the watchdog itself.
+        // frozenAtTop is the state at the top of the callback (before the TTL
+        // cleared it), so the diagnostic is truthful.
+        console.error(`[tick-watchdog] silent ${Math.round(silentMs/1000)}s busy=${this.busy} frozen=${frozenAtTop} skipped=${this.stats.skipped} ticks=${this.stats.ticks} longest=${this.stats.longest_decide_ms}ms — forcing recovery`);
         // A decide() that has been running for > 5s is hung (decides should be < 50ms).
         // The busy flag is stuck true, so every tick is skipped and the loop silently
         // dies. Force-reset it so the next tick can run. We cannot interrupt the hung
         // synchronous call, but we CAN ensure the NEXT tick proceeds once it returns
         // (or never does — in which case the liveness guard will exit the keeper).
         if (this.busy) {
-          console.error(`[tick-watchdog] forcing busy=false (a decide was hung for ${Math.round((now - this._lastTickAt)/1000)}s)`);
+          console.error(`[tick-watchdog] forcing busy=false (a decide was hung for ${Math.round(silentMs/1000)}s)`);
           this.busy = false;
         }
         // The timer may have been cleared or starved. Restart it.
@@ -364,6 +424,8 @@ export class TickLoop {
         this.timer.unref?.();
         // Also fire one tick immediately to unstick.
         try { this.tick(); } catch (e) { console.error(`[tick-watchdog] immediate tick failed: ${e?.message}`); }
+      } else {
+        this._wdTickAt = null;
       }
     }, 3000);
     // NOT unref'd: the watchdog must always fire, even if the main tick timer is
@@ -380,6 +442,10 @@ export class TickLoop {
   }
 
   tick() {
+    // Stamp _lastTickAt at the top, before the busy/frozen guards, so the
+    // watchdog's silence test sees the tick even when the loop is gated.
+    const now = Date.now();
+    this._lastTickAt = now;
     // RULE 5: overrun SKIPS. A decide that is still running means the world has moved
     // under the one in progress; running a second against an older frame would build a
     // backlog of decisions about a world that is gone.
@@ -391,11 +457,6 @@ export class TickLoop {
     if (this._frozen) { return; }
     this.busy = true;
     const t0 = Date.now();
-    // DIAGNOSTIC: a heartbeat so a silent stall is visible. A tick loop that has stopped
-    // producing decide() calls (0% CPU, no log) is otherwise indistinguishable from a
-    // healthy idle. Log the stats every 50 ticks and on the first 10s of silence.
-    const now = Date.now();
-    this._lastTickAt = now;
     if (this.stats.ticks > 0 && now - (this._lastBeatAt ?? 0) > 10000) {
       this._lastBeatAt = now;
       const staleRx = this.session.client?.lastRxAt ? Math.round((now - this.session.client.lastRxAt)/1000) : -1;
@@ -445,14 +506,23 @@ export class TickLoop {
       // never fires and the character sits positionless for ever, flapping between
       // "equip" and "travel" doing nothing (JayB in Raza, 2026). Recover whenever we are
       // in-game with a room but no position, whether or not the self id survived.
-      if (frame.in_game && frame.room && (frame.room.id != null || frame.room.num != null) && !frame.position) {
+      if (frame.in_game && (!frame.position || frame.objects == null || (frame.objects instanceof Map && frame.objects.size === 0))) {
         const now = Date.now();
         if (!this._lastPosRecovery || now - this._lastPosRecovery > 3000) {
           this._lastPosRecovery = now;
           try {
-            this.session.client.roomContents?.();
+            this.session.client?.roomContents?.();
           } catch { /* best effort */ }
         }
+      }
+      // INVENTORY + EQUIPMENT REFRESH: the client's in-memory state can go stale
+      // after death (equipment changes, server push missed). Refresh every 10 ticks
+      // (1s at 10Hz) so the `armed` goal sees a fresh pack AND a fresh using list.
+      if (this.stats.ticks % 10 === 0) {
+        try {
+          this.session.client?.requestInventory?.();
+          this.session.client?.requestUsing?.();
+        } catch { /* best effort */ }
       }
       const out = this.decide(frame, this.actuator, this);
       // RULE 1, ENFORCED RATHER THAN TRUSTED. A decide that returns a promise is doing
