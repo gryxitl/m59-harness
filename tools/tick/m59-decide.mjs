@@ -419,7 +419,8 @@ export const INTENTS = {
       // Fall through to conjure if the character can.
       const canConjure = (ctx.client?.spells ?? []).some(sp => sp.name?.toLowerCase() === 'create weapon');
       const mana = ctx.client?.vitals?.()?.mana?.value ?? 0;
-      if (canConjure && mana >= 15) {
+      scanCastRefusal(ctx.client, ctx.session);
+      if (canConjure && mana >= 15 && Date.now() >= (ctx.session?._castRefusedUntil ?? 0)) {
         const spellId = ctx.client?.spells?.find(sp => sp.name.toLowerCase() === 'create weapon')?.id;
         if (spellId != null) {
           const sent = !!ctx.act.cast?.(spellId);
